@@ -442,4 +442,13 @@ class JobViewModelTest {
         CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
         assertTrue(RecentFilesStore.get(app).recents.value.isEmpty())
     }
+
+    @Test
+    fun saveWithoutPendingOutputKeepsNonEmptyDestination() {
+        val existing = java.io.File(app.filesDir, "existing.pdf").apply { writeBytes(ByteArray(9)) }
+        vm.save(Uri.fromFile(existing))
+        assertEquals(app.getString(R.string.core_result_unavailable), vm.saveError.value)
+        repeat(20) { shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(5) }
+        assertEquals(9L, existing.length())
+    }
 }

@@ -134,7 +134,7 @@ open class JobViewModel(
      * destination document is deleted). Ignored while `Saving`.
      *
      * If there is no pending output (e.g. the process was recreated while the dialog was open),
-     * the just-created empty destination document is deleted and [saveError] explains that the
+     * the just-created destination document is deleted if it is empty and [saveError] explains that the
      * result is gone.
      */
     fun save(dest: Uri?) {
@@ -144,7 +144,7 @@ open class JobViewModel(
         if (output == null) {
             jobs.processScope.launch {
                 try {
-                    withContext(Dispatchers.IO) { jobs.deleteDestination(dest) }
+                    withContext(Dispatchers.IO) { jobs.deleteDestinationIfEmpty(dest) }
                 } catch (e: Exception) {
                     // Best effort.
                 }

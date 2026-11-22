@@ -217,6 +217,20 @@ class PdfJobsTest {
     }
 
     @Test
+    fun failureBeforeOpeningKeepsNonEmptyExistingDestination() {
+        val existing = tmp.newFile("existing.pdf").apply { writeBytes(ByteArray(7)) }
+        val j = jobsWithOpener { null }
+        val output = readyOutput(j)
+        assertTrue(runBlocking { j.save(output, Uri.fromFile(existing)) }.isFailure)
+        assertEquals(7L, existing.length())
+
+        // Output file gone before the save: nothing was written, the existing document stays.
+        output.file.delete()
+        assertTrue(runBlocking { jobs.save(output, Uri.fromFile(existing)) }.isFailure)
+        assertEquals(7L, existing.length())
+    }
+
+    @Test
     fun deleteDestinationNeverThrows() {
         jobs.deleteDestination(Uri.parse("content://dest.test/whatever.pdf"))
         jobs.deleteDestination(Uri.fromFile(tmp.root.resolve("missing.pdf")))

@@ -203,16 +203,20 @@ class PdfJobs @VisibleForTesting internal constructor(
      * after the data has been written, flushed and the destination closed without error; the
      * job directory is then deleted.
      *
-     * On any failure (including a cancellation of the caller) the destination document is
-     * deleted best-effort (see [deleteDestination]) so no truncated file is left behind, and
-     * [output] is kept so the caller can retry with another [dest]. Failures are returned as
+     * On any failure after the destination was opened (including a cancellation of the caller)
+     * the destination document is deleted best-effort (see [deleteDestination]) so no truncated
+     * file is left behind; a failure before that deletes it only if it is empty
+     * ([deleteDestinationIfEmpty]). [output] is kept
+     * so the caller can retry with another [dest]. Failures are returned as
      * `Result.failure`; a cancellation is rethrown after the cleanup.
      */
     suspend fun save(output: PendingOutput, dest: Uri): Result<Unit> = withContext(ioDispatcher) {
+        var opened = false
         try {
             if (!output.file.isFile) throw IOException("Output no longer exists")
             val ctx = currentCoroutineContext()
             val stream = openDestination(appContext, dest) ?: throw IOException("Cannot open destination")
+            opened = true
             stream.use { out ->
                 UriIo.copyToStream(output.file, out) { !ctx.isActive }
                 if (out is FileOutputStream) {
@@ -226,7 +230,9 @@ class PdfJobs @VisibleForTesting internal constructor(
             output.jobDir.deleteRecursively()
             Result.success(Unit)
         } catch (e: Throwable) {
-            withContext(NonCancellable) { deleteDestination(dest) }
+            // Once opened with "wt" the destination holds our partial data: always delete it.
+            // Before that it may be an existing file the user chose to replace: delete only if empty.
+            withContext(NonCancellable) { if (opened) deleteDestination(dest) else deleteDestinationIfEmpty(dest) }
             when (e) {
                 is CancellationException -> throw e
                 is Exception -> Result.failure(e)
@@ -250,6 +256,24 @@ class PdfJobs @VisibleForTesting internal constructor(
         } catch (e: Exception) {
             // Best effort.
         }
+    }
+
+    /**
+     * Deletes [dest] like [deleteDestination], but only if it is known to be empty (0 bytes), so
+     * an existing document the user chose to replace is never removed unless it was already
+     * overwritten. Blocking; never throws.
+     */
+    fun deleteDestinationIfEmpty(dest: Uri) {
+        val empty = try {
+            if (dest.scheme == ContentResolver.SCHEME_FILE) {
+                dest.path?.let(::File)?.let { it.isFile && it.length() == 0L } == true
+            } else {
+                UriIo.describe(appContext, dest).sizeBytes == 0L
+            }
+        } catch (e: Exception) {
+            false
+        }
+        if (empty) deleteDestination(dest)
     }
 
     /** Deletes [output] and its job directory. Safe to call more than once. */
