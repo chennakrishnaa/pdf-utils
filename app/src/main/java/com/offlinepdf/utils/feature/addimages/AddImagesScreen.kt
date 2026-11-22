@@ -2,12 +2,10 @@ package com.offlinepdf.utils.feature.addimages
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -19,13 +17,18 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.offlinepdf.utils.R
+import com.offlinepdf.utils.ui.components.AppIcons
 import com.offlinepdf.utils.ui.components.FileList
 import com.offlinepdf.utils.ui.components.FileRow
+import com.offlinepdf.utils.ui.components.InfoNote
 import com.offlinepdf.utils.ui.components.JobPanel
 import com.offlinepdf.utils.ui.components.JobUiState
+import com.offlinepdf.utils.ui.components.SecondaryActionButton
 import com.offlinepdf.utils.ui.components.SectionHeader
+import com.offlinepdf.utils.ui.components.SelectedFileCard
 import com.offlinepdf.utils.ui.components.ToolScaffold
 import com.offlinepdf.utils.ui.components.formatBytes
+import com.offlinepdf.utils.ui.components.hasUnsavedWork
 import com.offlinepdf.utils.ui.components.rememberImagePicker
 import com.offlinepdf.utils.ui.components.rememberPdfPicker
 import com.offlinepdf.utils.ui.components.rememberPdfSaver
@@ -36,11 +39,11 @@ const val TAG_ADDIMAGES_ROOT = "addimages_root"
 /** Test tag of the "Choose PDF" button. */
 const val TAG_ADDIMAGES_CHOOSE_PDF = "addimages_choose_pdf"
 
-/** Test tag of the chosen PDF's name (or the "no PDF" text). */
+/**
+ * Test tag of the card showing the chosen PDF: its texts are the name and, when known, the size
+ * (or just the "no PDF chosen" text).
+ */
 const val TAG_ADDIMAGES_PDF_NAME = "addimages_pdf_name"
-
-/** Test tag of the chosen PDF's size. */
-const val TAG_ADDIMAGES_PDF_SIZE = "addimages_pdf_size"
 
 /** Test tag of the "Add images" button. */
 const val TAG_ADDIMAGES_ADD_IMAGES = "addimages_add_images"
@@ -62,13 +65,18 @@ fun AddImagesScreen(onBack: () -> Unit) {
     val images by vm.images.collectAsState()
     val state by vm.jobState.collectAsState()
     val saveError by vm.saveError.collectAsState()
-    val running = state is JobUiState.Running
+    // Inputs are locked while the job runs and while its result is being saved.
+    val locked = state is JobUiState.Running || state is JobUiState.Saving
 
     val pdfPicker = rememberPdfPicker(multiple = false) { uris -> vm.choosePdf(uris) }
     val imagePicker = rememberImagePicker { uris -> vm.addImages(uris) }
     val saver = rememberPdfSaver { uri -> vm.save(uri) }
 
-    ToolScaffold(title = stringResource(R.string.tool_add_images_title), onBack = onBack) { padding ->
+    ToolScaffold(
+        title = stringResource(R.string.tool_add_images_title),
+        onBack = onBack,
+        confirmLeave = state.hasUnsavedWork(),
+    ) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
@@ -79,37 +87,18 @@ fun AddImagesScreen(onBack: () -> Unit) {
         ) {
             SectionHeader(stringResource(R.string.addimages_pdf_header))
             val chosen = pdf
-            if (chosen == null) {
-                Text(
-                    text = stringResource(R.string.addimages_no_pdf),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.testTag(TAG_ADDIMAGES_PDF_NAME),
-                )
-            } else {
-                Column {
-                    Text(
-                        text = chosen.name,
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.testTag(TAG_ADDIMAGES_PDF_NAME),
-                    )
-                    chosen.sizeBytes?.let { size ->
-                        Text(
-                            text = formatBytes(size),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.testTag(TAG_ADDIMAGES_PDF_SIZE),
-                        )
-                    }
-                }
-            }
-            OutlinedButton(
+            SelectedFileCard(
+                name = chosen?.name ?: stringResource(R.string.addimages_no_pdf),
+                detail = chosen?.sizeBytes?.let(::formatBytes),
+                testTag = TAG_ADDIMAGES_PDF_NAME,
+            )
+            SecondaryActionButton(
+                text = stringResource(R.string.addimages_choose_pdf),
                 onClick = pdfPicker,
-                enabled = !running,
-                modifier = Modifier.fillMaxWidth().testTag(TAG_ADDIMAGES_CHOOSE_PDF),
-            ) {
-                Text(stringResource(R.string.addimages_choose_pdf))
-            }
+                enabled = !locked,
+                testTag = TAG_ADDIMAGES_CHOOSE_PDF,
+                icon = AppIcons.pdf,
+            )
 
             SectionHeader(stringResource(R.string.addimages_images_header))
             FileList(
@@ -120,36 +109,33 @@ fun AddImagesScreen(onBack: () -> Unit) {
                         subtitle = item.file.sizeBytes?.let(::formatBytes),
                     )
                 },
-                onMoveUp = if (running) null else vm::moveUp,
-                onMoveDown = if (running) null else vm::moveDown,
-                onRemove = if (running) null else vm::remove,
+                onMoveUp = if (locked) null else vm::moveUp,
+                onMoveDown = if (locked) null else vm::moveDown,
+                onRemove = if (locked) null else vm::remove,
                 emptyText = stringResource(R.string.addimages_empty),
+                leadingIcon = AppIcons.image,
             )
-            OutlinedButton(
+            SecondaryActionButton(
+                text = stringResource(R.string.addimages_add_images),
                 onClick = imagePicker,
-                enabled = !running,
-                modifier = Modifier.fillMaxWidth().testTag(TAG_ADDIMAGES_ADD_IMAGES),
-            ) {
-                Text(stringResource(R.string.addimages_add_images))
-            }
-            Text(
-                text = stringResource(R.string.addimages_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.testTag(TAG_ADDIMAGES_NOTE),
+                enabled = !locked,
+                testTag = TAG_ADDIMAGES_ADD_IMAGES,
+                icon = AppIcons.add,
             )
+            InfoNote(text = stringResource(R.string.addimages_note), testTag = TAG_ADDIMAGES_NOTE)
             JobPanel(
                 state = state,
                 runLabel = stringResource(R.string.addimages_run),
                 runEnabled = pdf != null && images.isNotEmpty(),
                 onRun = vm::run,
                 onCancel = vm::cancel,
-                onSave = {
-                    vm.clearSaveError()
-                    saver(vm.suggestedFileName())
-                },
+                onSave = { saver(vm.suggestedFileName()) },
                 onReset = vm::reset,
+                runIcon = AppIcons.addToPdf,
+                modifier = Modifier.padding(top = 8.dp),
             )
+            // Shown in any state (e.g. "result no longer available" arrives in Idle); the
+            // ViewModel clears it when a run starts, a save succeeds or the inputs change.
             saveError?.let { message ->
                 Text(
                     text = message,

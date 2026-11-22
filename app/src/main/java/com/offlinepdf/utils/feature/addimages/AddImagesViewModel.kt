@@ -7,6 +7,7 @@ import com.offlinepdf.utils.R
 import com.offlinepdf.utils.core.JobInput
 import com.offlinepdf.utils.core.JobViewModel
 import com.offlinepdf.utils.core.PickedFile
+import com.offlinepdf.utils.ui.components.JobUiState
 import com.offlinepdf.utils.ui.components.formatBytes
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,21 +35,33 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
     /** True when a PDF and at least one image are chosen. */
     val canRun: Boolean get() = _pdf.value != null && _images.value.isNotEmpty()
 
-    /** Sets the PDF to the first of [uris], replacing any earlier choice. Ignored while a job runs. */
+    override val toolId: String = TOOL_ID
+
+    /** True while inputs must not change: a job is running or its result is being saved. */
+    private val locked: Boolean get() = isRunning || jobState.value is JobUiState.Saving
+
+    /**
+     * Sets the PDF to the first of [uris], replacing any earlier choice and discarding any
+     * result. Ignored while running or saving.
+     */
     fun choosePdf(uris: List<Uri>) {
         val uri = uris.firstOrNull() ?: return
-        if (isRunning) return
+        if (locked) return
         viewModelScope.launch {
             val picked = describe(listOf(uri)).first()
-            if (!isRunning) _pdf.value = picked
+            if (locked) return@launch
+            inputsChanged()
+            _pdf.value = picked
         }
     }
 
-    /** Appends [uris] (in picker order) to the image list. Ignored while a job runs. */
+    /** Appends [uris] (in picker order) to the image list, discarding any result. Ignored while running or saving. */
     fun addImages(uris: List<Uri>) {
-        if (uris.isEmpty() || isRunning) return
+        if (uris.isEmpty() || locked) return
         viewModelScope.launch {
             val picked = describe(uris)
+            if (locked) return@launch
+            inputsChanged()
             _images.update { current -> current + picked.map { AddImagesItem(nextKey++, it) } }
         }
     }
@@ -57,8 +70,10 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
 
     fun moveDown(index: Int) = swap(index, index + 1)
 
+    /** Removes the image at [index]; discards any result. Ignored while running or saving. */
     fun remove(index: Int) {
-        if (isRunning) return
+        if (locked || index !in _images.value.indices) return
+        inputsChanged()
         _images.update { list -> if (index in list.indices) list.toMutableList().apply { removeAt(index) } else list }
     }
 
@@ -76,8 +91,17 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
 
     override fun suggestedFileName(): String = suggestedNameFor(_pdf.value?.name)
 
+    /** The result no longer matches the inputs: drop it (and any save error) so it cannot be saved. */
+    private fun inputsChanged() {
+        invalidateResult()
+        clearSaveError()
+    }
+
     private fun swap(from: Int, to: Int) {
-        if (isRunning) return
+        if (locked) return
+        val list = _images.value
+        if (from !in list.indices || to !in list.indices) return
+        inputsChanged()
         _images.update { list ->
             if (from !in list.indices || to !in list.indices) {
                 list
@@ -88,6 +112,8 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
     }
 
     companion object {
+        /** Id recorded with files saved from this screen in the recent-files list. */
+        const val TOOL_ID = "add_images"
         const val FALLBACK_FILE_NAME = "with-images.pdf"
         private const val SUFFIX = "-with-images"
         private const val PDF_EXT = ".pdf"
