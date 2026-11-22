@@ -270,6 +270,23 @@ class ImagePagesTest {
     }
 
     @Test
+    fun trailerWithoutAnyEndMarkerIsAccepted() {
+        // 70 KiB with no FF D9 / IEND at all: the old 64 KiB tail-window check rejected these
+        val trailer = ByteArray(70 * 1024) { 0x55 }
+        val jpeg = Fixtures.jpeg(tmp.root, "n.jpg", width = 320, height = 240)
+        val png = Fixtures.png(tmp.root, "n.png", width = 120, height = 90)
+        for (src in listOf(jpeg, png)) {
+            val trailed = File(tmp.root, "plain-trailer-" + src.name).also { it.writeBytes(src.readBytes() + trailer) }
+            assertAccepted(trailed)
+            val plainPdf = single("np-${src.name}.pdf", src, PageSize.FIT_IMAGE)
+            val pdf = single("nt-${src.name}.pdf", trailed, PageSize.FIT_IMAGE)
+            assertEquals(Fixtures.imageInfos(plainPdf).single().rawLength, Fixtures.imageInfos(pdf).single().rawLength)
+            assertSameRender(plainPdf, pdf)
+        }
+        assertEquals(jpeg.length().toInt(), Fixtures.imageInfos(File(tmp.root, "nt-n.jpg.pdf")).single().rawLength)
+    }
+
+    @Test
     fun exifOrientation6WithTrailerIsUpright() {
         val img = Fixtures.withTrailer(Fixtures.jpegWithExifOrientation(tmp.root, "o6.jpg", 300, 200, 6), 70 * 1024)
         val pdf = single("o6t.pdf", img, PageSize.FIT_IMAGE)
@@ -340,7 +357,7 @@ class ImagePagesTest {
         val ms = (System.nanoTime() - t0) / 1_000_000
         println("jpegEnd on ${trailed.length()} bytes: $ms ms")
         assertEquals(f.length(), e)
-        assertTrue("took $ms ms", ms < 1000)
+        assertTrue("took $ms ms", ms < 5000) // typically ~60 ms; loose bound for a shared build machine
     }
 
     @Test

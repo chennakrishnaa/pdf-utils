@@ -140,11 +140,12 @@ object Fixtures {
     fun jpegWithExifThumbnail(dir: File, name: String = "thumb.jpg", width: Int = 640, height: Int = 480, seed: Long = 1L): File {
         val main = encodeJpeg(ppm(width, height, photoPixels(width, height, seed)), 90)
         val thumb = encodeJpeg(ppm(32, 24, photoPixels(32, 24, seed + 1)), 80)
-        val payload = exifPayload(1) + thumb
-        val len = payload.size + 2
+        val withExif = withExifOrientation(main, 1) // SOI, APP1 (length at bytes 4..5), rest
+        val app1Len = (withExif[4].toInt() and 0xFF shl 8) or (withExif[5].toInt() and 0xFF)
+        val len = app1Len + thumb.size
         require(len <= 0xFFFF)
-        val seg = byteArrayOf(0xFF.toByte(), 0xE1.toByte(), (len shr 8).toByte(), len.toByte()) + payload
-        return File(dir, name).also { it.writeBytes(main.copyOfRange(0, 2) + seg + main.copyOfRange(2, main.size)) }
+        val head = withExif.copyOfRange(0, 4 + app1Len).also { it[4] = (len shr 8).toByte(); it[5] = len.toByte() }
+        return File(dir, name).also { it.writeBytes(head + thumb + withExif.copyOfRange(4 + app1Len, withExif.size)) }
     }
 
     /** 4 KiB of random bytes named like a JPEG. */
@@ -662,18 +663,16 @@ object Fixtures {
      */
     private fun withExifOrientation(jpeg: ByteArray, exif: Int): ByteArray {
         require(jpeg[0] == 0xFF.toByte() && jpeg[1] == 0xD8.toByte())
-        val payload = exifPayload(exif)
+        val payload = byteArrayOf(
+            'E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0,
+            'M'.code.toByte(), 'M'.code.toByte(), 0, 0x2A, 0, 0, 0, 8, // TIFF header, IFD0 at 8
+            0, 1, // 1 entry
+            0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, exif.toByte(), 0, 0, // Orientation SHORT x1
+            0, 0, 0, 0, // next IFD = none
+        )
         val len = payload.size + 2
         val seg = byteArrayOf(0xFF.toByte(), 0xE1.toByte(), (len shr 8).toByte(), len.toByte()) + payload
         return jpeg.copyOfRange(0, 2) + seg + jpeg.copyOfRange(2, jpeg.size)
     }
 
-    /** Minimal big-endian EXIF payload ("Exif\0\0" + TIFF header + IFD0 with Orientation = [exif]). */
-    private fun exifPayload(exif: Int): ByteArray = byteArrayOf(
-        'E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0,
-        'M'.code.toByte(), 'M'.code.toByte(), 0, 0x2A, 0, 0, 0, 8, // TIFF header, IFD0 at 8
-        0, 1, // 1 entry
-        0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, exif.toByte(), 0, 0, // Orientation SHORT x1
-        0, 0, 0, 0, // next IFD = none
-    )
 }
