@@ -116,6 +116,14 @@ object UriIo {
         }
     }
 
+    /**
+     * Copies [src] into [out] and flushes it; does not close [out]. [isCancelled] is polled
+     * between chunks (throws [CancellationException]). Returns the number of bytes written.
+     */
+    @Throws(IOException::class)
+    fun copyToStream(src: File, out: OutputStream, isCancelled: () -> Boolean = { false }): Long =
+        FileInputStream(src).use { inp -> pump(inp, out, isCancelled) }
+
     private fun openInput(context: Context, src: Uri): InputStream =
         context.contentResolver.openInputStream(src) ?: throw IOException("Cannot open $src")
 

@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.platform.testTag
 import com.offlinepdf.utils.MainActivity
 import com.offlinepdf.utils.R
 import com.offlinepdf.utils.engine.PdfError
@@ -25,6 +26,11 @@ import com.offlinepdf.utils.ui.components.FileList
 import com.offlinepdf.utils.ui.components.FileRow
 import com.offlinepdf.utils.ui.components.JobPanel
 import com.offlinepdf.utils.ui.components.JobUiState
+import com.offlinepdf.utils.ui.components.TAG_ACTION_BACK
+import com.offlinepdf.utils.ui.components.TAG_LEAVE_CONFIRM
+import com.offlinepdf.utils.ui.components.TAG_LEAVE_STAY
+import com.offlinepdf.utils.ui.components.ToolScaffold
+import com.offlinepdf.utils.ui.components.hasUnsavedWork
 import com.offlinepdf.utils.ui.components.formatBytes
 import com.offlinepdf.utils.ui.components.pdfErrorMessage
 import com.offlinepdf.utils.ui.theme.PdfUtilsTheme
@@ -195,6 +201,14 @@ class ComponentsTest {
     }
 
     @Test
+    fun jobPanelSaving() {
+        showPanel(JobUiState.Saving("3 pages, 1.2 MB"))
+        rule.onNodeWithText("3 pages, 1.2 MB").assertIsDisplayed()
+        rule.onNodeWithTag("job_saving").assertTextEquals(rule.activity.getString(R.string.core_saving))
+        assertAbsent("job_run", "job_cancel", "job_save", "job_reset", "job_error")
+    }
+
+    @Test
     fun jobPanelSaved() {
         val c = showPanel(JobUiState.Saved("Saved merged.pdf"))
         rule.onNodeWithText("Saved merged.pdf").assertIsDisplayed()
@@ -210,6 +224,70 @@ class ComponentsTest {
         rule.onNodeWithTag("job_reset").assertTextEquals(rule.activity.getString(R.string.job_try_again)).performClick()
         assertAbsent("job_run", "job_cancel", "job_save")
         assertEquals(1, c.reset)
+    }
+
+    // ---- hasUnsavedWork / ToolScaffold ----
+
+    @Test
+    fun hasUnsavedWorkTruthTable() {
+        assertEquals(false, JobUiState.Idle.hasUnsavedWork())
+        assertEquals(true, JobUiState.Running(0, 0).hasUnsavedWork())
+        assertEquals(true, JobUiState.ReadyToSave("s").hasUnsavedWork())
+        assertEquals(true, JobUiState.Saving("s").hasUnsavedWork())
+        assertEquals(false, JobUiState.Saved("s").hasUnsavedWork())
+        assertEquals(false, JobUiState.Failed("m").hasUnsavedWork())
+    }
+
+    private fun showScaffold(confirmLeave: Boolean): IntArray {
+        val backs = intArrayOf(0)
+        show {
+            ToolScaffold(title = "Tool", onBack = { backs[0]++ }, confirmLeave = confirmLeave) {
+                androidx.compose.material3.Text("body", modifier = Modifier.testTag("body"))
+            }
+        }
+        return backs
+    }
+
+    private fun systemBack() {
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun toolScaffoldWithoutConfirmCallsOnBackDirectly() {
+        val backs = showScaffold(confirmLeave = false)
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        assertEquals(1, backs[0])
+        assertAbsent(TAG_LEAVE_STAY, TAG_LEAVE_CONFIRM)
+    }
+
+    @Test
+    fun toolScaffoldConfirmViaBackArrow() {
+        val backs = showScaffold(confirmLeave = true)
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.onNodeWithText(rule.activity.getString(R.string.core_leave_title)).assertIsDisplayed()
+        rule.onNodeWithText(rule.activity.getString(R.string.core_leave_text)).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertTextEquals(rule.activity.getString(R.string.core_leave_stay)).performClick()
+        assertAbsent(TAG_LEAVE_STAY, TAG_LEAVE_CONFIRM)
+        assertEquals(0, backs[0])
+        rule.onNodeWithTag("body").assertIsDisplayed()
+
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertTextEquals(rule.activity.getString(R.string.core_leave_confirm)).performClick()
+        assertEquals(1, backs[0])
+        assertAbsent(TAG_LEAVE_STAY, TAG_LEAVE_CONFIRM)
+    }
+
+    @Test
+    fun toolScaffoldConfirmViaSystemBack() {
+        val backs = showScaffold(confirmLeave = true)
+        systemBack()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).performClick()
+        assertEquals(0, backs[0])
+        assertTrue(!rule.activity.isFinishing)
+        systemBack()
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).performClick()
+        assertEquals(1, backs[0])
     }
 
     // ---- pure helpers ----

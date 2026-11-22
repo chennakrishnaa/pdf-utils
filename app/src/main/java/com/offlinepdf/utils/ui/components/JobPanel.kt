@@ -27,12 +27,25 @@ sealed interface JobUiState {
     /** Output produced (in a temp file) and waiting for the user to choose where to save it. */
     data class ReadyToSave(val summary: String) : JobUiState
 
+    /**
+     * The output is being copied to the chosen location. Nothing can be started, reset or
+     * cancelled until it ends in `Saved` or back in `ReadyToSave` (with a save error).
+     */
+    data class Saving(val summary: String) : JobUiState
+
     /** Output saved to the user's chosen location. */
     data class Saved(val summary: String) : JobUiState
 
     /** Job failed; [message] is user-facing text (see [pdfErrorMessage]). */
     data class Failed(val message: String) : JobUiState
 }
+
+/**
+ * True when leaving the screen now would lose something: a job in progress, a result not yet
+ * saved, or a save in progress. Pass it to `ToolScaffold(confirmLeave = state.hasUnsavedWork())`.
+ */
+fun JobUiState.hasUnsavedWork(): Boolean =
+    this is JobUiState.Running || this is JobUiState.ReadyToSave || this is JobUiState.Saving
 
 const val TAG_JOB_RUN = "job_run"
 const val TAG_JOB_CANCEL = "job_cancel"
@@ -41,6 +54,7 @@ const val TAG_JOB_RESET = "job_reset"
 const val TAG_JOB_ERROR = "job_error"
 const val TAG_JOB_PROGRESS = "job_progress"
 const val TAG_JOB_SUMMARY = "job_summary"
+const val TAG_JOB_SAVING = "job_saving"
 
 /**
  * Run / progress / save / result panel for a tool. Stateless: the caller owns [state].
@@ -50,6 +64,8 @@ const val TAG_JOB_SUMMARY = "job_summary"
  *   "done of total" text, and Cancel ([TAG_JOB_CANCEL]) calling [onCancel].
  * - [JobUiState.ReadyToSave]: summary ([TAG_JOB_SUMMARY]), "Save as…" ([TAG_JOB_SAVE]) calling
  *   [onSave], and "Discard" ([TAG_JOB_RESET]) calling [onReset].
+ * - [JobUiState.Saving]: summary ([TAG_JOB_SUMMARY]), an indeterminate progress bar and
+ *   "Saving…" ([TAG_JOB_SAVING]); no buttons.
  * - [JobUiState.Saved]: success summary ([TAG_JOB_SUMMARY]) and "Start over" ([TAG_JOB_RESET])
  *   calling [onReset].
  * - [JobUiState.Failed]: error message ([TAG_JOB_ERROR]) and "Try again" ([TAG_JOB_RESET])
@@ -105,6 +121,20 @@ fun JobPanel(
                         Text(stringResource(R.string.job_discard))
                     }
                 }
+            }
+
+            is JobUiState.Saving -> {
+                Text(
+                    text = state.summary,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.testTag(TAG_JOB_SUMMARY),
+                )
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    text = stringResource(R.string.core_saving),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag(TAG_JOB_SAVING),
+                )
             }
 
             is JobUiState.Saved -> {
