@@ -198,6 +198,14 @@ class JobViewModelTest {
         assertTrue(CoreTestSupport.jobsEmpty(app))
     }
 
+    @Test
+    fun scriptedOkReachesSummarizeAndLastResult() {
+        fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Ok(pages = 3, bytes = 123_456))
+        runToReady()
+        assertEquals(JobUiState.ReadyToSave("pages=3 bytes=123456"), state())
+        assertEquals(PdfResult.Ok(3, 123_456), vm.lastResult)
+    }
+
     /** How feature ViewModel tests will run: default constructor, process-wide PdfJobs. */
     class DefaultVm(app: Application) : JobViewModel(app) {
         fun merge(uris: List<Uri>) = startJob(uris.map { JobInput.Pdf(it) }, { "ok" }) { e, f, o, j -> e.merge(f, o, j) }

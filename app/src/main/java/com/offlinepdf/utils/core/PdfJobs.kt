@@ -42,7 +42,7 @@ sealed interface JobInput {
  *
  * @property file the output PDF (inside `cacheDir/jobs/<id>/`).
  * @property pages page count reported by the engine.
- * @property bytes size of [file] in bytes.
+ * @property bytes output size in bytes as reported by the engine (`PdfResult.Ok.bytes`).
  */
 class PendingOutput internal constructor(
     val file: File,
@@ -134,7 +134,7 @@ class PdfJobs @VisibleForTesting internal constructor(
                     JobOutcome.Failed(PdfError.Io(IOException("Engine reported success but wrote no output")))
                 } else {
                     keep = true
-                    JobOutcome.Ready(PendingOutput(out, result.pages, out.length(), jobDir))
+                    JobOutcome.Ready(PendingOutput(out, result.pages, result.bytes, jobDir))
                 }
             } else {
                 JobOutcome.Failed((result as PdfResult.Err).error)
