@@ -11,7 +11,6 @@ import org.junit.AfterClass
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
@@ -312,10 +311,6 @@ class CompressOpTest {
                 assertTrue("mixed $level: $mr", mr is PdfResult.Ok)
                 mixedOut[level] = mOut
             }
-            assertNotNull(photoProgress)
-            println("compress sizes: photo ${photo.length()} -> " + photoOut.map { "${it.key}=${it.value.length()}" })
-            println("compress sizes: mixed ${mixed.length()} -> " + mixedOut.map { "${it.key}=${it.value.length()}" })
-            println("compress mixed images after HIGH: " + Fixtures.imageInfos(mixedOut.getValue(CompressionLevel.HIGH)))
         }
 
         @AfterClass

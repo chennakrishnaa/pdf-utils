@@ -26,7 +26,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
     /** The selected compression level; Medium by default. */
     val level: StateFlow<CompressionLevel> = _level.asStateFlow()
 
-    /** Size of the input as copied for the job; fallback when the provider reports no size. */
+    /** Size of the input as copied for the job (what the engine compares against); provider size is the fallback. */
     @Volatile
     private var copiedInputBytes: Long? = null
 
@@ -59,7 +59,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
         copiedInputBytes = null
         startJob(
             inputs = listOf(JobInput.Pdf(picked.uri)),
-            summarize = { ok -> summarize(picked.sizeBytes ?: copiedInputBytes, ok.bytes) },
+            summarize = { ok -> summarize(copiedInputBytes ?: picked.sizeBytes, ok.bytes) },
         ) { engine, files, out, job ->
             val input = files.first()
             copiedInputBytes = input.length()

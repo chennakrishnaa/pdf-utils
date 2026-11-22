@@ -57,8 +57,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Robolectric + [FakePdfEngine]. Robolectric content Uris report no size, so the original size
- * comes from the ViewModel's fallback: the length of the input bytes copied for the job, which
+ * Robolectric + [FakePdfEngine]. The original size is the length of the input bytes copied for the job
+ * (preferred over the provider size, which Robolectric content Uris do not report anyway), which
  * the test controls through the content registered for the Uri.
  */
 @RunWith(RobolectricTestRunner::class)
