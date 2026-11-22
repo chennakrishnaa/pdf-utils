@@ -202,6 +202,27 @@ open class JobViewModel(
         _jobState.value = JobUiState.Idle
     }
 
+    /**
+     * Marks the current result as stale. Call it whenever an input or option that the result
+     * was produced from changes (a file added, removed or reordered, a level or page size
+     * changed), so the user can never save an output that no longer matches the screen.
+     *
+     * From `ReadyToSave`, `Saved` or `Failed`: discards any pending output, clears [saveError]
+     * and [lastResult], and returns to `Idle`. No-op while `Running` or `Saving` (and in `Idle`).
+     */
+    protected fun invalidateResult() {
+        when (_jobState.value) {
+            is JobUiState.ReadyToSave, is JobUiState.Saved, is JobUiState.Failed -> {
+                discardPending()
+                lastResult = null
+                summary = ""
+                _saveError.value = null
+                _jobState.value = JobUiState.Idle
+            }
+            else -> Unit
+        }
+    }
+
     /** File name pre-filled in the save dialog. Override per tool, e.g. `"merged.pdf"`. */
     open fun suggestedFileName(): String = getApplication<Application>().getString(R.string.core_default_file_name)
 

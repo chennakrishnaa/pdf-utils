@@ -43,6 +43,8 @@ class JobViewModelTest {
 
         fun clear() = onCleared()
 
+        fun invalidate() = invalidateResult()
+
         override fun suggestedFileName() = "merged.pdf"
     }
 
@@ -329,5 +331,85 @@ class JobViewModelTest {
         assertEquals(app.getString(R.string.core_result_unavailable), vm.saveError.value)
         assertEquals(JobUiState.Idle, state())
         CoreTestSupport.idleUntil(message = "destination deleted") { !created.exists() }
+    }
+
+    @Test
+    fun invalidateResultFromReadyToSave() {
+        runToReady()
+        assertFalse(CoreTestSupport.jobsEmpty(app))
+        vm.invalidate()
+        assertEquals(JobUiState.Idle, state())
+        assertNull(vm.lastResult)
+        assertNull(vm.saveError.value)
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun invalidateResultFromReadyToSaveWithSaveError() {
+        runToReady()
+        vm.save(dest(object : OutputStream() {
+            override fun write(b: Int) = throw IOException("disk full")
+        }))
+        CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
+        vm.invalidate()
+        assertEquals(JobUiState.Idle, state())
+        assertNull(vm.saveError.value)
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun invalidateResultFromSaved() {
+        runToReady()
+        vm.save(dest(ByteArrayOutputStream()))
+        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        vm.invalidate()
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun invalidateResultFromFailed() {
+        fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Err(PdfError.Encrypted))
+        vm.merge(listOf(input()))
+        CoreTestSupport.idleUntil(message = "Failed") { state() is JobUiState.Failed }
+        vm.invalidate()
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun invalidateResultIsNoOpWhileRunningAndSaving() {
+        val atStep2 = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        fake.beforeStep = { _, step ->
+            if (step == 2) {
+                atStep2.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+        }
+        try {
+            vm.merge(listOf(input()))
+            CoreTestSupport.idleUntil(message = "engine at step 2") { atStep2.count == 0L }
+            vm.invalidate()
+            assertTrue(state() is JobUiState.Running)
+            assertTrue(vm.isRunning)
+        } finally {
+            release.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        fake.beforeStep = null
+
+        val saveRelease = CountDownLatch(1)
+        val sink = BlockingSink(saveRelease)
+        try {
+            vm.save(dest(sink))
+            CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
+            vm.invalidate()
+            assertTrue(state() is JobUiState.Saving)
+        } finally {
+            saveRelease.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
     }
 }
