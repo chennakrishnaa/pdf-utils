@@ -1,0 +1,247 @@
+package com.offlinepdf.utils.core
+
+import android.content.Context
+import android.net.Uri
+import androidx.annotation.VisibleForTesting
+import com.offlinepdf.utils.PdfUtilApp
+import com.offlinepdf.utils.engine.JobControl
+import com.offlinepdf.utils.engine.PdfEngine
+import com.offlinepdf.utils.engine.PdfError
+import com.offlinepdf.utils.engine.PdfResult
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.Executors
+import kotlin.coroutines.cancellation.CancellationException
+
+/** One input of a job, in the order the engine should receive it. */
+sealed interface JobInput {
+    /** A PDF document; copied verbatim into the job directory. */
+    data class Pdf(val uri: Uri) : JobInput
+
+    /** An image; normalised to JPEG/PNG by [ImageNormalizer]. */
+    data class Image(val uri: Uri) : JobInput
+}
+
+/**
+ * A finished output waiting in the app cache for the user to pick a destination. Hand it to
+ * [PdfJobs.save] or [PdfJobs.discard]; both remove it from the cache (save only on success).
+ *
+ * @property file the output PDF (inside `cacheDir/jobs/<id>/`).
+ * @property pages page count reported by the engine.
+ * @property bytes size of [file] in bytes.
+ */
+class PendingOutput internal constructor(
+    val file: File,
+    val pages: Int,
+    val bytes: Long,
+    internal val jobDir: File,
+)
+
+/** Result of [PdfJobs.run]. */
+sealed interface JobOutcome {
+    /** The engine succeeded; [output] is pending until saved or discarded. */
+    data class Ready(val output: PendingOutput) : JobOutcome
+
+    /** The job failed; nothing is left in the cache. */
+    data class Failed(val error: PdfError) : JobOutcome
+}
+
+/**
+ * Runs [PdfEngine] operations on content Uris. Obtain the process-wide instance with
+ * [PdfJobs.get]. Scratch files live under `cacheDir/jobs/<uuid>/` and are deleted on success
+ * (inputs), failure and cancellation (everything).
+ *
+ * Every engine call in the process runs on one dedicated thread owned by this class
+ * ([ENGINE_DISPATCHER]), as the [PdfEngine] threading contract requires.
+ */
+class PdfJobs @VisibleForTesting internal constructor(
+    context: Context,
+    private val engineDispatcher: CoroutineDispatcher = ENGINE_DISPATCHER,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+) {
+    private val appContext: Context = context.applicationContext ?: context
+
+    /** `cacheDir/jobs`, the root of all job directories. */
+    @VisibleForTesting
+    internal val jobsRoot: File get() = File(appContext.cacheDir, JOBS_DIR)
+
+    /**
+     * Prepares [inputs] and runs [block] on the engine thread.
+     *
+     * 1. Creates `cacheDir/jobs/<uuid>/`; copies each [JobInput.Pdf] and normalises each
+     *    [JobInput.Image] (on the IO dispatcher), in input order.
+     * 2. Calls [block] on the engine thread with the app's current [PdfEngine] (read now, not
+     *    at construction), the prepared files in the same order as [inputs], the output file to
+     *    write, and a [JobControl] whose `isCancelled()` is true once the calling coroutine is
+     *    cancelled and whose `progress` is forwarded to [onProgress] on the main dispatcher.
+     *    All progress callbacks have been delivered by the time `run` returns. [block] must be
+     *    plain blocking code that only calls the engine; it must not keep the files.
+     * 3. On `PdfResult.Ok` returns [JobOutcome.Ready] (input copies are deleted, only the output
+     *    stays). Otherwise deletes the whole job directory and returns [JobOutcome.Failed]:
+     *    the engine's error; `UnsupportedImage` for undecodable images; `Io` for unreadable
+     *    inputs or any exception; `OutOfMemory` for [OutOfMemoryError].
+     *
+     * Cancellation: if the calling coroutine is cancelled, `run` waits for the engine call (if
+     * one is in progress) to return, deletes the job directory, then rethrows the
+     * [CancellationException] (structured concurrency). If the engine itself returns
+     * `Err(Cancelled)` while the caller is still active, the result is `Failed(Cancelled)`.
+     */
+    suspend fun run(
+        inputs: List<JobInput>,
+        onProgress: (done: Int, total: Int) -> Unit,
+        block: (engine: PdfEngine, files: List<File>, out: File, job: JobControl) -> PdfResult,
+    ): JobOutcome {
+        val jobDir = File(jobsRoot, UUID.randomUUID().toString())
+        val inDir = File(jobDir, "in")
+        val out = File(jobDir, OUTPUT_NAME)
+        var keep = false
+        try {
+            val files = withContext(ioDispatcher) {
+                if (!inDir.mkdirs() && !inDir.isDirectory) throw IOException("Cannot create $inDir")
+                val ctx = currentCoroutineContext()
+                val cancelled = { !ctx.isActive }
+                inputs.mapIndexed { index, input ->
+                    ctx.ensureActive()
+                    when (input) {
+                        is JobInput.Pdf -> File(inDir, String.format(Locale.ROOT, "in_%03d.pdf", index)).also {
+                            UriIo.copyToFile(appContext, input.uri, it, cancelled)
+                        }
+                        is JobInput.Image -> ImageNormalizer.normalize(appContext, input.uri, inDir, index, cancelled)
+                    }
+                }
+            }
+
+            val result = runOnEngine(files, out, onProgress, block)
+
+            return if (result is PdfResult.Ok) {
+                withContext(NonCancellable + ioDispatcher) { inDir.deleteRecursively() }
+                if (!out.isFile) {
+                    JobOutcome.Failed(PdfError.Io(IOException("Engine reported success but wrote no output")))
+                } else {
+                    keep = true
+                    JobOutcome.Ready(PendingOutput(out, result.pages, out.length(), jobDir))
+                }
+            } else {
+                JobOutcome.Failed((result as PdfResult.Err).error)
+            }
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            return JobOutcome.Failed(PdfError.Cancelled)
+        } catch (e: UnsupportedImageException) {
+            return JobOutcome.Failed(PdfError.UnsupportedImage)
+        } catch (e: OutOfMemoryError) {
+            return JobOutcome.Failed(PdfError.OutOfMemory)
+        } catch (e: Exception) {
+            return JobOutcome.Failed(PdfError.Io(e))
+        } finally {
+            if (!keep) withContext(NonCancellable + ioDispatcher) { jobDir.deleteRecursively() }
+        }
+    }
+
+    private suspend fun runOnEngine(
+        files: List<File>,
+        out: File,
+        onProgress: (Int, Int) -> Unit,
+        block: (PdfEngine, List<File>, File, JobControl) -> PdfResult,
+    ): PdfResult = coroutineScope {
+        val progress = Channel<Pair<Int, Int>>(Channel.CONFLATED)
+        val forwarder = launch(mainDispatcher) {
+            for ((done, total) in progress) onProgress(done, total)
+        }
+        try {
+            withContext(engineDispatcher) {
+                val engineJob = coroutineContext.job
+                val control = object : JobControl {
+                    override fun progress(done: Int, total: Int) {
+                        progress.trySend(done to total)
+                    }
+
+                    override fun isCancelled(): Boolean = !engineJob.isActive
+                }
+                val engine = (appContext as PdfUtilApp).engine
+                block(engine, files, out, control)
+            }
+        } finally {
+            progress.close()
+            forwarder.join()
+        }
+    }
+
+    /**
+     * Copies [output] to [dest] (truncating it) on the IO dispatcher. On success deletes the
+     * job directory; on failure keeps [output] so the caller can retry with another [dest].
+     */
+    suspend fun save(output: PendingOutput, dest: Uri): Result<Unit> = withContext(ioDispatcher) {
+        try {
+            if (!output.file.isFile) throw IOException("Output no longer exists")
+            val ctx = currentCoroutineContext()
+            UriIo.copyToUri(appContext, output.file, dest) { !ctx.isActive }
+            output.jobDir.deleteRecursively()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** Deletes [output] and its job directory. Safe to call more than once. */
+    fun discard(output: PendingOutput) {
+        output.jobDir.deleteRecursively()
+    }
+
+    /** Deletes everything under `cacheDir/jobs/`. Do not call while a job is running. */
+    fun wipeAll() {
+        jobsRoot.listFiles()?.forEach { it.deleteRecursively() }
+    }
+
+    companion object {
+        private const val JOBS_DIR = "jobs"
+        private const val OUTPUT_NAME = "output.pdf"
+
+        /** The single thread on which every engine call in the process runs. */
+        private val ENGINE_DISPATCHER: CoroutineDispatcher = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "pdf-engine").apply { isDaemon = true }
+        }.asCoroutineDispatcher()
+
+        @Volatile
+        private var instance: PdfJobs? = null
+
+        /**
+         * The process-wide instance, bound to the application context. The first call wipes
+         * `cacheDir/jobs/` (leftovers of a previous process). Cheap; may be called on any thread.
+         */
+        fun get(context: Context): PdfJobs {
+            val app = context.applicationContext ?: context
+            instance?.let { if (it.appContext === app) return it }
+            return synchronized(this) {
+                instance?.takeIf { it.appContext === app }
+                    ?: PdfJobs(app).also {
+                        it.wipeAll()
+                        instance = it
+                    }
+            }
+        }
+
+        /** Forgets the singleton so the next [get] creates (and wipes) a fresh one. */
+        @VisibleForTesting
+        internal fun resetForTesting() {
+            synchronized(this) { instance = null }
+        }
+    }
+}
