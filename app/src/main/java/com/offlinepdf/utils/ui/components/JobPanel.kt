@@ -80,8 +80,8 @@ const val TAG_JOB_SAVING = "job_saving"
  * - [JobUiState.Running]: "done of total" text with a percentage, progress bar
  *   ([TAG_JOB_PROGRESS]; indeterminate with "Working…" when total == 0), and an outlined
  *   Cancel ([TAG_JOB_CANCEL]) calling [onCancel].
- * - [JobUiState.ReadyToSave]: summary ([TAG_JOB_SUMMARY]), primary "Save as…" ([TAG_JOB_SAVE])
- *   calling [onSave], and a text "Discard" ([TAG_JOB_RESET]) calling [onReset].
+ * - [JobUiState.ReadyToSave]: summary ([TAG_JOB_SUMMARY]), then one row with a text "Discard"
+ *   ([TAG_JOB_RESET]) calling [onReset] and the primary "Save as…" ([TAG_JOB_SAVE]) calling [onSave].
  * - [JobUiState.Saving]: summary ([TAG_JOB_SUMMARY]), an indeterminate progress bar and
  *   "Saving…" ([TAG_JOB_SAVING]); no buttons.
  * - [JobUiState.Saved]: a check badge with "Saved", the summary ([TAG_JOB_SUMMARY]) and an
@@ -149,20 +149,22 @@ fun JobPanel(
         }
 
         is JobUiState.ReadyToSave -> PanelCard(modifier) {
-            StatusHeading(icon = AppIcons.check, text = stringResource(R.string.job_ready_title))
             Summary(state.summary)
-            PrimaryActionButton(
-                text = stringResource(R.string.job_save),
-                onClick = onSave,
-                enabled = true,
-                testTag = TAG_JOB_SAVE,
-                icon = AppIcons.save,
-            )
-            TextButton(
-                onClick = onReset,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(TAG_JOB_RESET),
-            ) {
-                Text(stringResource(R.string.job_discard))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(
+                    onClick = onReset,
+                    modifier = Modifier.heightIn(min = 48.dp).testTag(TAG_JOB_RESET),
+                ) {
+                    Text(stringResource(R.string.job_discard))
+                }
+                PrimaryActionButton(
+                    text = stringResource(R.string.job_save),
+                    onClick = onSave,
+                    enabled = true,
+                    testTag = TAG_JOB_SAVE,
+                    modifier = Modifier.weight(1f),
+                    icon = AppIcons.save,
+                )
             }
         }
 
