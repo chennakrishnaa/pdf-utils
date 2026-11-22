@@ -15,6 +15,7 @@ import com.offlinepdf.utils.engine.JobControl
 import com.offlinepdf.utils.engine.PageSize
 import com.offlinepdf.utils.engine.PdfEngine
 import com.offlinepdf.utils.engine.PdfError
+import com.offlinepdf.utils.engine.PdfEstimate
 import com.offlinepdf.utils.engine.PdfResult
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -207,7 +208,80 @@ class EngineOnDeviceTest {
         assertSize(400f, 300f, sizes[3], "appended page 2")
     }
 
+    @Test
+    fun imagesToPdf_highCompressionIsSmallerWithSamePageSizes() {
+        val a = Fixtures.jpeg(dir, "a.jpg", width = 2400, height = 1800, seed = 3L)
+        val b = Fixtures.jpeg(dir, "b.jpg", width = 2400, height = 1800, seed = 4L)
+        val inputs = listOf(image(a), image(b))
+
+        val plain = saveReady(
+            run(inputs) { e, files, o, j -> e.imagesToPdf(files, PageSize.FIT_IMAGE, o, j, compression = null) },
+            expectedPages = 2,
+        )
+        val high = saveReady(
+            run(inputs) { e, files, o, j ->
+                e.imagesToPdf(files, PageSize.FIT_IMAGE, o, j, compression = CompressionLevel.HIGH)
+            },
+            expectedPages = 2,
+        )
+
+        assertTrue("not smaller: ${high.length()} >= ${plain.length()}", high.length() < plain.length())
+        assertEquals(Fixtures.pageSizes(plain), Fixtures.pageSizes(high))
+        val infos = Fixtures.imageInfos(high).filter { !it.isMaskTarget }
+        assertEquals("images: $infos", 2, infos.size)
+        for (info in infos) assertEquals("long edge of $info", 1000, maxOf(info.width, info.height))
+    }
+
+    @Test
+    fun estimateImage_levelsDecreaseAndJobsEmpty() {
+        val jpeg = Fixtures.jpeg(dir, "big.jpg", width = 2400, height = 1800, seed = 5L)
+        val estimate = runBlocking { jobs.estimateImage(uri(jpeg)) }
+        if (estimate !is PdfEstimate.Ok) fail("expected Ok, got $estimate")
+        val ok = estimate as PdfEstimate.Ok
+        val low = ok.byLevel.getValue(CompressionLevel.LOW)
+        val medium = ok.byLevel.getValue(CompressionLevel.MEDIUM)
+        val high = ok.byLevel.getValue(CompressionLevel.HIGH)
+        assertTrue("not decreasing: $ok", low > medium && medium > high)
+        for ((level, bytes) in ok.byLevel) assertTrue("$level $bytes > original ${ok.original}", bytes <= ok.original)
+        assertJobsEmpty()
+    }
+
     // ---------------------------------------------------------------- error paths
+
+    @Test
+    fun ownerPasswordPdfMergeFailsWithEncrypted() {
+        val good = Fixtures.textPdf(dir, "good.pdf", listOf("Good"))
+        val owner = Fixtures.ownerPasswordPdf(dir)
+        assertFailed(run(listOf(pdf(good), pdf(owner))) { e, files, o, j -> e.merge(files, o, j) }, PdfError.Encrypted)
+    }
+
+    @Test
+    fun truncatedJpegFailsWithUnsupportedImage() {
+        val good = Fixtures.jpeg(dir, "a.jpg")
+        val bad = Fixtures.truncated(Fixtures.jpeg(dir, "t.jpg", width = 800, height = 600), 0.5)
+        assertFailed(
+            run(listOf(image(good), image(bad))) { e, files, o, j -> e.imagesToPdf(files, PageSize.A4, o, j) },
+            PdfError.UnsupportedImage,
+        )
+    }
+
+    @Test
+    fun failedSaveRemovesEmptyDestination() {
+        val a = Fixtures.textPdf(dir, "a.pdf", listOf("One"))
+        val outcome = run(listOf(pdf(a))) { e, files, o, j -> e.merge(files, o, j) }
+        if (outcome !is JobOutcome.Ready) fail("expected Ready, got $outcome")
+        val output = (outcome as JobOutcome.Ready).output
+        // Make the save fail: the pending output disappears before it is copied.
+        assertTrue(output.file.delete())
+        val dest = File(dir, "dest.pdf").apply { createNewFile() }
+        val saved = runBlocking { jobs.save(output, uri(dest)) }
+        assertTrue("save should fail", saved.isFailure)
+        assertFalse("empty destination left behind", dest.exists())
+        jobs.discard(output)
+        assertJobsEmpty()
+    }
+
+    // ---------------------------------------------------------------- error paths (existing)
 
     @Test
     fun encryptedPdfFailsWithEncrypted() {
