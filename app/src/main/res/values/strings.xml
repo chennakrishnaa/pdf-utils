@@ -16,7 +16,6 @@
 
     <!-- Shared components -->
     <string name="action_back">Back</string>
-    <string name="coming_soon">Coming soon</string>
     <string name="file_list_move_up">Move up</string>
     <string name="file_list_move_down">Move down</string>
     <string name="file_list_remove">Remove</string>
