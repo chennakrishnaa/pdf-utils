@@ -17,8 +17,34 @@ import java.io.File
  * [JobControl.isCancelled] returns `Err(PdfError.Cancelled)`.
  */
 interface PdfEngine {
-    /** Creates a new PDF at [out] with one page per entry in [images], in order. */
-    fun imagesToPdf(images: List<File>, pageSize: PageSize, out: File, job: JobControl = JobControl.None): PdfResult
+    /**
+     * Creates a new PDF at [out] with one page per entry in [images], in order.
+     *
+     * [compression] null: image data is embedded unchanged (JPEG bytes verbatim). Non-null: each
+     * image is downscaled so its long edge is at most `maxLongEdgePx` (never upscaled) and
+     * re-encoded as JPEG at `jpegQuality`; the re-encoded data is used only when it is smaller than
+     * the unchanged data, so the output is never larger than with null. Gray stays gray,
+     * transparency is flattened onto white, EXIF orientation is honoured, and page sizes are the
+     * same as with null.
+     */
+    fun imagesToPdf(
+        images: List<File>,
+        pageSize: PageSize,
+        out: File,
+        job: JobControl = JobControl.None,
+        compression: CompressionLevel? = null,
+    ): PdfResult
+
+    /**
+     * Size each image would add to the PDF, uncompressed and at each level. Blocking; engine thread.
+     *
+     * A whole document made by [imagesToPdf] is about
+     * `PDF_DOCUMENT_OVERHEAD_BYTES + sum(image bytes + PDF_PAGE_OVERHEAD_BYTES)`, using
+     * [PdfEstimate.Ok.original] for `compression = null` or [PdfEstimate.Ok.byLevel] for a level.
+     * Unreadable, truncated or unsupported image: `Err(UnsupportedImage)`; out of memory:
+     * `Err(OutOfMemory)`; anything else: `Err(Io)`.
+     */
+    fun estimateImage(image: File): PdfEstimate
 
     /** Writes a recompressed copy of [pdf] to [out] according to [level]. */
     fun compress(pdf: File, level: CompressionLevel, out: File, job: JobControl = JobControl.None): PdfResult
@@ -29,6 +55,33 @@ interface PdfEngine {
     /** Writes [pdf] followed by one new page per entry in [images] to [out]. */
     fun appendImages(pdf: File, images: List<File>, out: File, job: JobControl = JobControl.None): PdfResult
 }
+
+/** Outcome of [PdfEngine.estimateImage]. */
+sealed interface PdfEstimate {
+    /**
+     * [original]: bytes of image data embedded with `compression = null`. [byLevel]: bytes of image
+     * data [PdfEngine.imagesToPdf] embeds at each level (never more than [original]).
+     */
+    data class Ok(val original: Long, val byLevel: Map<CompressionLevel, Long>) : PdfEstimate
+
+    /** The image cannot be estimated; [error] is what [PdfEngine.imagesToPdf] would report. */
+    data class Err(val error: PdfError) : PdfEstimate
+}
+
+/**
+ * Bytes one image page adds to a PDF made by [PdfEngine.imagesToPdf] beyond its image stream data
+ * (page object, content stream, image dictionary, xref share). Measured with MuPDF 1.28.5: 297 to
+ * 310 bytes per page for RGB and gray JPEG pages at FIT_IMAGE and A4.
+ */
+const val PDF_PAGE_OVERHEAD_BYTES: Long = 300L
+
+/**
+ * Bytes a PDF made by [PdfEngine.imagesToPdf] has beyond its pages: header, catalog, page tree,
+ * object stream, trailer and the shared sRGB ICC profile (measured about 2950 bytes). A document
+ * that also contains gray images carries a second (gray) profile of about 2.4 KB that this
+ * constant does not include.
+ */
+const val PDF_DOCUMENT_OVERHEAD_BYTES: Long = 3000L
 
 /** Progress reporting and cooperative cancellation for one engine call. */
 interface JobControl {

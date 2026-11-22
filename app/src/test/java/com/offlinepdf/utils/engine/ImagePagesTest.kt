@@ -171,6 +171,73 @@ class ImagePagesTest {
         }
     }
 
+    private fun assertRejected(f: File) {
+        val doc = PDFDocument()
+        try {
+            ImagePages.appendImagePage(doc, f, PageSize.FIT_IMAGE)
+            fail("expected UnsupportedImageFileException for ${f.name}")
+        } catch (e: UnsupportedImageFileException) {
+            assertEquals(f, e.file)
+            assertEquals(0, doc.countPages())
+        } finally {
+            doc.destroy()
+        }
+        try {
+            ImagePages.loadImage(f).destroy()
+            fail("loadImage accepted ${f.name}")
+        } catch (e: UnsupportedImageFileException) {
+            // expected
+        }
+    }
+
+    private fun assertAccepted(f: File) {
+        ImagePages.loadImage(f).destroy()
+        val doc = PDFDocument()
+        try {
+            ImagePages.appendImagePage(doc, f, PageSize.FIT_IMAGE)
+            assertEquals(1, doc.countPages())
+        } finally {
+            doc.destroy()
+        }
+    }
+
+    @Test
+    fun truncatedJpegIsRejected() {
+        val jpeg = Fixtures.jpeg(tmp.root, "big.jpg", width = 1600, height = 1200)
+        assertTrue("fixture should exceed the tail window", jpeg.length() > 3 * ImagePages.END_MARKER_WINDOW)
+        assertRejected(Fixtures.truncated(jpeg, 1.0 / 3))
+        val cut2 = File(tmp.root, "cut2.jpg").also { it.writeBytes(jpeg.readBytes().let { b -> b.copyOf(b.size - 2) }) }
+        assertRejected(cut2)
+        // A small JPEG (whole file inside the window) cut just before its EOI is rejected too.
+        val small = Fixtures.jpeg(tmp.root, "small.jpg", width = 64, height = 48)
+        assertRejected(File(tmp.root, "small-cut.jpg").also { it.writeBytes(small.readBytes().let { b -> b.copyOf(b.size - 2) }) })
+    }
+
+    @Test
+    fun truncatedPngIsRejected() {
+        assertRejected(Fixtures.truncated(Fixtures.png(tmp.root, "p.png", width = 800, height = 600), 0.5))
+        val alpha = Fixtures.pngWithAlpha(tmp.root, "a.png", width = 200, height = 100)
+        assertRejected(File(tmp.root, "a-cut.png").also { it.writeBytes(alpha.readBytes().let { b -> b.copyOf(b.size - 12) }) })
+    }
+
+    @Test
+    fun jpegWithTrailingGarbageAfterEoiIsAccepted() {
+        val jpeg = Fixtures.jpeg(tmp.root, "j.jpg", width = 640, height = 480)
+        val padded = File(tmp.root, "padded.jpg").also { it.writeBytes(jpeg.readBytes() + ByteArray(100) { i -> (i * 7 + 1).toByte() }) }
+        assertAccepted(padded)
+    }
+
+    @Test
+    fun allImageFixturesStillLoad() {
+        val files = listOf(
+            Fixtures.jpeg(tmp.root),
+            Fixtures.png(tmp.root),
+            Fixtures.pngWithAlpha(tmp.root),
+            Fixtures.grayJpeg(tmp.root),
+        ) + (1..8).map { Fixtures.jpegWithExifOrientation(tmp.root, "exif$it.jpg", 120, 80, it) }
+        for (f in files) assertAccepted(f)
+    }
+
     @Test
     fun pageSizeOfHonoursRotate() {
         val src = Fixtures.textPdf(tmp.root, "t.pdf", listOf("a", "b"))

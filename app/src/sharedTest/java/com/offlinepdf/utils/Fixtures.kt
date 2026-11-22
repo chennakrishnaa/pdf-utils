@@ -95,6 +95,21 @@ object Fixtures {
         return File(dir, name).also { it.writeBytes(jpeg) }
     }
 
+    /** Noisy 8-bit gray JPEG (quality 90, one component), [width]x[height] px. */
+    fun grayJpeg(dir: File, name: String = "gray.jpg", width: Int = 400, height: Int = 300, seed: Long = 1L): File {
+        val px = photoPixels(width, height, seed)
+        return File(dir, name).also { it.writeBytes(encodeJpeg(pgm(width, height) { x, y -> px(x, y) shr 8 and 0xff }, 90)) }
+    }
+
+    /** Copy of [file] next to it (name prefixed "truncated-") keeping the first [keepFraction] of its bytes. */
+    fun truncated(file: File, keepFraction: Double): File {
+        require(keepFraction in 0.0..1.0)
+        val bytes = file.readBytes()
+        return File(file.parentFile, "truncated-" + file.name).also {
+            it.writeBytes(bytes.copyOf((bytes.size * keepFraction).toInt()))
+        }
+    }
+
     /** 4 KiB of random bytes named like a JPEG. */
     fun notAnImage(dir: File, name: String = "not-an-image.jpg"): File =
         File(dir, name).also { it.writeBytes(randomBytes(4096, 11L)) }
@@ -248,6 +263,8 @@ object Fixtures {
         val isMaskTarget: Boolean,
         /** Length of the encoded (raw) stream data. */
         val rawLength: Int,
+        /** Colour components of the decoded image as MuPDF loads it (1 = gray, 3 = RGB, 4 = CMYK). */
+        val components: Int = 0,
     )
 
     /** RGB of a rendered page, row-major, 0xRRGGBB per pixel. */
@@ -346,6 +363,7 @@ object Fixtures {
                     isImageMask = obj.get("ImageMask").use { it.isBoolean && it.asBoolean() },
                     isMaskTarget = num in maskTargets,
                     rawLength = obj.readRawStream().size,
+                    components = doc.loadImage(obj).let { img -> try { img.numberOfComponents } finally { img.destroy() } },
                 )
             } finally {
                 obj.destroy()

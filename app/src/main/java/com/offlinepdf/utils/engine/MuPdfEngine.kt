@@ -17,8 +17,23 @@ class MuPdfEngine : PdfEngine {
     private val mergeOp = MergeOp()
     private val appendImagesOp = AppendImagesOp()
 
-    override fun imagesToPdf(images: List<File>, pageSize: PageSize, out: File, job: JobControl): PdfResult =
-        guardedRun(out) { imagesToPdfOp.run(images, pageSize, out, job) }
+    override fun imagesToPdf(
+        images: List<File>,
+        pageSize: PageSize,
+        out: File,
+        job: JobControl,
+        compression: CompressionLevel?,
+    ): PdfResult = guardedRun(out) { imagesToPdfOp.run(images, pageSize, out, job, compression) }
+
+    override fun estimateImage(image: File): PdfEstimate = try {
+        ImagePages.estimate(image)
+    } catch (e: UnsupportedImageFileException) {
+        PdfEstimate.Err(PdfError.UnsupportedImage)
+    } catch (oom: OutOfMemoryError) {
+        PdfEstimate.Err(PdfError.OutOfMemory)
+    } catch (t: Throwable) {
+        PdfEstimate.Err(PdfError.Io(t))
+    }
 
     override fun compress(pdf: File, level: CompressionLevel, out: File, job: JobControl): PdfResult =
         guardedRun(out) { compressOp.run(pdf, level, out, job) }
