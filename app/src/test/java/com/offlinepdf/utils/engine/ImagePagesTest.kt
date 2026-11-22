@@ -204,8 +204,9 @@ class ImagePagesTest {
     @Test
     fun truncatedJpegIsRejected() {
         val jpeg = Fixtures.jpeg(tmp.root, "big.jpg", width = 1600, height = 1200)
-        assertTrue("fixture should exceed the tail window", jpeg.length() > 3 * ImagePages.END_MARKER_WINDOW)
+        assertTrue("fixture should be large", jpeg.length() > 3 * 64 * 1024)
         assertRejected(Fixtures.truncated(jpeg, 1.0 / 3))
+        assertRejected(File(tmp.root, "cut90.jpg").also { it.writeBytes(jpeg.readBytes().let { b -> b.copyOf(b.size * 9 / 10) }) })
         val cut2 = File(tmp.root, "cut2.jpg").also { it.writeBytes(jpeg.readBytes().let { b -> b.copyOf(b.size - 2) }) }
         assertRejected(cut2)
         // A small JPEG (whole file inside the window) cut just before its EOI is rejected too.
@@ -225,6 +226,138 @@ class ImagePagesTest {
         val jpeg = Fixtures.jpeg(tmp.root, "j.jpg", width = 640, height = 480)
         val padded = File(tmp.root, "padded.jpg").also { it.writeBytes(jpeg.readBytes() + ByteArray(100) { i -> (i * 7 + 1).toByte() }) }
         assertAccepted(padded)
+        val pdf = single("padded.pdf", padded, PageSize.FIT_IMAGE)
+        assertEquals(jpeg.length().toInt(), Fixtures.imageInfos(pdf).single().rawLength)
+    }
+
+    private fun assertSameRender(expected: File, actual: File) {
+        val a = Fixtures.render(expected, 0)
+        val b = Fixtures.render(actual, 0)
+        assertEquals(a.width, b.width)
+        assertEquals(a.height, b.height)
+        assertArrayEquals(a.rgb, b.rgb)
+    }
+
+    @Test
+    fun jpegWithLongTrailerIsAcceptedAndTrailerNotEmbedded() {
+        val jpeg = Fixtures.jpeg(tmp.root, "m.jpg", width = 640, height = 480)
+        val plainPdf = single("m.pdf", jpeg, PageSize.FIT_IMAGE)
+        for (n in listOf(1024, 70 * 1024, 3 * 1024 * 1024)) {
+            val trailed = Fixtures.withTrailer(jpeg, n, seed = n.toLong())
+            assertEquals(jpeg.length() + n, trailed.length())
+            assertEquals(jpeg.length(), ImagePages.jpegEnd(trailed))
+            assertAccepted(trailed)
+            val pdf = single("m$n.pdf", trailed, PageSize.FIT_IMAGE)
+            assertEquals(1, Fixtures.pageCount(pdf))
+            val info = Fixtures.imageInfos(pdf).single()
+            assertEquals("DCTDecode", info.filter)
+            assertEquals("trailer $n embedded", jpeg.length().toInt(), info.rawLength)
+            assertSameRender(plainPdf, pdf)
+        }
+    }
+
+    @Test
+    fun pngWithLongTrailerIsAcceptedAndTrailerNotEmbedded() {
+        val png = Fixtures.png(tmp.root, "p.png", width = 300, height = 200)
+        val trailed = Fixtures.withTrailer(png, 70 * 1024)
+        assertEquals(png.length(), ImagePages.pngEnd(trailed))
+        assertAccepted(trailed)
+        val plainPdf = single("p.pdf", png, PageSize.FIT_IMAGE)
+        val pdf = single("pt.pdf", trailed, PageSize.FIT_IMAGE)
+        assertEquals(Fixtures.imageInfos(plainPdf).single().rawLength, Fixtures.imageInfos(pdf).single().rawLength)
+        assertEquals(plainPdf.length(), pdf.length())
+        assertSameRender(plainPdf, pdf)
+    }
+
+    @Test
+    fun trailerWithoutAnyEndMarkerIsAccepted() {
+        // 70 KiB with no FF D9 / IEND at all: the old 64 KiB tail-window check rejected these
+        val trailer = ByteArray(70 * 1024) { 0x55 }
+        val jpeg = Fixtures.jpeg(tmp.root, "n.jpg", width = 320, height = 240)
+        val png = Fixtures.png(tmp.root, "n.png", width = 120, height = 90)
+        for (src in listOf(jpeg, png)) {
+            val trailed = File(tmp.root, "plain-trailer-" + src.name).also { it.writeBytes(src.readBytes() + trailer) }
+            assertAccepted(trailed)
+            val plainPdf = single("np-${src.name}.pdf", src, PageSize.FIT_IMAGE)
+            val pdf = single("nt-${src.name}.pdf", trailed, PageSize.FIT_IMAGE)
+            assertEquals(Fixtures.imageInfos(plainPdf).single().rawLength, Fixtures.imageInfos(pdf).single().rawLength)
+            assertSameRender(plainPdf, pdf)
+        }
+        assertEquals(jpeg.length().toInt(), Fixtures.imageInfos(File(tmp.root, "nt-n.jpg.pdf")).single().rawLength)
+    }
+
+    @Test
+    fun exifOrientation6WithTrailerIsUpright() {
+        val img = Fixtures.withTrailer(Fixtures.jpegWithExifOrientation(tmp.root, "o6.jpg", 300, 200, 6), 70 * 1024)
+        val pdf = single("o6t.pdf", img, PageSize.FIT_IMAGE)
+        assertSize(200f, 300f, Fixtures.pageSizes(pdf).single())
+        val c = Fixtures.renderCornerColors(pdf, 0)
+        assertTrue(Fixtures.colorNear(c.topLeft, Fixtures.RED))
+        assertTrue(Fixtures.colorNear(c.topRight, Fixtures.GREEN))
+        assertTrue(Fixtures.colorNear(c.bottomLeft, Fixtures.BLUE))
+        assertTrue(Fixtures.colorNear(c.bottomRight, Fixtures.YELLOW))
+    }
+
+    @Test
+    fun truncatedJpegWithExifThumbnailIsRejected() {
+        val jpeg = Fixtures.jpegWithExifThumbnail(tmp.root)
+        assertAccepted(jpeg)
+        val bytes = jpeg.readBytes()
+        val app1End = 4 + ((bytes[4].toInt() and 0xFF) shl 8 or (bytes[5].toInt() and 0xFF))
+        // the APP1 really contains a thumbnail EOI (what fooled the old tail-window check)
+        assertTrue((4 until app1End - 1).any { bytes[it] == 0xFF.toByte() && bytes[it + 1] == 0xD9.toByte() })
+        for (keep in listOf(app1End + 500, bytes.size / 2, bytes.size - 2)) {
+            assertTrue(keep in (app1End + 1) until bytes.size)
+            assertRejected(File(tmp.root, "thumb-cut$keep.jpg").also { it.writeBytes(bytes.copyOf(keep)) })
+        }
+    }
+
+    /* ------------------------------------------------------- JPEG walker on hand-built streams */
+
+    private fun ff(vararg b: Int) = ByteArray(b.size) { b[it].toByte() }
+
+    private fun seg(marker: Int, payload: ByteArray) =
+        ff(0xFF, marker, (payload.size + 2) shr 8, (payload.size + 2) and 0xFF) + payload
+
+    private fun end(bytes: ByteArray) = ImagePages.jpegEnd(bytes.inputStream())
+
+    @Test
+    fun walkerHandlesRestartsFillStuffingAndMultipleScans() {
+        val soi = ff(0xFF, 0xD8)
+        val app1 = seg(0xE1, ff(0x45, 0x78, 0xFF, 0xD8, 0xFF, 0xD9, 0x00)) // thumbnail-like EOI inside APP1
+        val dht = seg(0xC4, ff(0x00, 0xFF, 0xD9, 0x12)) // EOI-like bytes inside a table payload
+        val sos = seg(0xDA, ff(1, 1, 0, 0, 63, 0))
+        val scan1 = ff(0x12, 0xFF, 0x00, 0x34, 0xFF, 0xD0, 0x56, 0xFF, 0xFF, 0xD1, 0x78, 0xFF, 0x00)
+        val dnl = seg(0xDC, ff(0x01, 0x00))
+        val scan2 = ff(0x9A, 0xFF, 0xD7, 0xBC, 0xFF, 0x00)
+        val fillThenEoi = ff(0xFF, 0xFF, 0xFF, 0xD9)
+        val image = soi + ff(0xFF, 0xFF) + app1 + dht + sos + scan1 + dnl + dht + sos + scan2 + fillThenEoi
+        assertEquals(image.size.toLong(), end(image))
+        assertEquals(image.size.toLong(), end(image + ff(0xFF, 0xD9, 0x00, 0xFF, 0xD9)))
+        // every strict prefix is truncated
+        for (k in 2 until image.size) assertEquals("prefix $k", null, end(image.copyOf(k)))
+        // invalid segment length; missing SOI
+        assertEquals(null, end(soi + ff(0xFF, 0xE0, 0x00, 0x01) + ff(0xFF, 0xD9)))
+        assertEquals(null, end(ff(0xFF, 0xD9)))
+    }
+
+    @Test
+    fun walkerIsFastOnLargeFiles() {
+        // 20 MB of entropy data with every FF stuffed (worst realistic case for the byte scan)
+        val size = 20 * 1024 * 1024
+        val data = ByteArray(size)
+        java.util.Random(3).nextBytes(data)
+        for (i in 0 until size - 1) if (data[i] == 0xFF.toByte()) data[i + 1] = 0
+        data[size - 1] = 0x11
+        val head = ff(0xFF, 0xD8) + seg(0xDA, ff(1, 1, 0, 0, 63, 0))
+        val f = File(tmp.root, "big-synthetic.jpg").also { it.writeBytes(head + data + ff(0xFF, 0xD9)) }
+        val trailed = Fixtures.withTrailer(f, 1024)
+        val t0 = System.nanoTime()
+        val e = ImagePages.jpegEnd(trailed)
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        println("jpegEnd on ${trailed.length()} bytes: $ms ms")
+        assertEquals(f.length(), e)
+        assertTrue("took $ms ms", ms < 5000) // typically ~60 ms; loose bound for a shared build machine
     }
 
     @Test

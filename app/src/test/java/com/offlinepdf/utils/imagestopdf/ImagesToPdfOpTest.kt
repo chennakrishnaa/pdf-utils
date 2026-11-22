@@ -319,6 +319,20 @@ class ImagesToPdfOpTest {
     }
 
     @Test
+    fun motionPhotoTrailerIsAcceptedNotEmbeddedAndNotEstimated() {
+        val jpeg = Fixtures.jpeg(tmp.root, "mp.jpg", width = 800, height = 600)
+        val trailed = Fixtures.withTrailer(jpeg, 3 * 1024 * 1024)
+        val out = out("mp.pdf")
+        ok(ImagesToPdfOp().run(listOf(trailed), PageSize.FIT_IMAGE, out, JobControl.None))
+        assertEquals(1, Fixtures.pageCount(out))
+        assertEquals(jpeg.length().toInt(), Fixtures.imageInfos(out).single().rawLength)
+        assertTrue("PDF ${out.length()} must not carry the 3 MB trailer", out.length() < jpeg.length() + 64 * 1024)
+        val e = estimate(trailed)
+        assertEquals(jpeg.length(), e.original)
+        assertEquals(estimate(jpeg), e)
+    }
+
+    @Test
     fun progressAndCancellationUnchangedWithCompression() {
         val images = (1..3).map { Fixtures.jpeg(tmp.root, "c$it.jpg", width = 800, height = 600, seed = it.toLong()) }
         val job = RecordingJob()
