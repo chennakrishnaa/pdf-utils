@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Merge PDFs screen -->
+    <string name="merge_add">Add PDFs</string>
+    <string name="merge_files_header">PDFs to merge</string>
+    <string name="merge_empty">No PDFs added yet. Add at least two to merge them, in the order shown.</string>
+    <string name="merge_note">Page content and web links are kept. Form fields, comments and bookmarks are not carried over.</string>
+    <string name="merge_run">Merge</string>
+    <!-- Result summary: page count and output size, e.g. "5 pages · 340.0 KB". -->
+    <plurals name="merge_summary">
+        <item quantity="one">%1$d page · %2$s</item>
+        <item quantity="other">%1$d pages · %2$s</item>
+    </plurals>
+    <!-- Default name suggested in the save dialog. -->
+    <string name="merge_file_name" translatable="false">merged.pdf</string>
+</resources>
