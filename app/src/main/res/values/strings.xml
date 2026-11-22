@@ -28,6 +28,8 @@
     <string name="job_start_over">Start over</string>
     <string name="job_try_again">Try again</string>
     <string name="job_saved_title">Saved</string>
+    <string name="job_ready_title">Ready to save</string>
+    <string name="job_percent">%1$d%%</string>
     <string name="job_failed_title">Something went wrong</string>
 
     <!-- Errors -->
