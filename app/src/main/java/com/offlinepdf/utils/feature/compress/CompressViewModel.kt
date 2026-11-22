@@ -8,6 +8,7 @@ import com.offlinepdf.utils.core.JobInput
 import com.offlinepdf.utils.core.JobViewModel
 import com.offlinepdf.utils.core.PickedFile
 import com.offlinepdf.utils.engine.CompressionLevel
+import com.offlinepdf.utils.ui.components.JobUiState
 import com.offlinepdf.utils.ui.components.formatBytes
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,31 +31,36 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
     @Volatile
     private var copiedInputBytes: Long? = null
 
+    override val toolId: String = TOOL_ID
+
+    /** True while inputs and options must not change: a job is running or its result is being saved. */
+    private val locked: Boolean get() = isRunning || jobState.value is JobUiState.Saving
+
     /**
-     * Chooses [uri] as the PDF to compress, replacing any previous choice. A finished but unsaved
-     * result of the previous file is discarded so it cannot be saved under the new file's name.
-     * Ignored while a job runs.
+     * Chooses [uri] as the PDF to compress, replacing any previous choice. Any result of the
+     * previous choice is discarded (see [inputsChanged]). Ignored while running or saving.
      */
     fun choose(uri: Uri) {
-        if (isRunning) return
+        if (locked) return
         viewModelScope.launch {
             val picked = describe(listOf(uri)).first()
-            if (isRunning) return@launch
-            reset()
+            if (locked) return@launch
+            inputsChanged()
             _file.value = picked
         }
     }
 
-    /** Selects the compression level. Ignored while a job runs. */
+    /** Selects the compression level; a different level discards any result. Ignored while running or saving. */
     fun setLevel(level: CompressionLevel) {
-        if (isRunning) return
+        if (locked || level == _level.value) return
+        inputsChanged()
         _level.value = level
     }
 
     /** Starts compressing the chosen PDF at the selected level. No-op without a PDF or while running. */
     fun run() {
         val picked = _file.value ?: return
-        if (isRunning) return
+        if (locked) return
         val level = _level.value
         copiedInputBytes = null
         startJob(
@@ -69,6 +75,12 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
 
     override fun suggestedFileName(): String =
         compressedFileName(_file.value?.name, getApplication<Application>().getString(R.string.compress_file_name))
+
+    /** The result no longer matches the inputs: drop it (and any save error) so it cannot be saved. */
+    private fun inputsChanged() {
+        invalidateResult()
+        clearSaveError()
+    }
 
     private fun summarize(originalBytes: Long?, newBytes: Long): String {
         val app = getApplication<Application>()
@@ -85,6 +97,8 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
     }
 
     companion object {
+        /** Id recorded with files saved from this screen in the recent-files list. */
+        const val TOOL_ID = "compress"
         private const val SUFFIX = "-compressed"
         private const val EXTENSION = ".pdf"
         private const val MAX_BASE_LENGTH = 100
