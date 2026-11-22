@@ -9,33 +9,46 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.IOException
 
-/** Plain JUnit: stubbed MuPdfEngine and its common error wrapper. */
+/** Plain JUnit: MuPdfEngine error handling and its common error wrapper. */
 class MuPdfEngineStubTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private val notImplemented = PdfResult.Err(PdfError.NotImplemented)
+    // Every engine method must go through guardedRun: given inputs that any correct
+    // implementation has to reject (files that do not exist), the result is an Err of
+    // some kind and a stale `out` is deleted. No specific error type is asserted.
+    private val missingPdf get() = tmp.root.resolve("missing.pdf")
+    private val missingImg get() = tmp.root.resolve("missing.jpg")
+
+    private fun staleOut() = tmp.root.resolve("out.pdf").apply { writeText("stale") }
+
+    private fun assertErrAndOutDeleted(result: PdfResult, out: java.io.File) {
+        assertTrue("expected Err, got $result", result is PdfResult.Err)
+        assertFalse(out.exists())
+    }
 
     @Test
-    fun allOperationsReturnNotImplemented() {
-        val engine = MuPdfEngine()
-        val img = tmp.newFile("a.jpg")
-        val pdf = tmp.newFile("a.pdf")
-        val out = tmp.root.resolve("out.pdf")
+    fun imagesToPdfErrDeletesStaleOutput() {
+        val out = staleOut()
+        assertErrAndOutDeleted(MuPdfEngine().imagesToPdf(listOf(missingImg), PageSize.A4, out), out)
+    }
 
-        // A stale `out` must be removed on Err, proving every method goes through the wrapper.
-        out.writeText("stale")
-        assertEquals(notImplemented, engine.imagesToPdf(listOf(img), PageSize.A4, out))
-        assertFalse(out.exists())
-        out.writeText("stale")
-        assertEquals(notImplemented, engine.compress(pdf, CompressionLevel.MEDIUM, out))
-        assertFalse(out.exists())
-        out.writeText("stale")
-        assertEquals(notImplemented, engine.merge(listOf(pdf, pdf), out))
-        assertFalse(out.exists())
-        out.writeText("stale")
-        assertEquals(notImplemented, engine.appendImages(pdf, listOf(img), out))
-        assertFalse(out.exists())
+    @Test
+    fun compressErrDeletesStaleOutput() {
+        val out = staleOut()
+        assertErrAndOutDeleted(MuPdfEngine().compress(missingPdf, CompressionLevel.MEDIUM, out), out)
+    }
+
+    @Test
+    fun mergeErrDeletesStaleOutput() {
+        val out = staleOut()
+        assertErrAndOutDeleted(MuPdfEngine().merge(listOf(missingPdf, missingPdf), out), out)
+    }
+
+    @Test
+    fun appendImagesErrDeletesStaleOutput() {
+        val out = staleOut()
+        assertErrAndOutDeleted(MuPdfEngine().appendImages(missingPdf, listOf(missingImg), out), out)
     }
 
     @Test
