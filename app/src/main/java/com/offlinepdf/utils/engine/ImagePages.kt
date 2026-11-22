@@ -10,6 +10,9 @@ import com.artifex.mupdf.fitz.PDFObject
 import com.artifex.mupdf.fitz.Pixmap
 import com.artifex.mupdf.fitz.Rect
 import java.io.File
+import java.io.FileInputStream
+import java.io.IOException
+import java.io.InputStream
 import java.io.RandomAccessFile
 import java.util.zip.Deflater
 import kotlin.math.max
@@ -28,42 +31,70 @@ internal object ImagePages {
     /** Margin around the image on fixed paper sizes (A4, Letter). */
     private const val PAPER_MARGIN = 24f
 
-    /** How far from the end of a JPEG / PNG file its end marker may be (camera padding, appended data). */
-    const val END_MARKER_WINDOW = 64 * 1024
-
-    private val PNG_IEND = byteArrayOf(0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44) // zero length + "IEND"
-
     private enum class Format { JPEG, PNG, OTHER }
+
+    /** An opened image plus the length of its real image data ([imageEnd] bytes from the file start). */
+    private class Opened(val img: Image, val format: Format, val imageEnd: Long)
 
     /**
      * Opens [file] as a MuPDF [Image] (caller must `destroy()` it) after checking that it is complete.
-     *
-     * Truncation rule (MuPDF decodes lazily and silently accepts a cut-off file): the format is
-     * sniffed from the magic bytes, then only the last [END_MARKER_WINDOW] bytes are read.
-     * - JPEG (`FF D8 FF`): the window must contain the end-of-image marker `FF D9`. Data after the
-     *   EOI (padding, camera trailers) is accepted as long as the EOI is within the last 64 KiB.
-     *   Known limit: a file truncated to under ~64 KiB whose EXIF thumbnail (with its own EOI) lies in
-     *   the window is not detected.
-     * - PNG: the window must contain an `IEND` chunk header (`00 00 00 00 "IEND"`).
-     * - Other formats are not checked here.
+     * See [open] for the rules.
      *
      * @throws UnsupportedImageFileException if the file is missing, unreadable, not an image MuPDF
      *   can decode, truncated, or has no pixels.
      */
-    fun loadImage(file: File): Image {
+    fun loadImage(file: File): Image = open(file).img
+
+    /**
+     * Checks [file] structurally, then opens it. MuPDF decodes lazily and silently accepts a cut-off
+     * file, so completeness is checked here, in one streaming pass ([imageEnd]):
+     * - JPEG (`FF D8 FF`): marker segments are walked from the start up to the end-of-image marker.
+     * - PNG: chunks are walked from the signature up to `IEND`.
+     * - Other formats are not checked; [Opened.imageEnd] is the file length.
+     *
+     * Data after the end of the image (motion-photo videos, camera trailers, padding) is accepted
+     * but never handed to MuPDF: when present, only the bytes `[0, imageEnd)` are read into memory
+     * once and the image is created from them, so nothing after the image can reach the PDF. With
+     * no trailer the file is opened by path, exactly as before.
+     */
+    private fun open(file: File): Opened {
+        val format: Format
+        val length: Long
+        val end: Long
+        try {
+            format = formatOf(file)
+            length = file.length()
+            end = when (format) {
+                Format.JPEG -> jpegEnd(file)
+                Format.PNG -> pngEnd(file)
+                Format.OTHER -> length
+            } ?: throw UnsupportedImageFileException(file, null)
+        } catch (e: IOException) {
+            throw UnsupportedImageFileException(file, e)
+        }
         val img = try {
-            Image(file.absolutePath)
+            if (end >= length) {
+                Image(file.absolutePath)
+            } else {
+                Image(readPrefix(file, end))
+            }
+        } catch (e: IOException) {
+            throw UnsupportedImageFileException(file, e)
         } catch (e: RuntimeException) {
             throw UnsupportedImageFileException(file, e)
         }
         try {
             if (img.width <= 0 || img.height <= 0) throw UnsupportedImageFileException(file, null)
-            if (!isComplete(file)) throw UnsupportedImageFileException(file, null)
-            return img
+            return Opened(img, format, end)
         } catch (t: Throwable) {
             img.destroy()
             throw t
         }
+    }
+
+    private fun readPrefix(file: File, n: Long): ByteArray {
+        if (n > Int.MAX_VALUE - 16) throw IOException("image too large")
+        return ByteArray(n.toInt()).also { b -> RandomAccessFile(file, "r").use { it.readFully(b) } }
     }
 
     private fun formatOf(file: File): Format {
@@ -75,19 +106,106 @@ internal object ImagePages {
         return if (png) Format.PNG else Format.OTHER
     }
 
-    private fun isComplete(file: File): Boolean {
-        val format = formatOf(file)
-        if (format == Format.OTHER) return true
-        val tail = RandomAccessFile(file, "r").use { raf ->
-            val len = raf.length()
-            val n = minOf(len, END_MARKER_WINDOW.toLong()).toInt()
-            ByteArray(n).also { raf.seek(len - n); raf.readFully(it) }
+    /** Sequential reader with its own buffer and position; [read] returns -1 at end of file. */
+    private class ByteReader(private val input: InputStream) {
+        private val buf = ByteArray(64 * 1024)
+        private var n = 0
+        private var i = 0
+        var pos = 0L
+            private set
+
+        fun read(): Int {
+            if (i == n) {
+                n = input.read(buf, 0, buf.size)
+                i = 0
+                if (n <= 0) { n = 0; return -1 }
+            }
+            pos++
+            return buf[i++].toInt() and 0xFF
         }
-        return when (format) {
-            Format.JPEG -> (tail.size - 2 downTo 0).any { tail[it] == 0xFF.toByte() && tail[it + 1] == 0xD9.toByte() }
-            else -> (tail.size - PNG_IEND.size downTo 0).any { i -> PNG_IEND.indices.all { tail[i + it] == PNG_IEND[it] } }
+
+        /** Skips exactly [count] bytes; false if the file ends first. */
+        fun skip(count: Long): Boolean {
+            var left = count
+            while (left > 0) {
+                if (i == n) {
+                    if (read() < 0) return false
+                    left--
+                    continue
+                }
+                val k = minOf(left, (n - i).toLong()).toInt()
+                i += k
+                pos += k
+                left -= k
+            }
+            return true
         }
     }
+
+    /**
+     * Offset just past the JPEG end-of-image marker `FF D9` of [file], or null if the file ends
+     * first (truncated) or a segment length is invalid. Single streaming pass:
+     * - after SOI `FF D8`, each marker is `FF` (any number of `FF` fill bytes) + code; outside
+     *   entropy data a non-`FF` byte where a marker is expected is skipped (resync to the next `FF`,
+     *   as libjpeg does);
+     * - standalone markers (`01`, `D0`-`D8`) have no length; every other marker except EOI is
+     *   followed by a 2-byte big-endian length (>= 2, includes itself) and skipped by it, so APPn
+     *   payloads (EXIF thumbnails with their own `FF D9`, MPF data) are never scanned;
+     * - after a start-of-scan `FF DA` header, entropy-coded data is scanned: `FF 00` (stuffing),
+     *   `FF D0`-`FF D7` (restart) and `FF FF` (fill) are data; any other `FF xx` is a marker and
+     *   continues the walk (DHT, DNL, further SOS for progressive files, ...);
+     * - `FF D9` ends the image.
+     */
+    internal fun jpegEnd(file: File): Long? = FileInputStream(file).use { jpegEnd(it) }
+
+    internal fun jpegEnd(input: InputStream): Long? {
+        val r = ByteReader(input)
+        if (r.read() != 0xFF || r.read() != 0xD8) return null
+        while (true) {
+            var b = r.read()
+            if (b < 0) return null
+            if (b != 0xFF) continue // entropy data, or garbage between segments
+            do b = r.read() while (b == 0xFF)
+            when {
+                b < 0 -> return null
+                b == 0xD9 -> return r.pos
+                b == 0x00 -> continue // stuffed byte (or stray FF 00 outside a scan)
+                b in 0xD0..0xD7 -> continue // restart marker
+                b == 0x01 || b == 0xD8 -> continue // standalone markers
+                else -> { // segment with a length; after an SOS header the loop scans entropy data
+                    val hi = r.read()
+                    val lo = r.read()
+                    if (lo < 0) return null
+                    val len = (hi shl 8) or lo
+                    if (len < 2) return null
+                    if (!r.skip(len - 2L)) return null
+                }
+            }
+        }
+    }
+
+    /**
+     * Offset just past the CRC of the PNG `IEND` chunk of [file], or null if the file ends before
+     * it or a chunk runs past the end of the file. Chunks are skipped by seeking; CRCs are not checked.
+     */
+    internal fun pngEnd(file: File): Long? {
+        RandomAccessFile(file, "r").use { raf ->
+            val fileLen = raf.length()
+            var pos = 8L
+            while (pos + 12 <= fileLen) {
+                raf.seek(pos)
+                val len = raf.readInt().toLong() and 0xFFFFFFFFL
+                val type = raf.readInt()
+                val next = pos + 12 + len
+                if (next > fileLen) return null
+                if (type == IEND) return next
+                pos = next
+            }
+            return null
+        }
+    }
+
+    private const val IEND = 0x49454E44 // "IEND"
 
     /**
      * Downscales [img] so that its long edge is at most [level]'s `maxLongEdgePx` (never upscales)
@@ -120,17 +238,17 @@ internal object ImagePages {
     }
 
     /**
-     * Bytes of image stream data that `addImage` embeds for [img] loaded from [file], unchanged:
-     * the file length for a JPEG (embedded verbatim as DCTDecode). Anything else (PNG) is added to
+     * Bytes of image stream data that `addImage` embeds for [opened], unchanged: the image length
+     * `imageEnd` for a JPEG (embedded verbatim as DCTDecode, without any trailer). Anything else (PNG) is added to
      * a scratch document, where MuPDF stores raw pixels that the final save (`compress` option)
      * deflates with zlib at the default level; that deflate is reproduced here with
      * [java.util.zip.Deflater] at the same level, for the image stream plus its /SMask stream.
      */
-    fun originalEmbeddedSize(img: Image, file: File): Long {
-        if (formatOf(file) == Format.JPEG) return file.length()
+    private fun originalEmbeddedSize(opened: Opened): Long {
+        if (opened.format == Format.JPEG) return opened.imageEnd
         val scratch = PDFDocument()
         try {
-            val ref = scratch.addImage(img)
+            val ref = scratch.addImage(opened.img)
             try {
                 var total = savedStreamSize(ref)
                 val smask = ref.get("SMask")
@@ -177,9 +295,10 @@ internal object ImagePages {
      * @throws UnsupportedImageFileException if the image cannot be used.
      */
     fun estimate(file: File): PdfEstimate.Ok {
-        val img = loadImage(file)
+        val opened = open(file)
+        val img = opened.img
         try {
-            val original = originalEmbeddedSize(img, file)
+            val original = originalEmbeddedSize(opened)
             val byLevel = CompressionLevel.entries.associateWith { level ->
                 val jpeg = encodeJpeg(img, level)
                 try {
@@ -198,11 +317,12 @@ internal object ImagePages {
      * Adds the image XObject for [img] to [doc]: unchanged when [compression] is null, otherwise the
      * [encodeJpeg] version if it is strictly smaller than [originalEmbeddedSize], else unchanged.
      */
-    private fun addImageObject(doc: PDFDocument, img: Image, file: File, compression: CompressionLevel?): PDFObject {
+    private fun addImageObject(doc: PDFDocument, opened: Opened, compression: CompressionLevel?): PDFObject {
+        val img = opened.img
         if (compression == null) return doc.addImage(img)
         val jpeg = encodeJpeg(img, compression)
         try {
-            if (jpeg.length.toLong() >= originalEmbeddedSize(img, file)) return doc.addImage(img)
+            if (jpeg.length.toLong() >= originalEmbeddedSize(opened)) return doc.addImage(img)
             val small = Image(jpeg)
             try {
                 return doc.addImage(small)
@@ -216,8 +336,8 @@ internal object ImagePages {
 
     /**
      * Appends one page to [doc] showing [image] upright (EXIF orientation applied); with
-     * [compression] null, JPEG data is embedded unchanged. With a [compression] level the embedded
-     * pixels may be downscaled and re-encoded (see [addImageObject]); the page box and placement
+     * [compression] null, JPEG data is embedded unchanged (up to its end-of-image marker; trailing
+     * data is dropped). With a [compression] level the embedded pixels may be downscaled and re-encoded (see [addImageObject]); the page box and placement
      * never depend on [compression]: they always come from the original image.
      *
      * - [fixedSize] non-null: the page box is exactly `fixedSize.width x fixedSize.height` (origin 0,0)
@@ -236,7 +356,8 @@ internal object ImagePages {
         fixedSize: Rect? = null,
         compression: CompressionLevel? = null,
     ) {
-        val img = loadImage(image)
+        val opened = open(image)
+        val img = opened.img
         try {
             val orientation = img.orientation
             val quarterTurn = isQuarterTurn(orientation)
@@ -277,7 +398,7 @@ internal object ImagePages {
             val y = (pageH - h) / 2
 
             val cm = uprightCm(orientation, x, y, w, h)
-            val ref = addImageObject(doc, img, image, compression)
+            val ref = addImageObject(doc, opened, compression)
             val xobjects = doc.newDictionary()
             val resources = doc.newDictionary()
             try {

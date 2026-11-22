@@ -110,6 +110,43 @@ object Fixtures {
         }
     }
 
+    /**
+     * Copy of [file] next to it (name prefixed "trailer<n>-") with [trailerBytes] random bytes appended,
+     * like the MP4 of a "motion photo". The trailer deliberately also contains JPEG SOI/EOI markers
+     * and PNG `IEND` chunk headers, which must not confuse the end-of-image detection.
+     */
+    fun withTrailer(file: File, trailerBytes: Int, seed: Long = 7L): File {
+        val trailer = randomBytes(trailerBytes, seed)
+        val decoys = listOf(
+            byteArrayOf(0xFF.toByte(), 0xD9.toByte()),
+            byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE1.toByte()),
+            byteArrayOf(0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE.toByte(), 0x42, 0x60, 0x82.toByte()),
+        )
+        val rnd = Random(seed + 1)
+        if (trailerBytes >= 16) {
+            repeat(1 + trailerBytes / 512) { k ->
+                val d = decoys[k % decoys.size]
+                d.copyInto(trailer, rnd.nextInt(trailerBytes - d.size + 1))
+            }
+            decoys[0].copyInto(trailer, trailerBytes - 2) // ends like a JPEG
+        }
+        return File(file.parentFile, "trailer$trailerBytes-" + file.name).also { it.writeBytes(file.readBytes() + trailer) }
+    }
+
+    /**
+     * Noisy RGB JPEG whose first segment is an EXIF APP1 that also carries a complete 32x24 JPEG
+     * thumbnail (with its own `FF D8` ... `FF D9`), as cameras write it.
+     */
+    fun jpegWithExifThumbnail(dir: File, name: String = "thumb.jpg", width: Int = 640, height: Int = 480, seed: Long = 1L): File {
+        val main = encodeJpeg(ppm(width, height, photoPixels(width, height, seed)), 90)
+        val thumb = encodeJpeg(ppm(32, 24, photoPixels(32, 24, seed + 1)), 80)
+        val payload = exifPayload(1) + thumb
+        val len = payload.size + 2
+        require(len <= 0xFFFF)
+        val seg = byteArrayOf(0xFF.toByte(), 0xE1.toByte(), (len shr 8).toByte(), len.toByte()) + payload
+        return File(dir, name).also { it.writeBytes(main.copyOfRange(0, 2) + seg + main.copyOfRange(2, main.size)) }
+    }
+
     /** 4 KiB of random bytes named like a JPEG. */
     fun notAnImage(dir: File, name: String = "not-an-image.jpg"): File =
         File(dir, name).also { it.writeBytes(randomBytes(4096, 11L)) }
@@ -625,15 +662,18 @@ object Fixtures {
      */
     private fun withExifOrientation(jpeg: ByteArray, exif: Int): ByteArray {
         require(jpeg[0] == 0xFF.toByte() && jpeg[1] == 0xD8.toByte())
-        val payload = byteArrayOf(
-            'E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0,
-            'M'.code.toByte(), 'M'.code.toByte(), 0, 0x2A, 0, 0, 0, 8, // TIFF header, IFD0 at 8
-            0, 1, // 1 entry
-            0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, exif.toByte(), 0, 0, // Orientation SHORT x1
-            0, 0, 0, 0, // next IFD = none
-        )
+        val payload = exifPayload(exif)
         val len = payload.size + 2
         val seg = byteArrayOf(0xFF.toByte(), 0xE1.toByte(), (len shr 8).toByte(), len.toByte()) + payload
         return jpeg.copyOfRange(0, 2) + seg + jpeg.copyOfRange(2, jpeg.size)
     }
+
+    /** Minimal big-endian EXIF payload ("Exif\0\0" + TIFF header + IFD0 with Orientation = [exif]). */
+    private fun exifPayload(exif: Int): ByteArray = byteArrayOf(
+        'E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0,
+        'M'.code.toByte(), 'M'.code.toByte(), 0, 0x2A, 0, 0, 0, 8, // TIFF header, IFD0 at 8
+        0, 1, // 1 entry
+        0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, exif.toByte(), 0, 0, // Orientation SHORT x1
+        0, 0, 0, 0, // next IFD = none
+    )
 }
