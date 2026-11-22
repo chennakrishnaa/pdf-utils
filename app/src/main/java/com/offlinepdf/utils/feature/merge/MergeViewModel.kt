@@ -7,6 +7,7 @@ import com.offlinepdf.utils.R
 import com.offlinepdf.utils.core.JobInput
 import com.offlinepdf.utils.core.JobViewModel
 import com.offlinepdf.utils.core.PickedFile
+import com.offlinepdf.utils.ui.components.JobUiState
 import com.offlinepdf.utils.ui.components.formatBytes
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,11 +30,21 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
     /** True when the list holds enough PDFs to merge (two or more). */
     val canMerge: Boolean get() = _items.value.size >= MIN_INPUTS
 
-    /** Appends [uris] (in picker order) after describing them off the main thread. Ignored while a job runs. */
+    override val toolId: String = TOOL_ID
+
+    /** True while the list must not change: a job is running or its result is being saved. */
+    private val locked: Boolean get() = isRunning || jobState.value is JobUiState.Saving
+
+    /**
+     * Appends [uris] (in picker order) after describing them off the main thread. Discards any
+     * result of the previous list. Ignored while running or saving.
+     */
     fun add(uris: List<Uri>) {
-        if (uris.isEmpty() || isRunning) return
+        if (uris.isEmpty() || locked) return
         viewModelScope.launch {
             val picked = describe(uris)
+            if (locked) return@launch
+            inputsChanged()
             _items.update { current -> current + picked.map { MergeItem(nextKey++, it) } }
         }
     }
@@ -42,8 +53,10 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
 
     fun moveDown(index: Int) = swap(index, index + 1)
 
+    /** Removes the PDF at [index]; discards any result. Ignored while running or saving. */
     fun remove(index: Int) {
-        if (isRunning) return
+        if (locked || index !in _items.value.indices) return
+        inputsChanged()
         _items.update { list -> if (index in list.indices) list.toMutableList().apply { removeAt(index) } else list }
     }
 
@@ -60,8 +73,17 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
 
     override fun suggestedFileName(): String = getApplication<Application>().getString(R.string.merge_file_name)
 
+    /** The result no longer matches the list: drop it (and any save error) so it cannot be saved. */
+    private fun inputsChanged() {
+        invalidateResult()
+        clearSaveError()
+    }
+
     private fun swap(from: Int, to: Int) {
-        if (isRunning) return
+        if (locked) return
+        val list = _items.value
+        if (from !in list.indices || to !in list.indices) return
+        inputsChanged()
         _items.update { list ->
             if (from !in list.indices || to !in list.indices) {
                 list
@@ -71,7 +93,9 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
         }
     }
 
-    private companion object {
-        const val MIN_INPUTS = 2
+    companion object {
+        /** Id recorded with files saved from this screen in the recent-files list. */
+        const val TOOL_ID = "merge"
+        private const val MIN_INPUTS = 2
     }
 }
