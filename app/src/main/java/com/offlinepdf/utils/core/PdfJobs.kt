@@ -9,6 +9,7 @@ import com.offlinepdf.utils.PdfUtilApp
 import com.offlinepdf.utils.engine.JobControl
 import com.offlinepdf.utils.engine.PdfEngine
 import com.offlinepdf.utils.engine.PdfError
+import com.offlinepdf.utils.engine.PdfEstimate
 import com.offlinepdf.utils.engine.PdfResult
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -127,20 +128,7 @@ class PdfJobs @VisibleForTesting internal constructor(
         val out = File(jobDir, OUTPUT_NAME)
         var keep = false
         try {
-            val files = withContext(ioDispatcher) {
-                if (!inDir.mkdirs() && !inDir.isDirectory) throw IOException("Cannot create $inDir")
-                val ctx = currentCoroutineContext()
-                val cancelled = { !ctx.isActive }
-                inputs.mapIndexed { index, input ->
-                    ctx.ensureActive()
-                    when (input) {
-                        is JobInput.Pdf -> File(inDir, String.format(Locale.ROOT, "in_%03d.pdf", index)).also {
-                            UriIo.copyToFile(appContext, input.uri, it, cancelled)
-                        }
-                        is JobInput.Image -> ImageNormalizer.normalize(appContext, input.uri, inDir, index, cancelled)
-                    }
-                }
-            }
+            val files = prepareInputs(inputs, inDir)
 
             val result = runOnEngine(files, out, onProgress, block)
 
@@ -166,6 +154,59 @@ class PdfJobs @VisibleForTesting internal constructor(
             return JobOutcome.Failed(PdfError.Io(e))
         } finally {
             if (!keep) withContext(NonCancellable + ioDispatcher) { jobDir.deleteRecursively() }
+        }
+    }
+
+    /**
+     * Copies each [JobInput.Pdf] and normalises each [JobInput.Image] into [inDir] (created if
+     * needed) on the IO dispatcher, in input order. Throws [IOException],
+     * [UnsupportedImageException] or [CancellationException]; the caller deletes [inDir].
+     */
+    private suspend fun prepareInputs(inputs: List<JobInput>, inDir: File): List<File> = withContext(ioDispatcher) {
+        if (!inDir.mkdirs() && !inDir.isDirectory) throw IOException("Cannot create $inDir")
+        val ctx = currentCoroutineContext()
+        val cancelled = { !ctx.isActive }
+        inputs.mapIndexed { index, input ->
+            ctx.ensureActive()
+            when (input) {
+                is JobInput.Pdf -> File(inDir, String.format(Locale.ROOT, "in_%03d.pdf", index)).also {
+                    UriIo.copyToFile(appContext, input.uri, it, cancelled)
+                }
+                is JobInput.Image -> ImageNormalizer.normalize(appContext, input.uri, inDir, index, cancelled)
+            }
+        }
+    }
+
+    /**
+     * Estimates the image data size of the image at [uri] for `PdfEngine.imagesToPdf` (see
+     * [PdfEngine.estimateImage]).
+     *
+     * The image is prepared exactly like a [JobInput.Image] of [run] (copied and normalised by
+     * [ImageNormalizer] into a private `cacheDir/jobs/<uuid>/` directory), then
+     * `engine.estimateImage(file)` runs on the same single engine thread as [run]. The directory is
+     * always deleted before this returns or throws. Undecodable image: `Err(UnsupportedImage)`;
+     * unreadable Uri or any other exception: `Err(Io)`; [OutOfMemoryError]: `Err(OutOfMemory)`.
+     *
+     * Cancellation: cancelling the caller while copying or while waiting for the engine thread
+     * stops the work; an engine call already in progress is waited for (it is not interruptible),
+     * then the directory is deleted and the [CancellationException] is rethrown.
+     */
+    suspend fun estimateImage(uri: Uri): PdfEstimate {
+        val jobDir = File(jobsRoot, UUID.randomUUID().toString())
+        try {
+            val file = prepareInputs(listOf(JobInput.Image(uri)), File(jobDir, "in")).single()
+            return withContext(engineDispatcher) { (appContext as PdfUtilApp).engine.estimateImage(file) }
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            return PdfEstimate.Err(PdfError.Cancelled)
+        } catch (e: UnsupportedImageException) {
+            return PdfEstimate.Err(PdfError.UnsupportedImage)
+        } catch (e: OutOfMemoryError) {
+            return PdfEstimate.Err(PdfError.OutOfMemory)
+        } catch (e: Exception) {
+            return PdfEstimate.Err(PdfError.Io(e))
+        } finally {
+            withContext(NonCancellable + ioDispatcher) { jobDir.deleteRecursively() }
         }
     }
 

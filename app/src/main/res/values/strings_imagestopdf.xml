@@ -7,6 +7,21 @@
     <string name="imagestopdf_size_fit">Fit to image</string>
     <string name="imagestopdf_size_a4">A4</string>
     <string name="imagestopdf_size_letter">Letter</string>
+    <string name="imagestopdf_quality_header">Image quality</string>
+    <string name="imagestopdf_quality_original">Original quality</string>
+    <string name="imagestopdf_quality_original_detail">Images are added unchanged</string>
+    <string name="imagestopdf_quality_low">Low compression</string>
+    <!-- %d: maximum long edge in pixels. -->
+    <string name="imagestopdf_quality_low_detail">Up to %d px, very good quality</string>
+    <string name="imagestopdf_quality_medium">Medium compression</string>
+    <string name="imagestopdf_quality_medium_detail">Up to %d px, good quality</string>
+    <string name="imagestopdf_quality_high">High compression</string>
+    <string name="imagestopdf_quality_high_detail">Up to %d px, smallest file</string>
+    <!-- Estimated PDF size, e.g. "≈ 1.2 MB". -->
+    <string name="imagestopdf_estimate">≈ %s</string>
+    <string name="imagestopdf_estimating">Estimating…</string>
+    <string name="imagestopdf_estimate_unknown">—</string>
+    <string name="imagestopdf_quality_note">Sizes are estimates. Compression lowers image resolution and quality to make the file smaller, but never makes it larger.</string>
     <string name="imagestopdf_run">Create PDF</string>
     <plurals name="imagestopdf_pages">
         <item quantity="one">%d page</item>

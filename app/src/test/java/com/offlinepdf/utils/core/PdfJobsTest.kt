@@ -5,7 +5,9 @@ import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import com.offlinepdf.utils.FakePdfEngine
 import com.offlinepdf.utils.PdfUtilApp
+import com.offlinepdf.utils.engine.CompressionLevel
 import com.offlinepdf.utils.engine.PdfError
+import com.offlinepdf.utils.engine.PdfEstimate
 import com.offlinepdf.utils.engine.PdfResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -331,6 +333,123 @@ class PdfJobsTest {
         assertEquals(JobOutcome.Failed(PdfError.OutOfMemory), oom)
         val okWithoutFile = runBlocking { jobs.run(input, { _, _ -> }) { _, _, _, _ -> PdfResult.Ok(1, 1) } }
         assertTrue(okWithoutFile is JobOutcome.Failed && okWithoutFile.error is PdfError.Io)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun estimateImagePassesImageBytesToEngineAndCleansUp() {
+        val seen = CopyOnWriteArrayList<ByteArray>()
+        val expected = PdfEstimate.Ok(original = 7, byLevel = mapOf(CompressionLevel.LOW to 5L, CompressionLevel.MEDIUM to 4L, CompressionLevel.HIGH to 3L))
+        fake.estimate = { file ->
+            assertTrue(file.canonicalPath.startsWith(File(context.cacheDir, "jobs").canonicalPath))
+            seen += file.readBytes()
+            expected
+        }
+        val result = runBlocking { jobs.estimateImage(CoreTestSupport.contentUri(context, "p.jpg", jpeg)) }
+        assertEquals(expected, result)
+        assertEquals(1, fake.estimateCalls.size)
+        assertArrayEquals(jpeg, seen.single())
+        assertTrue(fake.calls.isEmpty())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun estimateImageRunsOnTheEngineDispatcher() {
+        val threads = CopyOnWriteArrayList<Thread>()
+        val engineThread = runBlocking { kotlinx.coroutines.withContext(engineDispatcher) { Thread.currentThread() } }
+        fake.estimate = { threads += Thread.currentThread(); PdfEstimate.Ok(1, emptyMap()) }
+        runBlocking { jobs.estimateImage(CoreTestSupport.contentUri(context, "p.jpg", jpeg)) }
+        assertSame(engineThread, threads.single())
+    }
+
+    @Test
+    fun estimateImageEngineErrorIsReturnedAndCacheEmptied() {
+        fake.estimate = { PdfEstimate.Err(PdfError.OutOfMemory) }
+        val result = runBlocking { jobs.estimateImage(CoreTestSupport.contentUri(context, "p.jpg", jpeg)) }
+        assertEquals(PdfEstimate.Err(PdfError.OutOfMemory), result)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun estimateImageUnreadableOrUndecodableIsErrAndCacheEmptied() {
+        val missing = Uri.fromFile(tmp.root.resolve("missing.jpg"))
+        val io = runBlocking { jobs.estimateImage(missing) }
+        assertTrue(io is PdfEstimate.Err && io.error is PdfError.Io)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+
+        val junk = CoreTestSupport.contentUri(context, "x.heic", ByteArray(512) { 0x42 })
+        assertEquals(PdfEstimate.Err(PdfError.UnsupportedImage), runBlocking { jobs.estimateImage(junk) })
+        assertTrue(fake.estimateCalls.isEmpty())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun estimateImageEngineExceptionIsIo() {
+        fake.estimate = { throw IllegalStateException("boom") }
+        val result = runBlocking { jobs.estimateImage(CoreTestSupport.contentUri(context, "p.jpg", jpeg)) }
+        assertTrue(result is PdfEstimate.Err && result.error is PdfError.Io)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun cancellingEstimateWhileEngineBusyCleansUpAndRethrows() {
+        val reached = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        fake.estimate = {
+            reached.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            PdfEstimate.Ok(1, emptyMap())
+        }
+        runBlocking {
+            val deferred = CoroutineScope(Dispatchers.Default).async {
+                jobs.estimateImage(CoreTestSupport.contentUri(context, "p.jpg", jpeg))
+            }
+            try {
+                assertTrue(reached.await(5, TimeUnit.SECONDS))
+                assertFalse(CoreTestSupport.jobsEmpty(context))
+                deferred.cancel()
+            } finally {
+                release.countDown()
+            }
+            try {
+                deferred.await()
+                fail("expected CancellationException")
+            } catch (e: CancellationException) {
+                // expected
+            }
+        }
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun cancellingEstimateWhileWaitingForEngineThreadSkipsEngineAndCleansUp() {
+        val busy = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        // Occupy the engine thread so the estimate has to wait for it.
+        val blocker = CoroutineScope(Dispatchers.Default).async(engineDispatcher) {
+            busy.countDown()
+            release.await(5, TimeUnit.SECONDS)
+        }
+        runBlocking {
+            assertTrue(busy.await(5, TimeUnit.SECONDS))
+            val deferred = CoroutineScope(Dispatchers.Default).async {
+                jobs.estimateImage(CoreTestSupport.contentUri(context, "p.jpg", jpeg))
+            }
+            try {
+                CoreTestSupport.idleUntil(message = "image copied") { !CoreTestSupport.jobsEmpty(context) }
+                deferred.cancel()
+            } finally {
+                release.countDown()
+            }
+            try {
+                deferred.await()
+                fail("expected CancellationException")
+            } catch (e: CancellationException) {
+                // expected
+            }
+            blocker.await()
+        }
+        assertTrue(fake.estimateCalls.isEmpty())
         assertTrue(CoreTestSupport.jobsEmpty(context))
     }
 
