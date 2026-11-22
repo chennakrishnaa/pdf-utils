@@ -1,0 +1,280 @@
+package com.offlinepdf.utils.core
+
+import android.content.Context
+import android.net.Uri
+import androidx.test.core.app.ApplicationProvider
+import com.offlinepdf.utils.FakePdfEngine
+import com.offlinepdf.utils.PdfUtilApp
+import com.offlinepdf.utils.engine.PdfError
+import com.offlinepdf.utils.engine.PdfResult
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
+import java.io.OutputStream
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class PdfJobsTest {
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    private lateinit var context: Context
+    private lateinit var fake: FakePdfEngine
+    private lateinit var engineDispatcher: ExecutorCoroutineDispatcher
+    private lateinit var jobs: PdfJobs
+
+    private val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 1, 2, 3)
+
+    @Before
+    fun setUp() {
+        context = ApplicationProvider.getApplicationContext()
+        fake = FakePdfEngine()
+        (context as PdfUtilApp).engine = fake
+        engineDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        // Unconfined "main" so the test thread can block in runBlocking without deadlocking.
+        jobs = PdfJobs(context, engineDispatcher, Dispatchers.IO, Dispatchers.Unconfined)
+    }
+
+    @After
+    fun tearDown() {
+        engineDispatcher.close()
+        PdfJobs.resetForTesting()
+    }
+
+    private fun mergeJob(inputs: List<JobInput>, onProgress: (Int, Int) -> Unit = { _, _ -> }) = runBlocking {
+        jobs.run(inputs, onProgress) { engine, files, out, job -> engine.merge(files, out, job) }
+    }
+
+    @Test
+    fun inputsReachEngineInOrderWithContents() {
+        val a = "%PDF-a".toByteArray()
+        val b = "%PDF-b".toByteArray()
+        val inputs = listOf(
+            JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", a)),
+            JobInput.Image(CoreTestSupport.contentUri(context, "p.jpg", jpeg)),
+            JobInput.Pdf(CoreTestSupport.contentUri(context, "b.pdf", b)),
+        )
+        val seen = mutableListOf<ByteArray>()
+        val outcome = runBlocking {
+            jobs.run(inputs, { _, _ -> }) { engine, files, out, job ->
+                files.forEach { seen += it.readBytes() }
+                engine.merge(files, out, job)
+            }
+        }
+        assertTrue(outcome is JobOutcome.Ready)
+        assertEquals(3, seen.size)
+        assertArrayEquals(a, seen[0])
+        assertArrayEquals(jpeg, seen[1])
+        assertArrayEquals(b, seen[2])
+        val pdfs = fake.callsFor(FakePdfEngine.Op.MERGE).single().pdfs!!
+        assertEquals(listOf("in_000.pdf", "img_001.jpg", "in_002.pdf"), pdfs.map { it.name })
+        assertTrue(pdfs.all { it.canonicalPath.startsWith(File(context.cacheDir, "jobs").canonicalPath) })
+    }
+
+    @Test
+    fun progressIsForwardedAndOkLeavesOnlyOutput() {
+        val progress = CopyOnWriteArrayList<Pair<Int, Int>>()
+        val outcome = mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", "x".toByteArray())))) { d, t ->
+            progress += d to t
+        }
+        assertTrue(progress.isNotEmpty())
+        assertEquals(3 to 3, progress.last())
+        assertEquals(progress.sortedBy { it.first }, progress.toList())
+
+        val output = (outcome as JobOutcome.Ready).output
+        assertEquals(1, output.pages)
+        assertEquals(fake.outputContent.size.toLong(), output.bytes)
+        assertEquals(listOf(output.file.canonicalFile), CoreTestSupport.jobFiles(context).map { it.canonicalFile })
+        assertArrayEquals(fake.outputContent, output.file.readBytes())
+    }
+
+    @Test
+    fun saveWritesDestinationAndEmptiesCache() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val sink = ByteArrayOutputStream()
+        val dest = Uri.parse("content://dest.test/out.pdf")
+        shadowOf(context.contentResolver).registerOutputStream(dest, sink)
+        assertTrue(runBlocking { jobs.save(output, dest) }.isSuccess)
+        assertArrayEquals(fake.outputContent, sink.toByteArray())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun failedSaveKeepsOutputForRetry() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val broken = Uri.parse("content://dest.test/broken.pdf")
+        shadowOf(context.contentResolver).registerOutputStream(
+            broken,
+            object : OutputStream() {
+                override fun write(b: Int) = throw IOException("disk full")
+                override fun write(b: ByteArray, off: Int, len: Int) = throw IOException("disk full")
+            },
+        )
+        assertTrue(runBlocking { jobs.save(output, broken) }.isFailure)
+        assertTrue(output.file.isFile)
+
+        val sink = ByteArrayOutputStream()
+        val good = Uri.parse("content://dest.test/good.pdf")
+        shadowOf(context.contentResolver).registerOutputStream(good, sink)
+        assertTrue(runBlocking { jobs.save(output, good) }.isSuccess)
+        assertArrayEquals(fake.outputContent, sink.toByteArray())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun discardEmptiesCache() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        jobs.discard(output)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun engineErrorIsReturnedAndCacheEmptied() {
+        fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Err(PdfError.Encrypted))
+        val outcome = mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3)))))
+        assertEquals(JobOutcome.Failed(PdfError.Encrypted), outcome)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun engineCancelledWhileCallerActiveIsFailedCancelled() {
+        fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Err(PdfError.Cancelled))
+        val outcome = mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3)))))
+        assertEquals(JobOutcome.Failed(PdfError.Cancelled), outcome)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun cancellingMidRunStopsEngineCleansUpAndRethrows() {
+        val reached = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        fake.beforeStep = { _, step ->
+            if (step == 2) {
+                reached.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+        }
+        val input = JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3)))
+        runBlocking {
+            val deferred = CoroutineScope(Dispatchers.Default).async {
+                jobs.run(listOf(input), { _, _ -> }) { engine, files, out, job -> engine.merge(files, out, job) }
+            }
+            try {
+                assertTrue(reached.await(5, TimeUnit.SECONDS))
+                assertFalse(CoreTestSupport.jobsEmpty(context))
+                deferred.cancel()
+            } finally {
+                release.countDown()
+            }
+            try {
+                deferred.await()
+                fail("expected CancellationException")
+            } catch (e: CancellationException) {
+                // expected: structured concurrency is honoured
+            }
+        }
+        assertTrue(fake.calls.single().job.isCancelled())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun unreadableInputIsIoAndCacheEmptied() {
+        val missing = Uri.fromFile(tmp.root.resolve("missing.pdf"))
+        val outcome = mergeJob(
+            listOf(
+                JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))),
+                JobInput.Pdf(missing),
+            ),
+        )
+        assertTrue(outcome is JobOutcome.Failed && outcome.error is PdfError.Io)
+        assertTrue(fake.calls.isEmpty())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun undecodableImageIsUnsupportedImage() {
+        val junk = CoreTestSupport.contentUri(context, "x.heic", ByteArray(512) { 0x42 })
+        val outcome = runBlocking {
+            jobs.run(listOf(JobInput.Image(junk)), { _, _ -> }) { engine, files, out, job ->
+                engine.imagesToPdf(files, com.offlinepdf.utils.engine.PageSize.A4, out, job)
+            }
+        }
+        assertEquals(JobOutcome.Failed(PdfError.UnsupportedImage), outcome)
+        assertTrue(fake.calls.isEmpty())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun exceptionsInBlockAreMapped() {
+        val input = listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))
+        val io = runBlocking { jobs.run(input, { _, _ -> }) { _, _, _, _ -> throw IllegalStateException("boom") } }
+        assertTrue(io is JobOutcome.Failed && io.error is PdfError.Io)
+        val oom = runBlocking { jobs.run(input, { _, _ -> }) { _, _, _, _ -> throw OutOfMemoryError() } }
+        assertEquals(JobOutcome.Failed(PdfError.OutOfMemory), oom)
+        val okWithoutFile = runBlocking { jobs.run(input, { _, _ -> }) { _, _, _, _ -> PdfResult.Ok(1, 1) } }
+        assertTrue(okWithoutFile is JobOutcome.Failed && okWithoutFile.error is PdfError.Io)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun wipeAllClearsLeftovers() {
+        val leftover = File(context.cacheDir, "jobs/old-job/in").apply { mkdirs() }
+        File(leftover, "x.pdf").writeBytes(ByteArray(5))
+        jobs.wipeAll()
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun singletonWipesLeftoversOnCreationAndUsesOneEngineThread() {
+        PdfJobs.resetForTesting()
+        File(context.cacheDir, "jobs/stale").apply { mkdirs() }.resolve("y.pdf").writeBytes(ByteArray(5))
+        val shared = PdfJobs.get(context)
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+        assertSame(shared, PdfJobs.get(context))
+
+        val threads = CopyOnWriteArrayList<Thread>()
+        val input = listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))
+        repeat(2) {
+            // The shared instance delivers progress on Dispatchers.Main: run off the main thread
+            // and pump the main looper instead of blocking it.
+            val deferred = CoroutineScope(Dispatchers.Default).async {
+                shared.run(input, { _, _ -> }) { engine, files, out, job ->
+                    threads += Thread.currentThread()
+                    engine.merge(files, out, job)
+                }
+            }
+            CoreTestSupport.idleUntil { deferred.isCompleted }
+            shared.discard((runBlocking { deferred.await() } as JobOutcome.Ready).output)
+        }
+        assertSame(threads[0], threads[1])
+        assertEquals("pdf-engine", threads[0].name)
+        assertNotSame(Thread.currentThread(), threads[0])
+    }
+}

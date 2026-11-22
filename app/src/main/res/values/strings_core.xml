@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown when copying the finished PDF to the chosen location fails. -->
+    <string name="core_save_failed">Could not save the file there. Please choose another location.</string>
+    <!-- Default name suggested in the save dialog. -->
+    <string name="core_default_file_name" translatable="false">document.pdf</string>
+</resources>
