@@ -122,6 +122,9 @@ fun HomeScreen(onOpenTool: (route: String) -> Unit, onOpenAbout: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val msgUnavailable = stringResource(R.string.recent_unavailable)
+    val msgNoViewer = stringResource(R.string.recent_no_viewer)
+    val msgNoShare = stringResource(R.string.recent_no_share)
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -154,16 +157,16 @@ fun HomeScreen(onOpenTool: (route: String) -> Unit, onOpenAbout: () -> Unit) {
                     scope.launch {
                         val intent = vm.viewIntentIfAvailable(file)
                         if (intent == null) {
-                            showMessage(scope, snackbar, context.getString(R.string.recent_unavailable))
+                            showMessage(scope, snackbar, msgUnavailable)
                         } else if (!tryStart(context, intent)) {
-                            showMessage(scope, snackbar, context.getString(R.string.recent_no_viewer))
+                            showMessage(scope, snackbar, msgNoViewer)
                         }
                     }
                 },
                 onShare = { file ->
                     scope.launch {
                         if (!tryStart(context, vm.shareIntent(file))) {
-                            showMessage(scope, snackbar, context.getString(R.string.recent_no_share))
+                            showMessage(scope, snackbar, msgNoShare)
                         }
                     }
                 },
