@@ -36,6 +36,7 @@ import com.offlinepdf.utils.ui.components.fileRowDownTag
 import com.offlinepdf.utils.ui.components.fileRowRemoveTag
 import com.offlinepdf.utils.ui.components.fileRowTag
 import com.offlinepdf.utils.ui.components.fileRowUpTag
+import com.offlinepdf.utils.ui.nav.AppNavHost
 import com.offlinepdf.utils.ui.theme.PdfUtilsTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -106,6 +107,15 @@ class MergeScreenTest {
     }
 
     private fun state() = vm.jobState.value
+
+    @Test
+    fun opensFromHomeThroughNavigation() {
+        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AppNavHost() } } }
+        rule.waitForIdle()
+        click("tool_merge")
+        rule.onNodeWithTag(TAG_MERGE_ADD).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_MERGE_NOTE).performScrollTo().assertIsDisplayed()
+    }
 
     @Test
     fun runEnabledOnlyWithTwoOrMoreAndNoteShown() {
