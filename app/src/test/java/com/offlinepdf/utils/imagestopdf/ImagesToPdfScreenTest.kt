@@ -282,6 +282,11 @@ class ImagesToPdfScreenTest {
         val recents = RecentFilesStore.get(app).recents.value
         assertEquals(1, recents.size)
         assertEquals("images_to_pdf", recents.single().tool)
+
+        // Changing an option after saving clears the Saved panel.
+        click(imagesToPdfQualityTag(CompressionLevel.LOW))
+        assertEquals(JobUiState.Idle, vm.jobState.value)
+        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsEnabled()
     }
 
     @Test
@@ -450,7 +455,7 @@ class ImagesToPdfScreenTest {
         }
         try {
             addImages("a.jpg", "b.jpg")
-            assertTrue(first.await(5, TimeUnit.SECONDS))
+            CoreTestSupport.idleUntil(message = "first estimate held") { first.count == 0L }
             click(fileRowRemoveTag(0))
             assertEquals(1, vm.estimates.value.pendingCount)
         } finally {
@@ -493,6 +498,36 @@ class ImagesToPdfScreenTest {
         assertEquals(JobUiState.Idle, vm.jobState.value)
         awaitEstimates()
         assertEquals(2, fake.estimateCalls.size)
+    }
+
+    @Test
+    fun pendingEstimatesArePausedForTheJobAndResumeAfterIt() {
+        fake.estimate = {
+            if (fake.estimateCalls.size == 1) releaseAll.await(5, TimeUnit.SECONDS)
+            fixedEstimate()
+        }
+        val gate = CountDownLatch(1)
+        try {
+            addImages("a.jpg", "b.jpg")
+            CoreTestSupport.idleUntil(message = "first estimate held") { fake.estimateCalls.size == 1 }
+            fake.beforeStep = { _, step -> if (step == 1) gate.await(5, TimeUnit.SECONDS) }
+            click(TAG_JOB_RUN)
+            assertTrue(vm.jobState.value is JobUiState.Running)
+            // The in-flight estimate finishes; its (cancelled) result is dropped and nothing else is estimated.
+            releaseAll.countDown()
+            CoreTestSupport.idleUntil(message = "job on engine") { fake.calls.size == 1 }
+            rule.waitForIdle()
+            assertEquals(1, fake.estimateCalls.size)
+            assertEquals(2, vm.estimates.value.pendingCount)
+            assertCardTrailing(null, app.getString(R.string.imagestopdf_estimating))
+        } finally {
+            releaseAll.countDown()
+            gate.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "ready") { vm.jobState.value is JobUiState.ReadyToSave }
+        awaitEstimates()
+        assertEquals(3, fake.estimateCalls.size)
+        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 2)) }
     }
 
     // ---- Invalidation, locking, leaving ----
