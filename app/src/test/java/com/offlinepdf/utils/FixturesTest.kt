@@ -93,6 +93,23 @@ class FixturesTest {
     }
 
     @Test
+    fun ownerPasswordPdf() {
+        val f = Fixtures.ownerPasswordPdf(tmp.root)
+        val doc = Document.openDocument(f.absolutePath)
+        try {
+            assertFalse(doc.needsPassword())
+            assertFalse(doc.isUnencryptedPDF)
+            assertFalse(doc.hasPermission(Document.PERMISSION_EDIT))
+            assertEquals(2, doc.countPages())
+        } finally {
+            doc.destroy()
+        }
+        assertEquals(2, Fixtures.pageCount(f))
+        assertTrue(Fixtures.pageTexts(f)[1].contains("Restricted page 2"))
+        renderAll(f)
+    }
+
+    @Test
     fun photoPdf() {
         val f = Fixtures.photoPdf(tmp.root, "photo.pdf")
         assertTrue("size ${f.length()}", f.length() > 2_000_000)

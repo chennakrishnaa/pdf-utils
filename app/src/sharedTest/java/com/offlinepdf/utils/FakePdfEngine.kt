@@ -5,6 +5,7 @@ import com.offlinepdf.utils.engine.JobControl
 import com.offlinepdf.utils.engine.PageSize
 import com.offlinepdf.utils.engine.PdfEngine
 import com.offlinepdf.utils.engine.PdfError
+import com.offlinepdf.utils.engine.PdfEstimate
 import com.offlinepdf.utils.engine.PdfResult
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -41,6 +42,8 @@ class FakePdfEngine : PdfEngine {
         val pdf: File? = null,
         val images: List<File>? = null,
         val pdfs: List<File>? = null,
+        /** IMAGES_TO_PDF only: the `compression` argument (null = embed unchanged). */
+        val compression: CompressionLevel? = null,
     )
 
     /** Every call, in order. */
@@ -64,14 +67,45 @@ class FakePdfEngine : PdfEngine {
     @Volatile
     var beforeStep: ((op: Op, step: Int) -> Unit)? = null
 
+    /** Every [estimateImage] argument, in order. [estimateImage] does not run progress steps or [beforeStep]. */
+    val estimateCalls: MutableList<File> = CopyOnWriteArrayList()
+
+    /**
+     * Scripted [estimateImage] result; null means the default: `original = file.length()` and
+     * byLevel LOW / MEDIUM / HIGH = 50% / 25% / 10% of it.
+     */
+    @Volatile
+    var estimate: ((File) -> PdfEstimate)? = null
+
     fun setResult(op: Op, result: PdfResult) {
         results[op] = result
     }
 
     fun callsFor(op: Op): List<Call> = calls.filter { it.op == op }
 
-    override fun imagesToPdf(images: List<File>, pageSize: PageSize, out: File, job: JobControl): PdfResult =
-        execute(Call(Op.IMAGES_TO_PDF, images.toList(), out, job, pageSize = pageSize, images = images.toList()))
+    override fun imagesToPdf(
+        images: List<File>,
+        pageSize: PageSize,
+        out: File,
+        job: JobControl,
+        compression: CompressionLevel?,
+    ): PdfResult = execute(
+        Call(Op.IMAGES_TO_PDF, images.toList(), out, job, pageSize = pageSize, images = images.toList(), compression = compression),
+    )
+
+    override fun estimateImage(image: File): PdfEstimate {
+        estimateCalls += image
+        estimate?.let { return it(image) }
+        val n = image.length()
+        return PdfEstimate.Ok(
+            original = n,
+            byLevel = mapOf(
+                CompressionLevel.LOW to n / 2,
+                CompressionLevel.MEDIUM to n / 4,
+                CompressionLevel.HIGH to n / 10,
+            ),
+        )
+    }
 
     override fun compress(pdf: File, level: CompressionLevel, out: File, job: JobControl): PdfResult =
         execute(Call(Op.COMPRESS, listOf(pdf), out, job, level = level, pdf = pdf))

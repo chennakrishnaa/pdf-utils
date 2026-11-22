@@ -2,6 +2,7 @@ package com.offlinepdf.utils.engine
 
 import com.artifex.mupdf.fitz.Document
 import com.artifex.mupdf.fitz.PDFDocument
+import com.artifex.mupdf.fitz.PDFObject
 import java.io.File
 
 /** An input PDF could not be used; [error] is the classification to report. */
@@ -17,7 +18,9 @@ internal object PdfInputs {
      * Opens [file] as a PDF. The caller owns the result and must `destroy()` it.
      *
      * Throws [PdfInputException] with:
-     * - [PdfError.Encrypted] when the document needs a password;
+     * - [PdfError.Encrypted] when the document is encrypted in any way: it needs a password, or it
+     *   has only an owner password (permission restrictions, empty user password). Policy: every
+     *   encrypted PDF is rejected, so no operation can strip restrictions from its output;
      * - [PdfError.Corrupt] when it cannot be parsed, is not a PDF, or has no pages;
      * - [PdfError.Io] when the file cannot be opened (missing, unreadable).
      * On failure nothing opened is left alive.
@@ -35,6 +38,7 @@ internal object PdfInputs {
         try {
             if (doc.needsPassword()) throw PdfInputException(PdfError.Encrypted)
             val pdf = doc as? PDFDocument ?: throw PdfInputException(PdfError.Corrupt)
+            if (isEncrypted(pdf)) throw PdfInputException(PdfError.Encrypted)
             val pages = try {
                 pdf.countPages()
             } catch (e: RuntimeException) {
@@ -45,6 +49,25 @@ internal object PdfInputs {
         } catch (t: Throwable) {
             doc.destroy()
             throw t
+        }
+    }
+
+    /**
+     * True when [pdf] uses PDF encryption, independent of password state: MuPDF reports a crypt
+     * handler (`isUnencryptedPDF()` is false) or the trailer has an `/Encrypt` entry.
+     */
+    private fun isEncrypted(pdf: PDFDocument): Boolean {
+        if (!pdf.isUnencryptedPDF) return true
+        val trailer = pdf.trailer
+        try {
+            val encrypt = trailer.get("Encrypt")
+            try {
+                return !encrypt.isNull
+            } finally {
+                if (encrypt !== PDFObject.Null) encrypt.destroy()
+            }
+        } finally {
+            trailer.destroy()
         }
     }
 
