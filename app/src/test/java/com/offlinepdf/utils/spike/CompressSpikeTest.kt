@@ -259,7 +259,6 @@ class CompressSpikeTest {
 
     /** Skip detection on direct (not-in-document) image dictionaries. */
     @Test
-    @org.junit.Ignore("native heap corruption (malloc: unaligned tcache chunk) when building direct dicts; bisecting")
     fun recipe7_skipClassificationFromDict() {
         Native().use { n ->
             val doc = n.add(PDFDocument())

@@ -255,7 +255,10 @@ fun PDFDocument.obj(v: Any): PDFObject = when (v) {
     is Boolean -> newBoolean(v)
     is ByteArray -> newByteString(v)
     is String -> if (v.startsWith("/")) newName(v.substring(1)) else newString(v)
-    is List<*> -> newArray().also { a -> for (e in v) { val o = obj(e!!); a.push(o); if (o !== e) Native.destroy(o) } }
+    // GOTCHA (1.28.5 JNI bug): PDFObject.push(PDFObject) DROPS the item's native ref without
+    // clearing the Java wrapper -> a later destroy()/GC finalizer double-frees (heap corruption,
+    // "malloc(): unaligned tcache chunk"). Append with put(size(), obj) instead, which keeps.
+    is List<*> -> newArray().also { a -> for (e in v) { val o = obj(e!!); a.put(a.size(), o); if (o !== e) Native.destroy(o) } }
     is Map<*, *> -> newDictionary().also { d ->
         for ((k, e) in v) { val o = obj(e!!); d.put(k as String, o); if (o !== e) Native.destroy(o) }
     }
@@ -268,9 +271,9 @@ fun PDFDocument.addRaw(dict: Map<String, Any>, data: ByteArray): PDFObject {
         val d = n.add(obj(dict))
         val buf = n.add(Buffer())
         buf.writeBytes(data)
-        // GOTCHA: do NOT use PDFDocument.addObject(dict) in 1.28.5: the JNI calls
-        // pdf_add_object_drop and returns the *input* Java object (now dangling) instead of
-        // the new indirect ref -> heap corruption. addRawStream/addStream are fine.
+        // GOTCHA (from reading jni/pdfdocument.c, 1.28.5): avoid PDFDocument.addObject(dict):
+        // the JNI calls pdf_add_object_drop and returns the *input* Java wrapper (whose native
+        // ref was just dropped) instead of the new indirect ref. addRawStream/addStream are fine.
         return addRawStream(buf, d)
     }
 }
