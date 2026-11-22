@@ -1,6 +1,7 @@
 package com.offlinepdf.utils.addimages
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.compose.ui.test.assertIsDisplayed
@@ -19,6 +20,7 @@ import com.offlinepdf.utils.MainActivity
 import com.offlinepdf.utils.PdfUtilApp
 import com.offlinepdf.utils.R
 import com.offlinepdf.utils.core.CoreTestSupport
+import com.offlinepdf.utils.core.RecentFilesStore
 import com.offlinepdf.utils.engine.PdfError
 import com.offlinepdf.utils.engine.PdfResult
 import com.offlinepdf.utils.feature.addimages.AddImagesScreen
@@ -27,15 +29,20 @@ import com.offlinepdf.utils.feature.addimages.TAG_ADDIMAGES_ADD_IMAGES
 import com.offlinepdf.utils.feature.addimages.TAG_ADDIMAGES_CHOOSE_PDF
 import com.offlinepdf.utils.feature.addimages.TAG_ADDIMAGES_NOTE
 import com.offlinepdf.utils.feature.addimages.TAG_ADDIMAGES_PDF_NAME
-import com.offlinepdf.utils.feature.addimages.TAG_ADDIMAGES_PDF_SIZE
 import com.offlinepdf.utils.feature.addimages.TAG_ADDIMAGES_ROOT
+import com.offlinepdf.utils.feature.addimages.TAG_ADDIMAGES_SAVE_ERROR
 import com.offlinepdf.utils.ui.components.JobUiState
+import com.offlinepdf.utils.ui.components.TAG_ACTION_BACK
 import com.offlinepdf.utils.ui.components.TAG_JOB_CANCEL
 import com.offlinepdf.utils.ui.components.TAG_JOB_ERROR
 import com.offlinepdf.utils.ui.components.TAG_JOB_PROGRESS
+import com.offlinepdf.utils.ui.components.TAG_JOB_RESET
 import com.offlinepdf.utils.ui.components.TAG_JOB_RUN
 import com.offlinepdf.utils.ui.components.TAG_JOB_SAVE
+import com.offlinepdf.utils.ui.components.TAG_JOB_SAVING
 import com.offlinepdf.utils.ui.components.TAG_JOB_SUMMARY
+import com.offlinepdf.utils.ui.components.TAG_LEAVE_CONFIRM
+import com.offlinepdf.utils.ui.components.TAG_LEAVE_STAY
 import com.offlinepdf.utils.ui.components.fileRowDownTag
 import com.offlinepdf.utils.ui.components.fileRowRemoveTag
 import com.offlinepdf.utils.ui.components.fileRowTag
@@ -46,6 +53,7 @@ import com.offlinepdf.utils.ui.theme.PdfUtilsTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -56,6 +64,8 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import java.io.OutputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -69,6 +79,7 @@ class AddImagesScreenTest {
     private lateinit var app: Application
     private lateinit var fake: FakePdfEngine
     private lateinit var vm: AddImagesViewModel
+    private var backCalls = 0
 
     /** Per call: contents of the PDF and of the images the engine received (read on the engine thread). */
     private val receivedPdf = CopyOnWriteArrayList<String>()
@@ -79,7 +90,8 @@ class AddImagesScreenTest {
         app = ApplicationProvider.getApplicationContext()
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AddImagesScreen(onBack = {}) } } }
+        resetRecents()
+        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AddImagesScreen(onBack = { backCalls++ }) } } }
         rule.waitForIdle()
         vm = ViewModelProvider(rule.activity)[AddImagesViewModel::class.java]
     }
@@ -87,6 +99,66 @@ class AddImagesScreenTest {
     @After
     fun tearDown() {
         fake.beforeStep = null
+        resetRecents()
+    }
+
+    private fun resetRecents() {
+        RecentFilesStore.resetForTesting()
+        app.getSharedPreferences("recent_files", Context.MODE_PRIVATE).edit().clear().commit()
+    }
+
+    /** An output stream whose first write blocks until [release] is counted down. */
+    private class BlockingSink(val release: CountDownLatch) : OutputStream() {
+        val entered = CountDownLatch(1)
+        val bytes = ByteArrayOutputStream()
+        override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            bytes.write(b, off, len)
+        }
+    }
+
+    private object FailingSink : OutputStream() {
+        override fun write(b: Int) = throw IOException("disk full")
+        override fun write(b: ByteArray, off: Int, len: Int) = throw IOException("disk full")
+    }
+
+    private fun dest(sink: OutputStream): Uri {
+        val uri = Uri.parse("content://dest.test/${System.nanoTime()}/out.pdf")
+        shadowOf(app.contentResolver).registerOutputStream(uri, sink)
+        return uri
+    }
+
+    private fun back() {
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+    }
+
+    private fun runToReady() {
+        click(TAG_JOB_RUN)
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        rule.waitForIdle()
+    }
+
+    private fun ready() {
+        choosePdf(pdf("doc.pdf"), "doc.pdf")
+        addImages(image("a.jpg"), image("b.jpg"))
+        runToReady()
+    }
+
+    /** Asserts the result was discarded: Idle, run button back, nothing in the job cache, save refused. */
+    private fun assertResultDiscarded() {
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertDoesNotExist()
+        val sink = ByteArrayOutputStream()
+        rule.runOnUiThread { vm.save(dest(sink)) }
+        rule.waitForIdle()
+        assertEquals(JobUiState.Idle, state())
+        assertEquals(0, sink.size())
+        assertEquals(app.getString(R.string.core_result_unavailable), vm.saveError.value)
     }
 
     private fun pdf(name: String, content: String = name): Uri =
@@ -148,9 +220,8 @@ class AddImagesScreenTest {
         // Only a PDF (a file:// Uri, so that its size is known).
         val firstFile = File(app.filesDir, "first.pdf").apply { writeText("%PDF-1.7 first") }
         choosePdf(Uri.fromFile(firstFile), "first.pdf")
-        rule.onNodeWithTag(TAG_ADDIMAGES_PDF_NAME).performScrollTo().assertTextEquals("first.pdf")
-        rule.onNodeWithTag(TAG_ADDIMAGES_PDF_SIZE).performScrollTo()
-            .assertTextEquals(formatBytes("%PDF-1.7 first".length.toLong()))
+        rule.onNodeWithTag(TAG_ADDIMAGES_PDF_NAME).performScrollTo()
+            .assertTextEquals("first.pdf", formatBytes("%PDF-1.7 first".length.toLong()))
         rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
 
         // Choosing again replaces it.
@@ -295,5 +366,124 @@ class AddImagesScreenTest {
         assertEquals("with-images.pdf", AddImagesViewModel.suggestedNameFor("   "))
         assertEquals("with-images.pdf", AddImagesViewModel.suggestedNameFor(".pdf"))
         assertEquals("with-images.pdf", AddImagesViewModel.suggestedNameFor(null))
+    }
+
+    @Test
+    fun changingInputsDiscardsReadyResult() {
+        choosePdf(pdf("doc.pdf"), "doc.pdf")
+        addImages(image("a.jpg"), image("b.jpg"), image("c.jpg"))
+        runToReady()
+        assertFalse(CoreTestSupport.jobsEmpty(app))
+        click(fileRowUpTag(1))
+        assertResultDiscarded()
+
+        runToReady()
+        click(fileRowRemoveTag(0))
+        assertResultDiscarded()
+
+        runToReady()
+        addImages(image("d.jpg"))
+        assertResultDiscarded()
+
+        runToReady()
+        choosePdf(pdf("other.pdf"), "other.pdf")
+        assertResultDiscarded()
+        assertEquals(3, vm.images.value.size)
+    }
+
+    @Test
+    fun inputsLockedWhileSaving() {
+        ready()
+        val other = pdf("other.pdf")
+        val release = CountDownLatch(1)
+        val sink = BlockingSink(release)
+        try {
+            rule.runOnUiThread { vm.save(dest(sink)) }
+            CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
+            rule.waitForIdle()
+            assertTrue(state() is JobUiState.Saving)
+            rule.onNodeWithTag(TAG_JOB_SAVING).performScrollTo().assertIsDisplayed()
+            rule.onNodeWithTag(fileRowUpTag(1)).assertDoesNotExist()
+            rule.onNodeWithTag(fileRowRemoveTag(0)).assertDoesNotExist()
+            rule.onNodeWithTag(TAG_ADDIMAGES_ADD_IMAGES).performScrollTo().assertIsNotEnabled()
+            rule.onNodeWithTag(TAG_ADDIMAGES_CHOOSE_PDF).performScrollTo().assertIsNotEnabled()
+            // The ViewModel ignores changes too.
+            rule.runOnUiThread {
+                vm.moveDown(0)
+                vm.remove(1)
+                vm.addImages(listOf(image("c.jpg")))
+                vm.choosePdf(listOf(other))
+            }
+            rule.waitForIdle()
+            assertEquals(listOf("a.jpg", "b.jpg"), vm.images.value.map { it.file.name })
+            assertEquals("doc.pdf", vm.pdf.value?.name)
+            assertTrue(state() is JobUiState.Saving)
+        } finally {
+            release.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ADDIMAGES_CHOOSE_PDF).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(TAG_ADDIMAGES_ADD_IMAGES).performScrollTo().assertIsEnabled()
+        assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
+    }
+
+    @Test
+    fun backWithResultAsksBeforeLeaving() {
+        back()
+        assertEquals(1, backCalls)
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
+
+        ready()
+        back()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertIsDisplayed().performClick()
+        rule.waitForIdle()
+        assertEquals(1, backCalls)
+        assertTrue(state() is JobUiState.ReadyToSave)
+        rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
+
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertIsDisplayed().performClick()
+        rule.waitForIdle()
+        assertEquals(2, backCalls)
+    }
+
+    @Test
+    fun successfulSaveIsRecordedAsRecent() {
+        ready()
+        rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
+        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        val recents = RecentFilesStore.get(app).recents.value
+        assertEquals(1, recents.size)
+        assertEquals("add_images", recents.single().tool)
+        assertEquals(AddImagesViewModel.TOOL_ID, vm.toolId)
+    }
+
+    @Test
+    fun failedSaveErrorStaysUntilNextAction() {
+        ready()
+        rule.runOnUiThread { vm.save(dest(FailingSink)) }
+        CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
+        rule.waitForIdle()
+        val failed = app.getString(R.string.core_save_failed)
+        rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
+        assertTrue(state() is JobUiState.ReadyToSave)
+
+        // Discarding (the next action) clears it.
+        click(TAG_JOB_RESET)
+        rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).assertDoesNotExist()
+
+        // "Result no longer available" arrives in Idle and stays until the inputs change.
+        rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).performScrollTo()
+            .assertTextEquals(app.getString(R.string.core_result_unavailable))
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).assertExists()
+        click(fileRowRemoveTag(1))
+        rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).assertDoesNotExist()
     }
 }

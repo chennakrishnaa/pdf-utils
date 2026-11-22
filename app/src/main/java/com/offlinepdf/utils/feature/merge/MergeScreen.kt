@@ -2,12 +2,10 @@ package com.offlinepdf.utils.feature.merge
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -19,15 +17,22 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.offlinepdf.utils.R
+import com.offlinepdf.utils.ui.components.AppIcons
 import com.offlinepdf.utils.ui.components.FileList
 import com.offlinepdf.utils.ui.components.FileRow
+import com.offlinepdf.utils.ui.components.InfoNote
 import com.offlinepdf.utils.ui.components.JobPanel
 import com.offlinepdf.utils.ui.components.JobUiState
+import com.offlinepdf.utils.ui.components.SecondaryActionButton
 import com.offlinepdf.utils.ui.components.SectionHeader
 import com.offlinepdf.utils.ui.components.ToolScaffold
 import com.offlinepdf.utils.ui.components.formatBytes
+import com.offlinepdf.utils.ui.components.hasUnsavedWork
 import com.offlinepdf.utils.ui.components.rememberPdfPicker
 import com.offlinepdf.utils.ui.components.rememberPdfSaver
+
+/** Test tag of the screen's root column. */
+const val TAG_MERGE_ROOT = "merge_root"
 
 /** Test tag of the "Add PDFs" button. */
 const val TAG_MERGE_ADD = "merge_add"
@@ -48,17 +53,23 @@ fun MergeScreen(onBack: () -> Unit) {
     val items by vm.items.collectAsState()
     val state by vm.jobState.collectAsState()
     val saveError by vm.saveError.collectAsState()
-    val running = state is JobUiState.Running
+    // The list is locked while the job runs and while its result is being saved.
+    val locked = state is JobUiState.Running || state is JobUiState.Saving
 
     val picker = rememberPdfPicker(multiple = true) { uris -> vm.add(uris) }
     val saver = rememberPdfSaver { uri -> vm.save(uri) }
 
-    ToolScaffold(title = stringResource(R.string.tool_merge_title), onBack = onBack) { padding ->
+    ToolScaffold(
+        title = stringResource(R.string.tool_merge_title),
+        onBack = onBack,
+        confirmLeave = state.hasUnsavedWork(),
+    ) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(16.dp)
+                .testTag(TAG_MERGE_ROOT),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             SectionHeader(stringResource(R.string.merge_files_header))
@@ -70,36 +81,33 @@ fun MergeScreen(onBack: () -> Unit) {
                         subtitle = item.file.sizeBytes?.let(::formatBytes),
                     )
                 },
-                onMoveUp = if (running) null else vm::moveUp,
-                onMoveDown = if (running) null else vm::moveDown,
-                onRemove = if (running) null else vm::remove,
+                onMoveUp = if (locked) null else vm::moveUp,
+                onMoveDown = if (locked) null else vm::moveDown,
+                onRemove = if (locked) null else vm::remove,
                 emptyText = stringResource(R.string.merge_empty),
+                leadingIcon = AppIcons.pdf,
             )
-            OutlinedButton(
+            SecondaryActionButton(
+                text = stringResource(R.string.merge_add),
                 onClick = picker,
-                enabled = !running,
-                modifier = Modifier.fillMaxWidth().testTag(TAG_MERGE_ADD),
-            ) {
-                Text(stringResource(R.string.merge_add))
-            }
-            Text(
-                text = stringResource(R.string.merge_note),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.testTag(TAG_MERGE_NOTE),
+                enabled = !locked,
+                testTag = TAG_MERGE_ADD,
+                icon = AppIcons.add,
             )
+            InfoNote(text = stringResource(R.string.merge_note), testTag = TAG_MERGE_NOTE)
             JobPanel(
                 state = state,
                 runLabel = stringResource(R.string.merge_run),
                 runEnabled = items.size >= 2,
                 onRun = vm::merge,
                 onCancel = vm::cancel,
-                onSave = {
-                    vm.clearSaveError()
-                    saver(vm.suggestedFileName())
-                },
+                onSave = { saver(vm.suggestedFileName()) },
                 onReset = vm::reset,
+                runIcon = AppIcons.merge,
+                modifier = Modifier.padding(top = 8.dp),
             )
+            // Shown in any state (e.g. "result no longer available" arrives in Idle); the
+            // ViewModel clears it when a run starts, a save succeeds or the list changes.
             saveError?.let { message ->
                 Text(
                     text = message,

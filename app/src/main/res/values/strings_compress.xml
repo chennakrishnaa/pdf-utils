@@ -5,9 +5,13 @@
     <string name="compress_empty">No PDF chosen yet.</string>
     <string name="compress_choose">Choose PDF</string>
     <string name="compress_level_header">Compression level</string>
-    <string name="compress_level_low">Low — best quality</string>
+    <string name="compress_level_low">Low</string>
     <string name="compress_level_medium">Medium</string>
-    <string name="compress_level_high">High — smallest file</string>
+    <string name="compress_level_high">High</string>
+    <!-- Level subtitles; %1$d is the maximum long edge of images in pixels (e.g. 2000). -->
+    <string name="compress_level_low_detail">Up to %1$d px images, best quality</string>
+    <string name="compress_level_medium_detail">Up to %1$d px, good quality</string>
+    <string name="compress_level_high_detail">Up to %1$d px, smallest file</string>
     <string name="compress_note">Images are downscaled and re-encoded. Text stays sharp and selectable.</string>
     <string name="compress_run">Compress</string>
     <!-- Result summary: original size → new size and the saving, e.g. "2.4 MB → 310.0 KB (87% smaller)". -->
