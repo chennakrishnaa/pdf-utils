@@ -203,6 +203,19 @@ class JpegMetadataTest {
         }
     }
 
+    /** A compressed level whose re-encode is not smaller embeds the original: that is stripped too. */
+    @Test
+    fun keepOriginalFallbackIsStripped() {
+        // Already HIGH-encoded (quality 40) pixels: re-encoding them at LOW (quality 80) is larger.
+        val low = Fixtures.rawImageStreams(toPdf(Fixtures.jpeg(tmp.root, "f.jpg", 800, 600), "f-high.pdf", CompressionLevel.HIGH)).single()
+        val src = File(tmp.root, "fc.jpg").also {
+            it.writeBytes(low.copyOfRange(0, 2) + Fixtures.jpegSegment(0xFE, text) + low.copyOfRange(2, low.size))
+        }
+        val pdf = toPdf(src, "fc-low.pdf", CompressionLevel.LOW)
+        assertArrayEquals(expectedStripped(src.readBytes()), Fixtures.rawImageStreams(pdf).single())
+        assertFalse(Fixtures.pdfContains(pdf, text))
+    }
+
     /** Criterion 6: the Original estimate is the stripped size, i.e. what is really embedded. */
     @Test
     fun estimateOfOriginalIsStrippedSize() {
