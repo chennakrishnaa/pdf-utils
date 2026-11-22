@@ -40,6 +40,13 @@ sealed interface JobUiState {
     data class Failed(val message: String) : JobUiState
 }
 
+/**
+ * True when leaving the screen now would lose something: a job in progress, a result not yet
+ * saved, or a save in progress. Pass it to `ToolScaffold(confirmLeave = state.hasUnsavedWork())`.
+ */
+fun JobUiState.hasUnsavedWork(): Boolean =
+    this is JobUiState.Running || this is JobUiState.ReadyToSave || this is JobUiState.Saving
+
 const val TAG_JOB_RUN = "job_run"
 const val TAG_JOB_CANCEL = "job_cancel"
 const val TAG_JOB_SAVE = "job_save"

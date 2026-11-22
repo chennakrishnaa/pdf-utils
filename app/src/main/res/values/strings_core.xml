@@ -8,4 +8,9 @@
     <string name="core_saving">Saving…</string>
     <!-- Shown when the save dialog returns but the result was lost (e.g. the app was closed meanwhile). -->
     <string name="core_result_unavailable">The result is no longer available. Please run it again.</string>
+    <!-- Leave-confirmation dialog shown on Back while a job runs or a result is unsaved. -->
+    <string name="core_leave_title">Leave this screen?</string>
+    <string name="core_leave_text">Work in progress or an unsaved result will be lost.</string>
+    <string name="core_leave_stay">Stay</string>
+    <string name="core_leave_confirm">Leave</string>
 </resources>
