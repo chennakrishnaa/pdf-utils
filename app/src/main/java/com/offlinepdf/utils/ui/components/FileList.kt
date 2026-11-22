@@ -5,10 +5,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.CardDefaults
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -49,6 +52,9 @@ fun fileRowRemoveTag(index: Int): String = "row_${index}_remove"
  * 0-based row index. Passing null for a callback hides that control on every row. Move up is
  * disabled on the first row and move down on the last. Shows [emptyText] when [rows] is empty.
  *
+ * Each row is a card: the 1-based number, an icon badge ([leadingIcon], default [AppIcons.pdf];
+ * pass [AppIcons.image] for image lists), title and subtitle, then the icon buttons.
+ *
  * Built from a plain [Column], so it can be placed inside a vertically scrolling parent.
  */
 @Composable
@@ -59,33 +65,53 @@ fun FileList(
     onRemove: ((index: Int) -> Unit)?,
     modifier: Modifier = Modifier,
     emptyText: String,
+    leadingIcon: Painter? = null,
 ) {
+    val icon = leadingIcon ?: AppIcons.pdf
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (rows.isEmpty()) {
-            Text(
-                text = emptyText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 8.dp).testTag(TAG_FILE_LIST_EMPTY),
-            )
+            androidx.compose.material3.Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = emptyText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 20.dp).testTag(TAG_FILE_LIST_EMPTY),
+                )
+            }
         }
         val last = rows.lastIndex
         rows.forEachIndexed { index, row ->
             key(row.key) {
-                OutlinedCard(modifier = Modifier.fillMaxWidth().testTag(fileRowTag(index))) {
+                OutlinedCard(
+                    modifier = Modifier.fillMaxWidth().testTag(fileRowTag(index)),
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 2.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             text = stringResource(R.string.file_list_number, index + 1),
-                            style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.padding(end = 12.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.widthIn(min = 24.dp),
                         )
-                        Column(modifier = Modifier.weight(1f).padding(vertical = 8.dp)) {
+                        Spacer(Modifier.width(6.dp))
+                        IconBadge(icon, size = 36.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f).padding(vertical = 6.dp)) {
                             Text(
                                 text = row.title,
-                                style = MaterialTheme.typography.bodyLarge,
+                                style = MaterialTheme.typography.titleSmall,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -105,7 +131,7 @@ fun FileList(
                                 enabled = index > 0,
                                 modifier = Modifier.testTag(fileRowUpTag(index)),
                             ) {
-                                Icon(Icons.Filled.KeyboardArrowUp, stringResource(R.string.file_list_move_up))
+                                Icon(AppIcons.arrowUp, stringResource(R.string.file_list_move_up))
                             }
                         }
                         if (onMoveDown != null) {
@@ -114,7 +140,7 @@ fun FileList(
                                 enabled = index < last,
                                 modifier = Modifier.testTag(fileRowDownTag(index)),
                             ) {
-                                Icon(Icons.Filled.KeyboardArrowDown, stringResource(R.string.file_list_move_down))
+                                Icon(AppIcons.arrowDown, stringResource(R.string.file_list_move_down))
                             }
                         }
                         if (onRemove != null) {
@@ -122,7 +148,7 @@ fun FileList(
                                 onClick = { onRemove(index) },
                                 modifier = Modifier.testTag(fileRowRemoveTag(index)),
                             ) {
-                                Icon(Icons.Filled.Close, stringResource(R.string.file_list_remove))
+                                Icon(AppIcons.close, stringResource(R.string.file_list_remove))
                             }
                         }
                     }

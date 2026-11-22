@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.PdfUtils" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.PdfUtils" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Matches the Compose static surface colour, so the launch window does not flash. -->
+        <item name="android:windowBackground">#FFF9F9FF</item>
+    </style>
 </resources>

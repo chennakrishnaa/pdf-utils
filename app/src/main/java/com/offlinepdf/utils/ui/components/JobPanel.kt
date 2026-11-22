@@ -2,17 +2,32 @@ package com.offlinepdf.utils.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.offlinepdf.utils.R
 
@@ -59,17 +74,20 @@ const val TAG_JOB_SAVING = "job_saving"
 /**
  * Run / progress / save / result panel for a tool. Stateless: the caller owns [state].
  *
- * - [JobUiState.Idle]: primary button [runLabel] ([TAG_JOB_RUN]), enabled per [runEnabled], calls [onRun].
- * - [JobUiState.Running]: progress bar ([TAG_JOB_PROGRESS]; indeterminate when total == 0),
- *   "done of total" text, and Cancel ([TAG_JOB_CANCEL]) calling [onCancel].
- * - [JobUiState.ReadyToSave]: summary ([TAG_JOB_SUMMARY]), "Save as…" ([TAG_JOB_SAVE]) calling
- *   [onSave], and "Discard" ([TAG_JOB_RESET]) calling [onReset].
+ * - [JobUiState.Idle]: a [PrimaryActionButton] [runLabel] ([TAG_JOB_RUN]) with optional
+ *   [runIcon], enabled per [runEnabled], calls [onRun]. No card around it.
+ * - Every other state is shown inside a card:
+ * - [JobUiState.Running]: "done of total" text with a percentage, progress bar
+ *   ([TAG_JOB_PROGRESS]; indeterminate with "Working…" when total == 0), and an outlined
+ *   Cancel ([TAG_JOB_CANCEL]) calling [onCancel].
+ * - [JobUiState.ReadyToSave]: summary ([TAG_JOB_SUMMARY]), primary "Save as…" ([TAG_JOB_SAVE])
+ *   calling [onSave], and a text "Discard" ([TAG_JOB_RESET]) calling [onReset].
  * - [JobUiState.Saving]: summary ([TAG_JOB_SUMMARY]), an indeterminate progress bar and
  *   "Saving…" ([TAG_JOB_SAVING]); no buttons.
- * - [JobUiState.Saved]: success summary ([TAG_JOB_SUMMARY]) and "Start over" ([TAG_JOB_RESET])
- *   calling [onReset].
- * - [JobUiState.Failed]: error message ([TAG_JOB_ERROR]) and "Try again" ([TAG_JOB_RESET])
- *   calling [onReset].
+ * - [JobUiState.Saved]: a check badge with "Saved", the summary ([TAG_JOB_SUMMARY]) and an
+ *   outlined "Start over" ([TAG_JOB_RESET]) calling [onReset].
+ * - [JobUiState.Failed]: an error-tinted card with the message ([TAG_JOB_ERROR]) and an outlined
+ *   "Try again" ([TAG_JOB_RESET]) calling [onReset].
  */
 @Composable
 fun JobPanel(
@@ -81,94 +99,165 @@ fun JobPanel(
     onSave: () -> Unit,
     onReset: () -> Unit,
     modifier: Modifier = Modifier,
+    runIcon: Painter? = null,
 ) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        when (state) {
-            JobUiState.Idle -> {
-                PrimaryActionButton(text = runLabel, onClick = onRun, enabled = runEnabled, testTag = TAG_JOB_RUN)
-            }
+    val colors = MaterialTheme.colorScheme
+    when (state) {
+        JobUiState.Idle -> {
+            PrimaryActionButton(
+                text = runLabel,
+                onClick = onRun,
+                enabled = runEnabled,
+                testTag = TAG_JOB_RUN,
+                modifier = modifier,
+                icon = runIcon,
+            )
+        }
 
-            is JobUiState.Running -> {
-                if (state.total > 0) {
-                    LinearProgressIndicator(
-                        progress = { (state.done.toFloat() / state.total).coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().testTag(TAG_JOB_PROGRESS),
-                    )
+        is JobUiState.Running -> PanelCard(modifier) {
+            if (state.total > 0) {
+                val fraction = (state.done.toFloat() / state.total).coerceIn(0f, 1f)
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = stringResource(R.string.job_progress, state.done, state.total),
                         style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
                     )
-                } else {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag(TAG_JOB_PROGRESS))
-                    Text(text = stringResource(R.string.job_working), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = stringResource(R.string.job_percent, (fraction * 100).toInt()),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = colors.primary,
+                    )
                 }
-                OutlinedButton(onClick = onCancel, modifier = Modifier.testTag(TAG_JOB_CANCEL)) {
-                    Text(stringResource(R.string.job_cancel))
-                }
+                LinearProgressIndicator(
+                    progress = { fraction },
+                    modifier = Modifier.fillMaxWidth().testTag(TAG_JOB_PROGRESS),
+                )
+            } else {
+                Text(text = stringResource(R.string.job_working), style = MaterialTheme.typography.bodyMedium)
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag(TAG_JOB_PROGRESS))
             }
-
-            is JobUiState.ReadyToSave -> {
-                Text(
-                    text = state.summary,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.testTag(TAG_JOB_SUMMARY),
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = onSave, modifier = Modifier.testTag(TAG_JOB_SAVE)) {
-                        Text(stringResource(R.string.job_save))
-                    }
-                    OutlinedButton(onClick = onReset, modifier = Modifier.testTag(TAG_JOB_RESET)) {
-                        Text(stringResource(R.string.job_discard))
-                    }
-                }
+            OutlinedButton(
+                onClick = onCancel,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(TAG_JOB_CANCEL),
+            ) {
+                Icon(AppIcons.close, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.job_cancel))
             }
+        }
 
-            is JobUiState.Saving -> {
-                Text(
-                    text = state.summary,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.testTag(TAG_JOB_SUMMARY),
-                )
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                Text(
-                    text = stringResource(R.string.core_saving),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.testTag(TAG_JOB_SAVING),
-                )
+        is JobUiState.ReadyToSave -> PanelCard(modifier) {
+            StatusHeading(icon = AppIcons.check, text = stringResource(R.string.job_ready_title))
+            Summary(state.summary)
+            PrimaryActionButton(
+                text = stringResource(R.string.job_save),
+                onClick = onSave,
+                enabled = true,
+                testTag = TAG_JOB_SAVE,
+                icon = AppIcons.save,
+            )
+            TextButton(
+                onClick = onReset,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(TAG_JOB_RESET),
+            ) {
+                Text(stringResource(R.string.job_discard))
             }
+        }
 
-            is JobUiState.Saved -> {
-                Text(
-                    text = stringResource(R.string.job_saved_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = state.summary,
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.testTag(TAG_JOB_SUMMARY),
-                )
-                OutlinedButton(onClick = onReset, modifier = Modifier.testTag(TAG_JOB_RESET)) {
-                    Text(stringResource(R.string.job_start_over))
-                }
+        is JobUiState.Saving -> PanelCard(modifier) {
+            Summary(state.summary)
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text(
+                text = stringResource(R.string.core_saving),
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onSurfaceVariant,
+                modifier = Modifier.testTag(TAG_JOB_SAVING),
+            )
+        }
+
+        is JobUiState.Saved -> PanelCard(modifier) {
+            StatusHeading(icon = AppIcons.check, text = stringResource(R.string.job_saved_title))
+            Summary(state.summary)
+            OutlinedButton(
+                onClick = onReset,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(TAG_JOB_RESET),
+            ) {
+                Text(stringResource(R.string.job_start_over))
             }
+        }
 
-            is JobUiState.Failed -> {
-                Text(
-                    text = stringResource(R.string.job_failed_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-                Text(
-                    text = state.message,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.testTag(TAG_JOB_ERROR),
-                )
-                OutlinedButton(onClick = onReset, modifier = Modifier.testTag(TAG_JOB_RESET)) {
-                    Text(stringResource(R.string.job_try_again))
-                }
+        is JobUiState.Failed -> PanelCard(modifier, container = colors.errorContainer, content = colors.onErrorContainer) {
+            Text(
+                text = stringResource(R.string.job_failed_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = colors.onErrorContainer,
+            )
+            Text(
+                text = state.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onErrorContainer,
+                modifier = Modifier.testTag(TAG_JOB_ERROR),
+            )
+            OutlinedButton(
+                onClick = onReset,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(TAG_JOB_RESET),
+            ) {
+                Text(stringResource(R.string.job_try_again), color = colors.onErrorContainer)
             }
         }
     }
 }
+
+@Composable
+private fun PanelCard(
+    modifier: Modifier,
+    container: Color = MaterialTheme.colorScheme.surfaceContainer,
+    content: Color = MaterialTheme.colorScheme.onSurface,
+    body: @Composable ColumnScope.() -> Unit,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = container, contentColor = content),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = body,
+        )
+    }
+}
+
+/** A small tinted round badge with [icon], followed by [text] as a title. */
+@Composable
+private fun StatusHeading(icon: Painter, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp)) {
+            Icon(
+                painter = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.padding(5.dp),
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        )
+    }
+}
+
+@Composable
+private fun Summary(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier.testTag(TAG_JOB_SUMMARY),
+    )
+}
+
