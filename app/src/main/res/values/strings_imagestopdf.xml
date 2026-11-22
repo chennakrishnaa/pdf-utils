@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="imagestopdf_images_header">Images</string>
+    <string name="imagestopdf_add">Add images</string>
+    <string name="imagestopdf_empty">No images yet. Each image becomes one page, in the order shown.</string>
+    <string name="imagestopdf_size_header">Page size</string>
+    <string name="imagestopdf_size_fit">Fit to image</string>
+    <string name="imagestopdf_size_a4">A4</string>
+    <string name="imagestopdf_size_letter">Letter</string>
+    <string name="imagestopdf_run">Create PDF</string>
+    <plurals name="imagestopdf_pages">
+        <item quantity="one">%d page</item>
+        <item quantity="other">%d pages</item>
+    </plurals>
+    <!-- Summary after a run: "3 pages · 1.2 MB". -->
+    <string name="imagestopdf_summary">%1$s · %2$s</string>
+</resources>
