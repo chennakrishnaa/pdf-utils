@@ -1,17 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher icon foreground (original artwork): a tilted back page, a white page with a folded corner, a coral PDF label and two text bars. All content sits inside the 66dp safe circle. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Simple document sheet with a folded corner. -->
+    <!-- back sheet -->
+    <path
+        android:fillColor="#FFC4D4EF"
+        android:pathData="M58.45,28.13C58.17,28.13 57.88,28.15 57.59,28.21L35.01,32.6C32.57,33.07 30.98,35.43 31.45,37.87L38.13,72.23C38.55,74.38 40.43,75.87 42.55,75.87C42.83,75.87 43.12,75.85 43.41,75.79L65.99,71.4C68.43,70.93 70.02,68.57 69.55,66.13L62.87,31.77C62.45,29.62 60.57,28.13 58.45,28.13Z" />
+    <!-- front sheet shadow -->
+    <path
+        android:fillColor="#33102A55"
+        android:pathData="M49,35.5C46.51,35.5 44.5,37.51 44.5,40L44.5,75C44.5,77.49 46.51,79.5 49,79.5L72,79.5C74.49,79.5 76.5,77.49 76.5,75L76.5,44.5L67.5,35.5Z" />
+    <!-- front sheet -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M38,30h22l10,10v38h-32z" />
+        android:pathData="M48,34C45.51,34 43.5,36.01 43.5,38.5L43.5,73.5C43.5,75.99 45.51,78 48,78L71,78C73.49,78 75.5,75.99 75.5,73.5L75.5,43L66.5,34Z" />
+    <!-- folded corner -->
     <path
-        android:fillColor="#FFB3261E"
-        android:pathData="M60,30v10h10z" />
+        android:fillColor="#FFAFC3E6"
+        android:pathData="M64.5,34L64.5,42.5C64.5,43.88 65.62,45 67,45L75.5,45L64.5,34Z" />
+    <!-- text bars -->
     <path
-        android:fillColor="#FFB3261E"
-        android:pathData="M43,50h22v3h-22zM43,57h22v3h-22zM43,64h15v3h-15z" />
+        android:fillColor="#FF9DB3DA"
+        android:pathData="M51.25,63C50.28,63 49.5,63.78 49.5,64.75C49.5,65.72 50.28,66.5 51.25,66.5L67.75,66.5C68.72,66.5 69.5,65.72 69.5,64.75C69.5,63.78 68.72,63 67.75,63ZM51.25,69C50.28,69 49.5,69.78 49.5,70.75C49.5,71.72 50.28,72.5 51.25,72.5L61.75,72.5C62.72,72.5 63.5,71.72 63.5,70.75C63.5,69.78 62.72,69 61.75,69Z" />
+    <!-- accent chip -->
+    <path
+        android:fillColor="#FFFF7A59"
+        android:pathData="M39.5,45C37.57,45 36,46.57 36,48.5L36,56.5C36,58.43 37.57,60 39.5,60L64.5,60C66.43,60 68,58.43 68,56.5L68,48.5C68,46.57 66.43,45 64.5,45Z" />
+    <!-- P -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M43,49.9C43.44,49.9 43.8,50.3 43.8,50.8C43.8,51.3 43.44,51.7 43,51.7L42.2,51.7L42.2,49.9ZM39.4,47.5L39.4,57.5L42.2,57.5L42.2,54.1L43.3,54.1C45.12,54.1 46.6,52.62 46.6,50.8L46.6,50.8C46.6,48.98 45.12,47.5 43.3,47.5Z" />
+    <!-- D -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M52.4,49.9C52.95,49.9 53.4,50.62 53.4,51.5L53.4,53.5C53.4,54.38 52.95,55.1 52.4,55.1L51.4,55.1L51.4,49.9ZM48.6,47.5L48.6,57.5L52.4,57.5C54.5,57.5 56.2,55.8 56.2,53.7L56.2,51.3C56.2,49.2 54.5,47.5 52.4,47.5Z" />
+    <!-- F -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M58.2,47.5L58.2,57.5L61,57.5L61,54.2L63.4,54.2L63.4,51.8L61,51.8L61,50L64.6,50L64.6,47.5Z" />
 </vector>
