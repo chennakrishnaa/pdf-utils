@@ -9,7 +9,7 @@
     <string name="imagestopdf_size_letter">Letter</string>
     <string name="imagestopdf_quality_header">Image quality</string>
     <string name="imagestopdf_quality_original">Original quality</string>
-    <string name="imagestopdf_quality_original_detail">Images are added unchanged</string>
+    <string name="imagestopdf_quality_original_detail">Full picture quality; location and camera details removed</string>
     <string name="imagestopdf_quality_low">Low compression</string>
     <!-- %d: maximum long edge in pixels. -->
     <string name="imagestopdf_quality_low_detail">Up to %d px, very good quality</string>
