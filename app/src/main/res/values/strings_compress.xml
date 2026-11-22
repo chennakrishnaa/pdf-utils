@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compress PDF screen -->
+    <string name="compress_file_header">PDF to compress</string>
+    <string name="compress_empty">No PDF chosen yet.</string>
+    <string name="compress_choose">Choose PDF</string>
+    <string name="compress_level_header">Compression level</string>
+    <string name="compress_level_low">Low — best quality</string>
+    <string name="compress_level_medium">Medium</string>
+    <string name="compress_level_high">High — smallest file</string>
+    <string name="compress_note">Images are downscaled and re-encoded. Text stays sharp and selectable.</string>
+    <string name="compress_run">Compress</string>
+    <!-- Result summary: original size → new size and the saving, e.g. "2.4 MB → 310.0 KB (87% smaller)". -->
+    <string name="compress_summary">%1$s → %2$s (%3$d%% smaller)</string>
+    <!-- Result summary when the original size is unknown: just the new size. -->
+    <string name="compress_summary_size_only">Compressed size: %1$s</string>
+    <!-- Result summary when compression did not make the file smaller. -->
+    <string name="compress_summary_no_gain">This PDF is already as small as it gets — nothing to gain.</string>
+    <!-- Default name suggested in the save dialog when the original name is unusable. -->
+    <string name="compress_file_name" translatable="false">compressed.pdf</string>
+</resources>
