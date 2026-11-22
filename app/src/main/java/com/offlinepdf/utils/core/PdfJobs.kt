@@ -1,7 +1,9 @@
 package com.offlinepdf.utils.core
 
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.annotation.VisibleForTesting
 import com.offlinepdf.utils.PdfUtilApp
 import com.offlinepdf.utils.engine.JobControl
@@ -9,8 +11,10 @@ import com.offlinepdf.utils.engine.PdfEngine
 import com.offlinepdf.utils.engine.PdfError
 import com.offlinepdf.utils.engine.PdfResult
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -21,7 +25,9 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -73,8 +79,18 @@ class PdfJobs @VisibleForTesting internal constructor(
     private val engineDispatcher: CoroutineDispatcher = ENGINE_DISPATCHER,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
+    private val openDestination: (Context, Uri) -> OutputStream? = { ctx, uri ->
+        ctx.contentResolver.openOutputStream(uri, "wt")
+    },
 ) {
     private val appContext: Context = context.applicationContext ?: context
+
+    /**
+     * Process-lifetime scope on the main dispatcher for work that must finish even when the
+     * screen that started it goes away (saving a result). Never cancelled; its children must
+     * catch their own exceptions.
+     */
+    val processScope: CoroutineScope = CoroutineScope(SupervisorJob() + mainDispatcher)
 
     /** `cacheDir/jobs`, the root of all job directories. */
     @VisibleForTesting
@@ -183,20 +199,56 @@ class PdfJobs @VisibleForTesting internal constructor(
     }
 
     /**
-     * Copies [output] to [dest] (truncating it) on the IO dispatcher. On success deletes the
-     * job directory; on failure keeps [output] so the caller can retry with another [dest].
+     * Copies [output] to [dest] (truncating it) on the IO dispatcher. Success is reported only
+     * after the data has been written, flushed and the destination closed without error; the
+     * job directory is then deleted.
+     *
+     * On any failure (including a cancellation of the caller) the destination document is
+     * deleted best-effort (see [deleteDestination]) so no truncated file is left behind, and
+     * [output] is kept so the caller can retry with another [dest]. Failures are returned as
+     * `Result.failure`; a cancellation is rethrown after the cleanup.
      */
     suspend fun save(output: PendingOutput, dest: Uri): Result<Unit> = withContext(ioDispatcher) {
         try {
             if (!output.file.isFile) throw IOException("Output no longer exists")
             val ctx = currentCoroutineContext()
-            UriIo.copyToUri(appContext, output.file, dest) { !ctx.isActive }
+            val stream = openDestination(appContext, dest) ?: throw IOException("Cannot open destination")
+            stream.use { out ->
+                UriIo.copyToStream(output.file, out) { !ctx.isActive }
+                if (out is FileOutputStream) {
+                    try {
+                        out.fd.sync()
+                    } catch (e: IOException) {
+                        // Best effort: pipes and some providers cannot sync.
+                    }
+                }
+            }
             output.jobDir.deleteRecursively()
             Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
+        } catch (e: Throwable) {
+            withContext(NonCancellable) { deleteDestination(dest) }
+            when (e) {
+                is CancellationException -> throw e
+                is Exception -> Result.failure(e)
+                else -> Result.failure(IOException("Save failed", e))
+            }
+        }
+    }
+
+    /**
+     * Deletes the document at [dest] best-effort: `DocumentsContract.deleteDocument` for
+     * document Uris, [File.delete] for `file:` Uris; anything else and every failure is
+     * ignored. Blocking; call off the main thread. Only for documents this app just created.
+     */
+    fun deleteDestination(dest: Uri) {
+        try {
+            when {
+                dest.scheme == ContentResolver.SCHEME_FILE -> dest.path?.let { File(it).delete() }
+                DocumentsContract.isDocumentUri(appContext, dest) ->
+                    DocumentsContract.deleteDocument(appContext.contentResolver, dest)
+            }
         } catch (e: Exception) {
-            Result.failure(e)
+            // Best effort.
         }
     }
 

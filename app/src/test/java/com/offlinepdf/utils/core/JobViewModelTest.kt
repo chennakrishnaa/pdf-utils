@@ -227,4 +227,107 @@ class JobViewModelTest {
         vm.clear()
         assertTrue(CoreTestSupport.jobsEmpty(app))
     }
+
+    /** An output stream whose first write blocks until [release] is counted down. */
+    private class BlockingSink(val release: CountDownLatch) : OutputStream() {
+        val entered = CountDownLatch(1)
+        val bytes = ByteArrayOutputStream()
+        override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            entered.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            bytes.write(b, off, len)
+        }
+    }
+
+    @Test
+    fun savingStateIgnoresResetStartCancelAndSave() {
+        runToReady()
+        val ready = state() as JobUiState.ReadyToSave
+        val release = CountDownLatch(1)
+        val sink = BlockingSink(release)
+        try {
+            vm.save(dest(sink))
+            assertEquals(JobUiState.Saving(ready.summary), state())
+            CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
+            vm.reset()
+            vm.cancel()
+            vm.merge(listOf(input()))
+            vm.save(dest(ByteArrayOutputStream()))
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertEquals(JobUiState.Saving(ready.summary), state())
+            assertEquals(1, fake.calls.size)
+            assertFalse(vm.isRunning)
+        } finally {
+            release.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        assertEquals(JobUiState.Saved(ready.summary), state())
+        assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun failedSaveGoesBackToReadyToSaveFromSaving() {
+        runToReady()
+        val ready = state()
+        val seen = mutableListOf<JobUiState>()
+        vm.save(dest(object : OutputStream() {
+            override fun write(b: Int) = throw IOException("disk full")
+        }))
+        seen += state()
+        CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
+        assertTrue(seen.single() is JobUiState.Saving)
+        assertEquals(ready, state())
+        assertFalse(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun clearingDuringSaveStillCompletesTheFile() {
+        runToReady()
+        val release = CountDownLatch(1)
+        val sink = BlockingSink(release)
+        try {
+            vm.save(dest(sink))
+            CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
+            vm.clear()
+            assertFalse("output must survive while it is being saved", CoreTestSupport.jobsEmpty(app))
+        } finally {
+            release.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun clearingDuringFailingSaveDiscardsOutput() {
+        runToReady()
+        val release = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        try {
+            vm.save(dest(object : OutputStream() {
+                override fun write(b: Int) = throw IOException("disk full")
+                override fun write(b: ByteArray, off: Int, len: Int) {
+                    entered.countDown()
+                    release.await(5, TimeUnit.SECONDS)
+                    throw IOException("disk full")
+                }
+            }))
+            CoreTestSupport.idleUntil(message = "copy started") { entered.count == 0L }
+            vm.clear()
+        } finally {
+            release.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "cache cleaned") { CoreTestSupport.jobsEmpty(app) }
+    }
+
+    @Test
+    fun saveWithoutPendingOutputDeletesDestinationAndExplains() {
+        val created = java.io.File(app.filesDir, "created.pdf").apply { writeBytes(ByteArray(0)) }
+        vm.save(Uri.fromFile(created))
+        assertEquals(app.getString(R.string.core_result_unavailable), vm.saveError.value)
+        assertEquals(JobUiState.Idle, state())
+        CoreTestSupport.idleUntil(message = "destination deleted") { !created.exists() }
+    }
 }

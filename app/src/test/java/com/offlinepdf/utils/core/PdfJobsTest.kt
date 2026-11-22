@@ -148,6 +148,83 @@ class PdfJobsTest {
         assertTrue(CoreTestSupport.jobsEmpty(context))
     }
 
+    /** A PdfJobs whose destination streams come from [opener] (to inject write/close failures on real files). */
+    private fun jobsWithOpener(opener: (Uri) -> OutputStream?) =
+        PdfJobs(context, engineDispatcher, Dispatchers.IO, Dispatchers.Unconfined) { _, uri -> opener(uri) }
+
+    private fun readyOutput(j: PdfJobs) = runBlocking {
+        j.run(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3)))), { _, _ -> }) { engine, files, out, job ->
+            engine.merge(files, out, job)
+        }
+    }.let { (it as JobOutcome.Ready).output }
+
+    @Test
+    fun failureMidWriteDeletesDestinationKeepsOutputAndRetryWorks() {
+        val broken = tmp.newFile("broken.pdf")
+        val good = tmp.root.resolve("good.pdf")
+        val j = jobsWithOpener { uri ->
+            val f = File(uri.path!!)
+            if (f == broken) {
+                val real = java.io.FileOutputStream(f)
+                object : OutputStream() {
+                    override fun write(b: Int) = throw IOException("disk full")
+                    override fun write(b: ByteArray, off: Int, len: Int) {
+                        real.write(b, off, maxOf(1, len / 2)) // part of the data reaches the file
+                        throw IOException("disk full")
+                    }
+                    override fun close() = real.close()
+                }
+            } else {
+                java.io.FileOutputStream(f)
+            }
+        }
+        val output = readyOutput(j)
+        val result = runBlocking { j.save(output, Uri.fromFile(broken)) }
+        assertTrue(result.isFailure)
+        assertFalse("truncated destination must be deleted", broken.exists())
+        assertTrue(output.file.isFile)
+
+        assertTrue(runBlocking { j.save(output, Uri.fromFile(good)) }.isSuccess)
+        assertArrayEquals(fake.outputContent, good.readBytes())
+        assertTrue(CoreTestSupport.jobsEmpty(context))
+    }
+
+    @Test
+    fun closeFailureCountsAsFailedSave() {
+        val dest = tmp.newFile("close.pdf")
+        val j = jobsWithOpener { uri ->
+            object : java.io.FileOutputStream(File(uri.path!!)) {
+                override fun close() {
+                    super.close()
+                    throw IOException("close failed")
+                }
+            }
+        }
+        val output = readyOutput(j)
+        assertTrue(runBlocking { j.save(output, Uri.fromFile(dest)) }.isFailure)
+        assertFalse(dest.exists())
+        assertTrue(output.file.isFile)
+    }
+
+    @Test
+    fun cannotOpenDestinationIsFailure() {
+        val dest = tmp.newFile("null.pdf")
+        val j = jobsWithOpener { null }
+        val output = readyOutput(j)
+        assertTrue(runBlocking { j.save(output, Uri.fromFile(dest)) }.isFailure)
+        assertFalse(dest.exists())
+        assertTrue(output.file.isFile)
+    }
+
+    @Test
+    fun deleteDestinationNeverThrows() {
+        jobs.deleteDestination(Uri.parse("content://dest.test/whatever.pdf"))
+        jobs.deleteDestination(Uri.fromFile(tmp.root.resolve("missing.pdf")))
+        val f = tmp.newFile("x.pdf")
+        jobs.deleteDestination(Uri.fromFile(f))
+        assertFalse(f.exists())
+    }
+
     @Test
     fun discardEmptiesCache() {
         val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output

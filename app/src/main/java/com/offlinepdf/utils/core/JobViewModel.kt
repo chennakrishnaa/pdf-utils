@@ -14,6 +14,7 @@ import com.offlinepdf.utils.ui.components.pdfErrorMessage
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,8 +32,11 @@ import kotlin.coroutines.cancellation.CancellationException
  * - `Idle`/`ReadyToSave`/`Saved`/`Failed` --[startJob]--> `Running(0, 0)` --progress--> `Running(d, t)`
  * - `Running` --success--> `ReadyToSave(summary)`; --error--> `Failed(message)`;
  *   --[cancel] or engine `Cancelled`--> `Idle` (once the engine has stopped and the cache is clean).
- * - `ReadyToSave` --[save] ok--> `Saved(summary)`; failure stays `ReadyToSave` and sets [saveError].
- * - any --[reset]--> `Idle` (cancels a running job, discards a pending output).
+ * - `ReadyToSave` --[save]--> `Saving(summary)` --ok--> `Saved(summary)`; --failure--> back to
+ *   `ReadyToSave` with [saveError] set. While `Saving`, [save], [reset], [cancel] and [startJob]
+ *   are ignored. The copy runs in [PdfJobs.processScope], so it completes (or cleans up) even if
+ *   this ViewModel is cleared meanwhile.
+ * - any but `Saving` --[reset]--> `Idle` (cancels a running job, discards a pending output).
  *
  * @param jobs job runner; defaults to the process-wide [PdfJobs.get]. Tests may inject one.
  */
@@ -58,13 +62,16 @@ open class JobViewModel(
     private var pending: PendingOutput? = null
     private var summary: String = ""
     private var runningJob: Job? = null
-    private var saveJob: Job? = null
+    private var cleared = false
 
     /** True while a job is running (including while it winds down after [cancel]). */
     val isRunning: Boolean get() = runningJob != null
 
+    /** True while the result is being copied to its destination (state `Saving`). */
+    private val isSaving: Boolean get() = _jobState.value is JobUiState.Saving
+
     /**
-     * Starts a job; ignored while one is already running. Any previous pending output is
+     * Starts a job; ignored while one is already running or a save is in progress. Any previous pending output is
      * discarded. [block] runs on the engine thread with the prepared input files (same order as
      * [inputs]) and must call exactly one [PdfEngine] operation with `out` and `job`, e.g.
      * `{ engine, files, out, job -> engine.merge(files, out, job) }`. [summarize] runs on the
@@ -76,9 +83,8 @@ open class JobViewModel(
         summarize: (PdfResult.Ok) -> String,
         block: (PdfEngine, List<File>, File, JobControl) -> PdfResult,
     ) {
-        if (isRunning) return
+        if (isRunning || isSaving) return
         discardPending()
-        saveJob?.cancel()
         lastResult = null
         summary = ""
         _saveError.value = null
@@ -114,30 +120,64 @@ open class JobViewModel(
         job.start()
     }
 
-    /** Cancels a running job; the state becomes `Idle` once the engine has stopped. No-op otherwise. */
+    /** Cancels a running job; the state becomes `Idle` once the engine has stopped. No-op otherwise (also while saving). */
     fun cancel() {
+        if (isSaving) return
         runningJob?.cancel()
     }
 
     /**
      * Saves the pending output to [dest], the Uri from the "create document" dialog. `null`
-     * (dialog dismissed) keeps `ReadyToSave`. Success → `Saved(summary)`; failure keeps
-     * `ReadyToSave` (the output is kept for another attempt) and sets [saveError].
+     * (dialog dismissed) keeps `ReadyToSave`. Otherwise `ReadyToSave` → `Saving` → `Saved`, or
+     * back to `ReadyToSave` with [saveError] set (the output is kept for another attempt and the
+     * destination document is deleted). Ignored while `Saving`.
+     *
+     * If there is no pending output (e.g. the process was recreated while the dialog was open),
+     * the just-created empty destination document is deleted and [saveError] explains that the
+     * result is gone.
      */
     fun save(dest: Uri?) {
-        if (dest == null) return
-        val output = pending ?: return
-        if (_jobState.value !is JobUiState.ReadyToSave || saveJob?.isActive == true) return
-        saveJob = viewModelScope.launch {
-            val result = jobs.save(output, dest)
-            if (pending !== output) return@launch
+        if (dest == null || isSaving) return
+        val app = getApplication<Application>()
+        val output = pending
+        if (output == null) {
+            jobs.processScope.launch {
+                try {
+                    withContext(Dispatchers.IO) { jobs.deleteDestination(dest) }
+                } catch (e: Exception) {
+                    // Best effort.
+                }
+            }
+            _saveError.value = app.getString(R.string.core_result_unavailable)
+            return
+        }
+        if (_jobState.value !is JobUiState.ReadyToSave) return
+        val savedSummary = summary
+        _saveError.value = null
+        _jobState.value = JobUiState.Saving(savedSummary)
+        jobs.processScope.launch {
+            val result = try {
+                jobs.save(output, dest)
+            } catch (e: Throwable) {
+                Result.failure(e)
+            }
             if (result.isSuccess) {
-                pending = null
-                _jobState.value = JobUiState.Saved(summary)
+                if (pending === output) pending = null
+                onSaved(dest, output)
+                _jobState.value = JobUiState.Saved(savedSummary)
+            } else if (cleared) {
+                jobs.discard(output)
             } else {
-                _saveError.value = getApplication<Application>().getString(R.string.core_save_failed)
+                _jobState.value = JobUiState.ReadyToSave(savedSummary)
+                // Let screens that clear the error on leaving ReadyToSave observe the new state first.
+                yield()
+                _saveError.value = app.getString(R.string.core_save_failed)
             }
         }
+    }
+
+    /** Called (on the main thread, in the process scope) after a successful save, before `Saved` is published. Never throws. */
+    private suspend fun onSaved(dest: Uri, output: PendingOutput) {
     }
 
     /** Clears [saveError] after the UI has shown it. */
@@ -147,14 +187,14 @@ open class JobViewModel(
 
     /**
      * Discards any pending output and returns to `Idle`. While a job is running this is the
-     * same as [cancel] (the state becomes `Idle` once the engine has stopped).
+     * same as [cancel] (the state becomes `Idle` once the engine has stopped). Ignored while saving.
      */
     fun reset() {
+        if (isSaving) return
         if (isRunning) {
             cancel()
             return
         }
-        saveJob?.cancel()
         discardPending()
         lastResult = null
         summary = ""
@@ -171,9 +211,10 @@ open class JobViewModel(
     }
 
     override fun onCleared() {
+        cleared = true
         runningJob?.cancel()
-        saveJob?.cancel()
-        discardPending()
+        // A save in progress owns the pending output: it deletes it on success, discards it on failure.
+        if (!isSaving) discardPending()
         super.onCleared()
     }
 

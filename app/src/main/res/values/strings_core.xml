@@ -4,4 +4,8 @@
     <string name="core_save_failed">Could not save the file there. Please choose another location.</string>
     <!-- Default name suggested in the save dialog. -->
     <string name="core_default_file_name" translatable="false">document.pdf</string>
+    <!-- Shown while the finished PDF is being copied to the chosen location. -->
+    <string name="core_saving">Saving…</string>
+    <!-- Shown when the save dialog returns but the result was lost (e.g. the app was closed meanwhile). -->
+    <string name="core_result_unavailable">The result is no longer available. Please run it again.</string>
 </resources>

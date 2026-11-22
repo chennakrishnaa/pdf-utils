@@ -195,6 +195,14 @@ class ComponentsTest {
     }
 
     @Test
+    fun jobPanelSaving() {
+        showPanel(JobUiState.Saving("3 pages, 1.2 MB"))
+        rule.onNodeWithText("3 pages, 1.2 MB").assertIsDisplayed()
+        rule.onNodeWithTag("job_saving").assertTextEquals(rule.activity.getString(R.string.core_saving))
+        assertAbsent("job_run", "job_cancel", "job_save", "job_reset", "job_error")
+    }
+
+    @Test
     fun jobPanelSaved() {
         val c = showPanel(JobUiState.Saved("Saved merged.pdf"))
         rule.onNodeWithText("Saved merged.pdf").assertIsDisplayed()
