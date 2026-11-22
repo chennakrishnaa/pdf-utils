@@ -32,7 +32,8 @@ import kotlin.coroutines.cancellation.CancellationException
  * - `Idle`/`ReadyToSave`/`Saved`/`Failed` --[startJob]--> `Running(0, 0)` --progress--> `Running(d, t)`
  * - `Running` --success--> `ReadyToSave(summary)`; --error--> `Failed(message)`;
  *   --[cancel] or engine `Cancelled`--> `Idle` (once the engine has stopped and the cache is clean).
- * - `ReadyToSave` --[save]--> `Saving(summary)` --ok--> `Saved(summary)`; --failure--> back to
+ * - `ReadyToSave` --[save]--> `Saving(summary)` --ok--> `Saved(summary)` (recorded in
+ *   [RecentFilesStore] with [toolId] first); --failure--> back to
  *   `ReadyToSave` with [saveError] set. While `Saving`, [save], [reset], [cancel] and [startJob]
  *   are ignored. The copy runs in [PdfJobs.processScope], so it completes (or cleans up) even if
  *   this ViewModel is cleared meanwhile.
@@ -163,7 +164,7 @@ open class JobViewModel(
             }
             if (result.isSuccess) {
                 if (pending === output) pending = null
-                onSaved(dest, output)
+                recordRecent(dest, output)
                 _jobState.value = JobUiState.Saved(savedSummary)
             } else if (cleared) {
                 jobs.discard(output)
@@ -176,8 +177,26 @@ open class JobViewModel(
         }
     }
 
-    /** Called (on the main thread, in the process scope) after a successful save, before `Saved` is published. Never throws. */
-    private suspend fun onSaved(dest: Uri, output: PendingOutput) {
+    /**
+     * Id of the tool, recorded with each saved file in [RecentFilesStore] (e.g. `"merge"`).
+     * Override per tool; must be a constant.
+     */
+    open val toolId: String = ""
+
+    /** Records a successful save in [RecentFilesStore]. Never throws: recording must not fail a save. */
+    private suspend fun recordRecent(dest: Uri, output: PendingOutput) {
+        try {
+            val app = getApplication<Application>()
+            val tool = toolId
+            withContext(Dispatchers.IO) {
+                val described = UriIo.describe(app, dest)
+                RecentFilesStore.get(app).add(
+                    RecentFile(dest, described.name, described.sizeBytes ?: output.bytes, System.currentTimeMillis(), tool),
+                )
+            }
+        } catch (e: Exception) {
+            // Ignore: the file is saved; it just will not appear in the recent list.
+        }
     }
 
     /** Clears [saveError] after the UI has shown it. */

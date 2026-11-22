@@ -46,6 +46,8 @@ class JobViewModelTest {
         fun invalidate() = invalidateResult()
 
         override fun suggestedFileName() = "merged.pdf"
+
+        override val toolId = "merge"
     }
 
     private lateinit var app: Application
@@ -60,12 +62,14 @@ class JobViewModelTest {
         (app as PdfUtilApp).engine = fake
         engineDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         vm = TestVm(app, PdfJobs(app, engineDispatcher, Dispatchers.IO, Dispatchers.Main))
+        RecentFilesStore.resetForTesting()
     }
 
     @After
     fun tearDown() {
         fake.beforeStep = null
         engineDispatcher.close()
+        RecentFilesStore.resetForTesting()
     }
 
     private fun input() = CoreTestSupport.contentUri(app, "a.pdf", "%PDF".toByteArray())
@@ -411,5 +415,31 @@ class JobViewModelTest {
         }
         CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
+    }
+
+    @Test
+    fun successfulSaveIsRecordedInRecents() {
+        runToReady()
+        val target = java.io.File(app.filesDir, "result.pdf").apply { writeBytes(ByteArray(0)) }
+        val before = System.currentTimeMillis()
+        vm.save(Uri.fromFile(target))
+        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        val recent = RecentFilesStore.get(app).recents.value.single()
+        assertEquals(Uri.fromFile(target), recent.uri)
+        assertEquals("result.pdf", recent.name)
+        assertEquals(fake.outputContent.size.toLong(), recent.sizeBytes)
+        assertEquals("merge", recent.tool)
+        assertTrue(recent.savedAtMillis >= before)
+        assertArrayEquals(fake.outputContent, target.readBytes())
+    }
+
+    @Test
+    fun failedSaveIsNotRecorded() {
+        runToReady()
+        vm.save(dest(object : OutputStream() {
+            override fun write(b: Int) = throw IOException("disk full")
+        }))
+        CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
+        assertTrue(RecentFilesStore.get(app).recents.value.isEmpty())
     }
 }
