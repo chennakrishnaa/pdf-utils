@@ -23,6 +23,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.offlinepdf.utils.R
 import com.offlinepdf.utils.engine.PageSize
@@ -36,8 +37,8 @@ import com.offlinepdf.utils.ui.components.formatBytes
 import com.offlinepdf.utils.ui.components.rememberImagePicker
 import com.offlinepdf.utils.ui.components.rememberPdfSaver
 
-/** Test tag of the root content column (kept from the original placeholder for navigation tests). */
-const val TAG_IMAGESTOPDF_ROOT = "stub_images_to_pdf"
+/** Test tag of the root content column. */
+const val TAG_IMAGESTOPDF_ROOT = "imagestopdf_root"
 const val TAG_IMAGESTOPDF_ADD = "imagestopdf_add"
 const val TAG_IMAGESTOPDF_SAVE_ERROR = "imagestopdf_save_error"
 
@@ -50,7 +51,11 @@ fun imagesToPdfSizeTag(size: PageSize): String = when (size) {
 
 @Composable
 fun ImagesToPdfScreen(onBack: () -> Unit) {
-    val vm: ImagesToPdfViewModel = viewModel()
+    // Explicit initializer: the default AndroidViewModelFactory caches the first Application of the
+    // process, which under Robolectric binds later tests' ViewModels to a stale Application/engine.
+    val vm: ImagesToPdfViewModel = viewModel {
+        ImagesToPdfViewModel(checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]))
+    }
     val images by vm.images.collectAsState()
     val pageSize by vm.pageSize.collectAsState()
     val state by vm.jobState.collectAsState()

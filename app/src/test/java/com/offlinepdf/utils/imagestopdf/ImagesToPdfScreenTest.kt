@@ -17,13 +17,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.ViewModelStore
-import androidx.lifecycle.ViewModelStoreOwner
-import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
-import androidx.lifecycle.viewmodel.initializer
-import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.test.core.app.ApplicationProvider
 import com.offlinepdf.utils.FakePdfEngine
 import com.offlinepdf.utils.MainActivity
@@ -56,6 +50,7 @@ import com.offlinepdf.utils.ui.theme.PdfUtilsTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -78,9 +73,6 @@ class ImagesToPdfScreenTest {
     private lateinit var app: Application
     private lateinit var fake: FakePdfEngine
     private lateinit var vm: ImagesToPdfViewModel
-    private val owner = object : ViewModelStoreOwner {
-        override val viewModelStore = ViewModelStore()
-    }
 
     /** Contents of the files the engine received, captured on the engine thread (inputs are deleted after the job). */
     private val received = CopyOnWriteArrayList<String>()
@@ -96,25 +88,16 @@ class ImagesToPdfScreenTest {
                 fake.calls.last().images!!.forEach { received += it.readBytes().copyOfRange(3, it.length().toInt()).decodeToString() }
             }
         }
-        // The ViewModel is created here, for this test's Application, in a store the test owns; the
-        // screen's viewModel() finds it under the default key. (Resolving it through the activity's
-        // default factory handed later tests a ViewModel bound to the first test's Application under
-        // Robolectric, so the job ran against a stale engine.)
-        vm = ViewModelProvider(owner, viewModelFactory { initializer { ImagesToPdfViewModel(app) } })[ImagesToPdfViewModel::class.java]
-        rule.runOnUiThread {
-            rule.activity.setContent {
-                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
-                    PdfUtilsTheme { ImagesToPdfScreen(onBack = {}) }
-                }
-            }
-        }
+        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { ImagesToPdfScreen(onBack = {}) } } }
         rule.waitForIdle()
+        // Same instance the screen created (through its explicit initializer, bound to this test's Application).
+        vm = ViewModelProvider(rule.activity)[ImagesToPdfViewModel::class.java]
+        assertSame(app, vm.getApplication<Application>())
     }
 
     @After
     fun tearDown() {
         fake.beforeStep = null
-        rule.runOnUiThread { owner.viewModelStore.clear() }
     }
 
     /** A content Uri whose bytes sniff as JPEG (so they are passed through unchanged) followed by [marker]. */
