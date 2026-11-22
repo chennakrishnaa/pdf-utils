@@ -181,6 +181,13 @@ class CompressOpTest {
     }
 
     @Test
+    fun ownerPasswordOnly_isErrEncrypted_noOutput() {
+        val out = newOut("owner-out.pdf")
+        assertEquals(PdfResult.Err(PdfError.Encrypted), engine.compress(Fixtures.ownerPasswordPdf(dir), CompressionLevel.MEDIUM, out))
+        assertFalse(out.exists())
+    }
+
+    @Test
     fun corrupt_isErrCorrupt_noOutput() {
         val out = newOut("corrupt-out.pdf")
         assertEquals(PdfResult.Err(PdfError.Corrupt), engine.compress(Fixtures.corruptPdf(dir), CompressionLevel.MEDIUM, out))

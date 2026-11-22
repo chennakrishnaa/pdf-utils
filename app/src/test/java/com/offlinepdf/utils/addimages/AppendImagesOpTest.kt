@@ -191,6 +191,14 @@ class AppendImagesOpTest {
     }
 
     @Test
+    fun ownerPasswordOnlyPdfIsEncryptedAndLeavesNoOutput() {
+        val out = out("owner-out.pdf")
+        val r = MuPdfEngine().appendImages(Fixtures.ownerPasswordPdf(tmp.root), listOf(Fixtures.jpeg(tmp.root, "a.jpg")), out)
+        assertEquals(PdfResult.Err(PdfError.Encrypted), r)
+        assertFalse(out.exists())
+    }
+
+    @Test
     fun inputPdfIsNotModified() {
         val pdf = Fixtures.linkPdf(tmp.root, "link.pdf", "https://example.com/")
         val before = pdf.readBytes()

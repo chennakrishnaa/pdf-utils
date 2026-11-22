@@ -149,6 +149,20 @@ object Fixtures {
     }
 
     /**
+     * Two text pages ("Restricted page 1", "Restricted page 2"), AES-256 encrypted with only an owner password
+     * ([OWNER_PASSWORD]) and an empty user password: it opens without a password (`needsPassword()` is false) but
+     * carries an /Encrypt dictionary with permission restrictions.
+     */
+    fun ownerPasswordPdf(dir: File, name: String = "owner-only.pdf"): File {
+        val f = File(dir, name)
+        buildPdf { doc ->
+            addPage(doc, A4_WIDTH, A4_HEIGHT, null, "Restricted page 1")
+            addPage(doc, A4_WIDTH, A4_HEIGHT, null, "Restricted page 2")
+        }.save(f, "garbage=deduplicate,compress,encrypt=aes-256,owner-password=$OWNER_PASSWORD,permissions=-44")
+        return f
+    }
+
+    /**
      * [pages] pages, each a full-page noisy RGB JPEG (quality 92, [imageWidth]x[imageHeight] px, different seed per
      * page, DCTDecode / DeviceRGB) drawn at 1 px = 1 pt, plus the extractable text "Photo page N" (N from 1).
      * With the defaults the file is several MB.

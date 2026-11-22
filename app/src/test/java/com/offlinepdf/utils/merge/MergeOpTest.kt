@@ -208,6 +208,18 @@ class MergeOpTest {
     }
 
     @Test
+    fun ownerPasswordOnlyInputIsEncryptedAndLeavesNoOutput() {
+        val good = Fixtures.textPdf(tmp.root, "g.pdf", listOf("Good"))
+        val owner = Fixtures.ownerPasswordPdf(tmp.root)
+        for (inputs in listOf(listOf(owner, good), listOf(good, owner))) {
+            val out = out()
+            out.writeText("stale")
+            assertEquals(PdfResult.Err(PdfError.Encrypted), engine.merge(inputs, out))
+            assertFalse(out.exists())
+        }
+    }
+
+    @Test
     fun noProgressBeforeAllInputsValidated() {
         val good = Fixtures.textPdf(tmp.root, "g.pdf", listOf("Good", "Good 2"))
         val enc = Fixtures.encryptedPdf(tmp.root)

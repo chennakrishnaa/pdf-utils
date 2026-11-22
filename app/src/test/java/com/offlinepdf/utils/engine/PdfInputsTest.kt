@@ -40,6 +40,18 @@ class PdfInputsTest {
     }
 
     @Test
+    fun ownerPasswordOnlyIsEncrypted() {
+        val f = Fixtures.ownerPasswordPdf(tmp.root)
+        val raw = com.artifex.mupdf.fitz.Document.openDocument(f.absolutePath)
+        try {
+            assertTrue("fixture must open without a password", !raw.needsPassword())
+        } finally {
+            raw.destroy()
+        }
+        assertSame(PdfError.Encrypted, errorOf(f))
+    }
+
+    @Test
     fun corruptAndEmptyAreCorrupt() {
         assertSame(PdfError.Corrupt, errorOf(Fixtures.corruptPdf(tmp.root)))
         assertSame(PdfError.Corrupt, errorOf(Fixtures.emptyPdfFile(tmp.root)))
