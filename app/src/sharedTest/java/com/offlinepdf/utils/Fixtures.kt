@@ -148,6 +148,144 @@ object Fixtures {
         return File(dir, name).also { it.writeBytes(head + thumb + withExif.copyOfRange(4 + app1Len, withExif.size)) }
     }
 
+    /** ASCII planted in the GPS IFD of [jpegWithMetadata] (GPSProcessingMethod). */
+    const val PLANTED_GPS = "PLANTED-GPS-51.4778N-0.0014W"
+
+    /** ASCII planted in every other metadata segment / chunk of [jpegWithMetadata] and [pngWithMetadata]. */
+    const val PLANTED_TEXT = "PLANTED-CAMERA-DETAILS-QX7"
+
+    /**
+     * Like [jpegWithExifOrientation] (quadrant colours, EXIF [exifOrientation]), but as a phone writes
+     * it, with metadata before the JFIF segment: a full EXIF APP1 (IFD0 with Make and Orientation, a
+     * GPS IFD with latitude and [PLANTED_GPS]), an XMP APP1, an MPF APP2, an APP13 Photoshop/IPTC
+     * segment, an APP0 JFXX, an APP15 and a COM segment, all containing [PLANTED_TEXT]. The XMP and
+     * APP13 are padded to [paddingBytes] each so the metadata is large relative to the image.
+     */
+    fun jpegWithMetadata(
+        dir: File,
+        name: String,
+        width: Int = 300,
+        height: Int = 200,
+        exifOrientation: Int = 6,
+        paddingBytes: Int = 20_000,
+    ): File {
+        val base = jpegWithExifOrientation(dir, "base-$name", width, height, exifOrientation).readBytes()
+        val minimalLen = (base[4].toInt() and 0xFF shl 8) or (base[5].toInt() and 0xFF) // minimal APP1 at 2
+        val rest = base.copyOfRange(4 + minimalLen, base.size)
+        val text = PLANTED_TEXT.toByteArray(Charsets.ISO_8859_1)
+        val pad = ByteArray(paddingBytes) { ' '.code.toByte() }
+        val segs = listOf(
+            jpegSegment(0xE1, fullExif(exifOrientation)),
+            jpegSegment(0xE1, ascii("http://ns.adobe.com/xap/1.0/\u0000<x:xmpmeta><tiff:Model>") + text + ascii("</tiff:Model>") + pad + ascii("</x:xmpmeta>")),
+            jpegSegment(0xE2, ascii("MPF\u0000MM\u0000*") + text),
+            jpegSegment(0xED, ascii("Photoshop 3.0\u00008BIM\u0004\u0004") + text + pad),
+            jpegSegment(0xE0, ascii("JFXX\u0000\u0013") + text),
+            jpegSegment(0xEF, text),
+            jpegSegment(0xFE, text),
+        )
+        val out = ByteArrayOutputStream()
+        out.write(base, 0, 2)
+        segs.forEach { out.write(it) }
+        out.write(rest)
+        File(dir, "base-$name").delete()
+        return File(dir, name).also { it.writeBytes(out.toByteArray()) }
+    }
+
+    /**
+     * [jpeg] with an Adobe APP14 (version 100, transform 1 = YCbCr, as Photoshop writes it) and an
+     * APP2 `ICC_PROFILE` segment (a synthetic, invalid profile that MuPDF ignores with a warning)
+     * inserted after SOI, followed by a COM segment with [PLANTED_TEXT]. Only the COM is metadata.
+     */
+    fun jpegWithAdobeAndIcc(dir: File, name: String, width: Int = 320, height: Int = 240, seed: Long = 1L): File {
+        val base = jpeg(dir, "base-$name", width, height, seed).readBytes()
+        File(dir, "base-$name").delete()
+        val adobe = jpegSegment(0xEE, ascii("Adobe") + byteArrayOf(0, 100, 0, 0, 0, 0, 1))
+        val icc = jpegSegment(0xE2, ascii("ICC_PROFILE\u0000") + byteArrayOf(1, 1) + ByteArray(128) { (it * 7).toByte() })
+        val com = jpegSegment(0xFE, PLANTED_TEXT.toByteArray(Charsets.ISO_8859_1))
+        return File(dir, name).also { it.writeBytes(base.copyOfRange(0, 2) + adobe + icc + com + base.copyOfRange(2, base.size)) }
+    }
+
+    /**
+     * [png] with `tEXt`, `iTXt` and `eXIf` chunks (valid CRCs) inserted after `IHDR`, each containing
+     * [PLANTED_TEXT] (the eXIf one in a minimal big-endian TIFF with an ImageDescription).
+     */
+    fun pngWithMetadata(dir: File, name: String, width: Int = 300, height: Int = 200, seed: Long = 1L): File {
+        val base = png(dir, "base-$name", width, height, seed).readBytes()
+        File(dir, "base-$name").delete()
+        val text = PLANTED_TEXT.toByteArray(Charsets.ISO_8859_1)
+        val desc = text + byteArrayOf(0)
+        val tiff = java.nio.ByteBuffer.allocate(8 + 2 + 12 + 4 + desc.size)
+            .put(ascii("MM")).putShort(42).putInt(8)
+            .putShort(1).putShort(0x010E).putShort(2).putInt(desc.size).putInt(26) // ImageDescription
+            .putInt(0).put(desc).array()
+        val chunks = pngChunk("tEXt", ascii("Comment\u0000") + text) +
+            pngChunk("iTXt", ascii("Description\u0000\u0000\u0000\u0000\u0000") + text) +
+            pngChunk("eXIf", tiff)
+        val ihdrEnd = 8 + 25
+        return File(dir, name).also { it.writeBytes(base.copyOfRange(0, ihdrEnd) + chunks + base.copyOfRange(ihdrEnd, base.size)) }
+    }
+
+    /** One JPEG marker segment: `FF` [marker], 2-byte length, [payload]. */
+    fun jpegSegment(marker: Int, payload: ByteArray): ByteArray {
+        val len = payload.size + 2
+        require(len <= 0xFFFF)
+        return byteArrayOf(0xFF.toByte(), marker.toByte(), (len shr 8).toByte(), len.toByte()) + payload
+    }
+
+    /**
+     * Segments of a JPEG before its first start-of-scan, as (marker, offset of `FF`, offset after
+     * the payload), plus the offset of the SOS marker itself (-1 if none). An independent, simple
+     * walker for tests: assumes no fill bytes or garbage between segments.
+     */
+    fun jpegHeaderSegments(jpeg: ByteArray): Pair<List<Triple<Int, Int, Int>>, Int> {
+        val segs = ArrayList<Triple<Int, Int, Int>>()
+        var p = 2
+        while (p + 4 <= jpeg.size) {
+            require(jpeg[p] == 0xFF.toByte()) { "no marker at $p" }
+            val m = jpeg[p + 1].toInt() and 0xFF
+            if (m == 0xDA) return segs to p
+            val len = (jpeg[p + 2].toInt() and 0xFF shl 8) or (jpeg[p + 3].toInt() and 0xFF)
+            segs.add(Triple(m, p, p + 2 + len))
+            p += 2 + len
+        }
+        return segs to -1
+    }
+
+    private fun fullExif(orientation: Int): ByteArray {
+        val make = ascii("FixtureCam ") + PLANTED_TEXT.toByteArray(Charsets.ISO_8859_1) + byteArrayOf(0)
+        val method = ascii("ASCII\u0000\u0000\u0000") + PLANTED_GPS.toByteArray(Charsets.ISO_8859_1)
+        val ifd0 = 8
+        val gps = ifd0 + 2 + 3 * 12 + 4
+        val data = gps + 2 + 3 * 12 + 4
+        val makeAt = data
+        val latAt = makeAt + make.size
+        val methodAt = latAt + 24
+        val b = java.nio.ByteBuffer.allocate(methodAt + method.size)
+        b.put(ascii("MM")).putShort(42).putInt(ifd0)
+        b.putShort(3)
+        b.putShort(0x010F).putShort(2).putInt(make.size).putInt(makeAt) // Make
+        b.putShort(0x0112).putShort(3).putInt(1).putShort(orientation.toShort()).putShort(0) // Orientation
+        b.putShort(0x8825.toShort()).putShort(4).putInt(1).putInt(gps) // GPS IFD pointer
+        b.putInt(0)
+        b.putShort(3)
+        b.putShort(0x0001).putShort(2).putInt(2).put(ascii("N\u0000\u0000\u0000")) // GPSLatitudeRef
+        b.putShort(0x0002).putShort(5).putInt(3).putInt(latAt) // GPSLatitude
+        b.putShort(0x001B).putShort(7).putInt(method.size).putInt(methodAt) // GPSProcessingMethod
+        b.putInt(0)
+        b.put(make)
+        b.putInt(51).putInt(1).putInt(28).putInt(1).putInt(4012).putInt(100)
+        b.put(method)
+        return ascii("Exif\u0000\u0000") + b.array()
+    }
+
+    private fun pngChunk(type: String, data: ByteArray): ByteArray {
+        val typed = ascii(type) + data
+        val crc = java.util.zip.CRC32().also { it.update(typed) }.value
+        return java.nio.ByteBuffer.allocate(4 + typed.size + 4).putInt(data.size).put(typed).putInt(crc.toInt()).array()
+    }
+
+    private fun ascii(s: String) = s.toByteArray(Charsets.ISO_8859_1)
+
     /** 4 KiB of random bytes named like a JPEG. */
     fun notAnImage(dir: File, name: String = "not-an-image.jpg"): File =
         File(dir, name).also { it.writeBytes(randomBytes(4096, 11L)) }
@@ -450,6 +588,43 @@ object Fixtures {
     /** True when every channel of [a] and [b] differs by at most [tolerance]. */
     fun colorNear(a: Int, b: Int, tolerance: Int = 60): Boolean =
         (0..2).all { k -> kotlin.math.abs((a shr (8 * k) and 0xff) - (b shr (8 * k) and 0xff)) <= tolerance }
+
+    /** Raw (still encoded) stream data of every image XObject in [file], in object-number order. */
+    fun rawImageStreams(file: File): List<ByteArray> = withDoc(file) { d ->
+        val doc = d as PDFDocument
+        imageInfos(file).map { info -> doc.newIndirect(info.objectNumber, 0).use { it.readRawStream() } }
+    }
+
+    /**
+     * Every stream of [file], raw and decoded (decoding failures give only the raw data), so a
+     * search sees inside Flate-compressed streams and object streams too.
+     */
+    fun allStreamData(file: File): List<ByteArray> = withDoc(file) { d ->
+        val doc = d as PDFDocument
+        val out = ArrayList<ByteArray>()
+        for (num in 1 until doc.countObjects()) {
+            doc.newIndirect(num, 0).use { obj ->
+                if (obj.isStream) {
+                    out.add(obj.readRawStream())
+                    try { out.add(obj.readStream()) } catch (_: RuntimeException) { }
+                }
+            }
+        }
+        out
+    }
+
+    /** True when [needle] occurs in [file]'s bytes or in any of its streams, raw or decoded. */
+    fun pdfContains(file: File, needle: ByteArray): Boolean =
+        indexOf(file.readBytes(), needle) >= 0 || allStreamData(file).any { indexOf(it, needle) >= 0 }
+
+    /** First index of [needle] in [hay], or -1. */
+    fun indexOf(hay: ByteArray, needle: ByteArray): Int {
+        outer@ for (i in 0..hay.size - needle.size) {
+            for (j in needle.indices) if (hay[i + j] != needle[j]) continue@outer
+            return i
+        }
+        return -1
+    }
 
     /* ------------------------------------------------------------------ internals */
 

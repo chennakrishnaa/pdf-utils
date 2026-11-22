@@ -33,12 +33,18 @@ internal object ImagePages {
 
     private enum class Format { JPEG, PNG, OTHER }
 
-    /** An opened image plus the length of its real image data ([imageEnd] bytes from the file start). */
-    private class Opened(val img: Image, val format: Format, val imageEnd: Long)
+    /**
+     * An opened image. [img] is created from exactly the bytes that `addImage` embeds; [dataLength] is
+     * their count (for a JPEG: the image up to its end marker, minus stripped metadata segments).
+     * [orientation] is MuPDF's orientation code of the ORIGINAL file: when metadata was stripped,
+     * `img.orientation` is 0 and must not be used.
+     */
+    private class Opened(val img: Image, val format: Format, val dataLength: Long, val orientation: Int)
 
     /**
      * Opens [file] as a MuPDF [Image] (caller must `destroy()` it) after checking that it is complete.
-     * See [open] for the rules.
+     * See [open] for the rules. JPEG metadata is stripped, so the returned image's `orientation` may
+     * be 0 even when the file carries an EXIF orientation.
      *
      * @throws UnsupportedImageFileException if the file is missing, unreadable, not an image MuPDF
      *   can decode, truncated, or has no pixels.
@@ -47,36 +53,45 @@ internal object ImagePages {
 
     /**
      * Checks [file] structurally, then opens it. MuPDF decodes lazily and silently accepts a cut-off
-     * file, so completeness is checked here, in one streaming pass ([imageEnd]):
+     * file, so completeness is checked here, in one streaming pass ([jpegScan] / [pngEnd]):
      * - JPEG (`FF D8 FF`): marker segments are walked from the start up to the end-of-image marker.
      * - PNG: chunks are walked from the signature up to `IEND`.
-     * - Other formats are not checked; [Opened.imageEnd] is the file length.
+     * - Other formats are not checked; the image is the whole file.
      *
      * Data after the end of the image (motion-photo videos, camera trailers, padding) is accepted
-     * but never handed to MuPDF: when present, only the bytes `[0, imageEnd)` are read into memory
-     * once and the image is created from them, so nothing after the image can reach the PDF. With
-     * no trailer the file is opened by path, exactly as before.
+     * but never handed to MuPDF. JPEG metadata segments (see [isJpegMetadata]: EXIF with GPS,
+     * camera details and thumbnail, XMP, IPTC, comments) are removed too, losslessly: everything
+     * else, including all data from the first start-of-scan on, is kept byte for byte. When
+     * anything is removed, the kept bytes are read into memory once and the image is created from
+     * them; the EXIF orientation is first read from the original header ([jpegOrientation]). With
+     * nothing to remove the file is opened by path, exactly as before.
      */
     private fun open(file: File): Opened {
         val format: Format
         val length: Long
         val end: Long
+        var layout: JpegLayout? = null
         try {
             format = formatOf(file)
             length = file.length()
             end = when (format) {
-                Format.JPEG -> jpegEnd(file)
+                Format.JPEG -> jpegScan(file)?.also { layout = it }?.end
                 Format.PNG -> pngEnd(file)
                 Format.OTHER -> length
             } ?: throw UnsupportedImageFileException(file, null)
         } catch (e: IOException) {
             throw UnsupportedImageFileException(file, e)
         }
+        val strip = layout?.metadata.orEmpty()
+        var orientation = -1
         val img = try {
-            if (end >= length) {
-                Image(file.absolutePath)
-            } else {
-                Image(readPrefix(file, end))
+            when {
+                strip.isNotEmpty() -> {
+                    orientation = jpegOrientation(file, layout!!)
+                    Image(readKept(file, end, strip))
+                }
+                end >= length -> Image(file.absolutePath)
+                else -> Image(readPrefix(file, end))
             }
         } catch (e: IOException) {
             throw UnsupportedImageFileException(file, e)
@@ -85,7 +100,8 @@ internal object ImagePages {
         }
         try {
             if (img.width <= 0 || img.height <= 0) throw UnsupportedImageFileException(file, null)
-            return Opened(img, format, end)
+            if (orientation < 0) orientation = img.orientation
+            return Opened(img, format, end - strip.sumOf { it.end - it.start }, orientation)
         } catch (t: Throwable) {
             img.destroy()
             throw t
@@ -95,6 +111,42 @@ internal object ImagePages {
     private fun readPrefix(file: File, n: Long): ByteArray {
         if (n > Int.MAX_VALUE - 16) throw IOException("image too large")
         return ByteArray(n.toInt()).also { b -> RandomAccessFile(file, "r").use { it.readFully(b) } }
+    }
+
+    /** Bytes `[0, end)` of [file] without the [drop] spans (ascending, disjoint), in one array. */
+    private fun readKept(file: File, end: Long, drop: List<Span>): ByteArray {
+        val n = end - drop.sumOf { it.end - it.start }
+        if (n > Int.MAX_VALUE - 16) throw IOException("image too large")
+        val out = ByteArray(n.toInt())
+        RandomAccessFile(file, "r").use { raf ->
+            var pos = 0L
+            var o = 0
+            for (s in drop + Span(end, end)) {
+                val k = (s.start - pos).toInt()
+                raf.seek(pos)
+                raf.readFully(out, o, k)
+                o += k
+                pos = s.end
+            }
+        }
+        return out
+    }
+
+    /**
+     * MuPDF's orientation code for the JPEG [file], read from its unmodified header only: the bytes
+     * up to the end of the first start-of-scan header, followed by an end-of-image marker. MuPDF
+     * only parses the header when an [Image] is created, so this is cheap and uses MuPDF's own EXIF
+     * reading (which, for example, only looks at the first saved APP1/APP2/APP13 segment).
+     */
+    private fun jpegOrientation(file: File, layout: JpegLayout): Int {
+        val headerEnd = if (layout.scanStart > 0) layout.scanStart else layout.end
+        val head = readPrefix(file, headerEnd)
+        val probe = Image(head + byteArrayOf(0xFF.toByte(), 0xD9.toByte()))
+        try {
+            return probe.orientation
+        } finally {
+            probe.destroy()
+        }
     }
 
     private fun formatOf(file: File): Format {
@@ -122,6 +174,17 @@ internal object ImagePages {
             }
             pos++
             return buf[i++].toInt() and 0xFF
+        }
+
+        /** Reads up to [count] bytes into [dst]; returns how many were read (fewer only at end of file). */
+        fun read(dst: ByteArray, count: Int): Int {
+            var k = 0
+            while (k < count) {
+                val b = read()
+                if (b < 0) break
+                dst[k++] = b.toByte()
+            }
+            return k
         }
 
         /** Skips exactly [count] bytes; false if the file ends first. */
@@ -156,19 +219,43 @@ internal object ImagePages {
      *   continues the walk (DHT, DNL, further SOS for progressive files, ...);
      * - `FF D9` ends the image.
      */
-    internal fun jpegEnd(file: File): Long? = FileInputStream(file).use { jpegEnd(it) }
+    internal fun jpegEnd(file: File): Long? = jpegScan(file)?.end
 
-    internal fun jpegEnd(input: InputStream): Long? {
+    internal fun jpegEnd(input: InputStream): Long? = jpegScan(input)?.end
+
+    /** Byte range `[start, end)` of a file. */
+    internal data class Span(val start: Long, val end: Long)
+
+    /**
+     * Result of [jpegScan]: [end] is the offset just past `FF D9`; [scanStart] the offset just past
+     * the first start-of-scan header (-1 if there is none); [metadata] the segments before it that
+     * [isJpegMetadata] selects, ascending, each from its first `FF` (fill bytes included) to the end
+     * of its payload.
+     */
+    internal class JpegLayout(val end: Long, val scanStart: Long, val metadata: List<Span>)
+
+    internal fun jpegScan(file: File): JpegLayout? = FileInputStream(file).use { jpegScan(it) }
+
+    /**
+     * The structural walk documented at [jpegEnd]. Additionally, before the first start-of-scan,
+     * the first [META_PEEK] payload bytes of each APPn/COM segment are read to classify it with
+     * [isJpegMetadata]. Nothing after the first SOS is ever classified.
+     */
+    internal fun jpegScan(input: InputStream): JpegLayout? {
         val r = ByteReader(input)
         if (r.read() != 0xFF || r.read() != 0xD8) return null
+        val metadata = ArrayList<Span>()
+        var scanStart = -1L
+        val head = ByteArray(META_PEEK)
         while (true) {
             var b = r.read()
             if (b < 0) return null
             if (b != 0xFF) continue // entropy data, or garbage between segments
+            val markerStart = r.pos - 1
             do b = r.read() while (b == 0xFF)
             when {
                 b < 0 -> return null
-                b == 0xD9 -> return r.pos
+                b == 0xD9 -> return JpegLayout(r.pos, scanStart, metadata)
                 b == 0x00 -> continue // stuffed byte (or stray FF 00 outside a scan)
                 b in 0xD0..0xD7 -> continue // restart marker
                 b == 0x01 || b == 0xD8 -> continue // standalone markers
@@ -178,11 +265,46 @@ internal object ImagePages {
                     if (lo < 0) return null
                     val len = (hi shl 8) or lo
                     if (len < 2) return null
-                    if (!r.skip(len - 2L)) return null
+                    var payload = len - 2L
+                    if (scanStart < 0 && (b in 0xE0..0xEF || b == 0xFE)) {
+                        val k = r.read(head, minOf(payload, META_PEEK.toLong()).toInt())
+                        if (k < minOf(payload, META_PEEK.toLong())) return null
+                        payload -= k
+                        if (isJpegMetadata(b, head, k)) metadata.add(Span(markerStart, r.pos + payload))
+                    }
+                    if (!r.skip(payload)) return null
+                    if (b == 0xDA && scanStart < 0) scanStart = r.pos
                 }
             }
         }
     }
+
+    /** Payload bytes inspected per APPn/COM segment: the length of `ICC_PROFILE\0`. */
+    private const val META_PEEK = 12
+
+    /**
+     * True when the JPEG segment with [marker] (whose payload starts with the first [n] bytes of
+     * [head]) is metadata that the embedded image does not need. Checked against libjpeg (jdmarker.c)
+     * and MuPDF 1.28.5 (load-jpeg.c, filter-dct.c), which read only: APP0 `JFIF\0` (colour space
+     * guess, density), APP14 `Adobe` (colour transform, CMYK inversion), APP2 `ICC_PROFILE\0` (colour
+     * profile), and APP1 EXIF / APP13 Photoshop (orientation and resolution, used for placement only
+     * and taken from the original header instead, see [jpegOrientation]). So everything else is
+     * dropped: APP0 other than JFIF (JFXX thumbnails), APP1 (EXIF incl. GPS, thumbnail; XMP), APP2
+     * other than ICC (MPF), APP3-APP13, APP14 other than Adobe, APP15 and COM.
+     */
+    private fun isJpegMetadata(marker: Int, head: ByteArray, n: Int): Boolean = when (marker) {
+        0xE0 -> !startsWith(head, n, JFIF)
+        0xE2 -> !startsWith(head, n, ICC_PROFILE)
+        0xEE -> !startsWith(head, n, ADOBE)
+        else -> marker in 0xE1..0xEF || marker == 0xFE
+    }
+
+    private fun startsWith(head: ByteArray, n: Int, sig: ByteArray): Boolean =
+        n >= sig.size && sig.indices.all { head[it] == sig[it] }
+
+    private val JFIF = "JFIF\u0000".toByteArray(Charsets.ISO_8859_1)
+    private val ICC_PROFILE = "ICC_PROFILE\u0000".toByteArray(Charsets.ISO_8859_1)
+    private val ADOBE = "Adobe".toByteArray(Charsets.ISO_8859_1)
 
     /**
      * Offset just past the CRC of the PNG `IEND` chunk of [file], or null if the file ends before
@@ -238,14 +360,14 @@ internal object ImagePages {
     }
 
     /**
-     * Bytes of image stream data that `addImage` embeds for [opened], unchanged: the image length
-     * `imageEnd` for a JPEG (embedded verbatim as DCTDecode, without any trailer). Anything else (PNG) is added to
+     * Bytes of image stream data that `addImage` embeds for [opened], unchanged: [Opened.dataLength]
+     * for a JPEG (embedded verbatim as DCTDecode, without trailer or metadata). Anything else (PNG) is added to
      * a scratch document, where MuPDF stores raw pixels that the final save (`compress` option)
      * deflates with zlib at the default level; that deflate is reproduced here with
      * [java.util.zip.Deflater] at the same level, for the image stream plus its /SMask stream.
      */
     private fun originalEmbeddedSize(opened: Opened): Long {
-        if (opened.format == Format.JPEG) return opened.imageEnd
+        if (opened.format == Format.JPEG) return opened.dataLength
         val scratch = PDFDocument()
         try {
             val ref = scratch.addImage(opened.img)
@@ -336,8 +458,8 @@ internal object ImagePages {
 
     /**
      * Appends one page to [doc] showing [image] upright (EXIF orientation applied); with
-     * [compression] null, JPEG data is embedded unchanged (up to its end-of-image marker; trailing
-     * data is dropped). With a [compression] level the embedded pixels may be downscaled and re-encoded (see [addImageObject]); the page box and placement
+     * [compression] null, JPEG pixel data is embedded unchanged (up to its end-of-image marker;
+     * trailing data and metadata segments such as EXIF/GPS are dropped, see [open]). With a [compression] level the embedded pixels may be downscaled and re-encoded (see [addImageObject]); the page box and placement
      * never depend on [compression]: they always come from the original image.
      *
      * - [fixedSize] non-null: the page box is exactly `fixedSize.width x fixedSize.height` (origin 0,0)
@@ -359,7 +481,7 @@ internal object ImagePages {
         val opened = open(image)
         val img = opened.img
         try {
-            val orientation = img.orientation
+            val orientation = opened.orientation
             val quarterTurn = isQuarterTurn(orientation)
             val dw = (if (quarterTurn) img.height else img.width).toFloat() // displayed width, px
             val dh = (if (quarterTurn) img.width else img.height).toFloat() // displayed height, px
