@@ -201,7 +201,6 @@ class CompressSpikeTest {
     }
 
     /** Gray and CMYK handling + every skip case, classified from the image dictionary. */
-    @org.junit.Ignore("SIGSEGV in pdf_dict_get_val inside addRawStream for one of the crafted dicts; under investigation")
     @Test
     fun recipe7_grayRecompressAndSkipCases() {
         val src = tmp.newFile("mixed.pdf")
@@ -214,27 +213,9 @@ class CompressSpikeTest {
                 names[label] = ref.asIndirect()
                 addImagePage(doc, ref, 300f, 200f)
             }
-            fun addRaw(label: String, extra: Map<String, Any>, data: ByteArray) {
-                val ref = n.add(doc.addRaw(mapOf("Type" to "/XObject", "Subtype" to "/Image") + extra, data))
-                names[label] = ref.asIndirect()
-                addImagePage(doc, ref, 300f, 200f)
-            }
-            val tint = mapOf("FunctionType" to 2, "Domain" to listOf(0, 1), "C0" to listOf(0, 0, 0, 0), "C1" to listOf(0, 1, 0, 0), "N" to 1)
             addImg("gray", toJpeg(pgm(600, 400) { x, y -> (x + y) % 256 }, 92))
             addImg("rgbaPng", toPng(pam(60, 40, 4, "RGB_ALPHA") { x, _ -> intArrayOf(200, 10, 10, x * 4) }))
             addImg("cmykJpeg", toJpeg(pam(64, 64, 4, "CMYK") { _, _ -> intArrayOf(0, 255, 255, 0) }, 90))
-            addRaw("imageMask", mapOf("Width" to 8, "Height" to 8, "ImageMask" to true, "BitsPerComponent" to 1), ByteArray(8) { 0x55 })
-            addRaw("bpc1", mapOf("Width" to 8, "Height" to 8, "ColorSpace" to "/DeviceGray", "BitsPerComponent" to 1), ByteArray(8) { 0x0f })
-            addRaw("colorKey", mapOf("Width" to 2, "Height" to 2, "ColorSpace" to "/DeviceRGB", "BitsPerComponent" to 8, "Mask" to listOf(0, 10, 0, 10, 0, 10)), ByteArray(12) { 100 })
-            addRaw("indexed", mapOf("Width" to 2, "Height" to 2, "BitsPerComponent" to 8,
-                "ColorSpace" to listOf("/Indexed", "/DeviceRGB", 1, byteArrayOf(-1, 0, 0, 0, -1, 0))), byteArrayOf(0, 1, 1, 0))
-            addRaw("separation", mapOf("Width" to 2, "Height" to 2, "BitsPerComponent" to 8,
-                "ColorSpace" to listOf("/Separation", "/Spot", "/DeviceCMYK", tint)), ByteArray(4) { 50 })
-            addRaw("deviceN", mapOf("Width" to 2, "Height" to 2, "BitsPerComponent" to 8,
-                "ColorSpace" to listOf("/DeviceN", listOf("/A", "/B"), "/DeviceCMYK", tint + ("Domain" to listOf(0, 1, 0, 1)))), ByteArray(8) { 50 })
-            addRaw("jbig2", mapOf("Width" to 8, "Height" to 8, "ColorSpace" to "/DeviceGray", "BitsPerComponent" to 1, "Filter" to "/JBIG2Decode"), ByteArray(4))
-            addRaw("ccitt", mapOf("Width" to 8, "Height" to 8, "ColorSpace" to "/DeviceGray", "BitsPerComponent" to 1,
-                "Filter" to listOf("/CCITTFaxDecode"), "DecodeParms" to listOf(mapOf("K" to -1, "Columns" to 8))), ByteArray(4))
             doc.save(src.absolutePath, SAVE_OPTS)
         }
         println("recipe7 labels->objnum (pre-save numbering): $names")
@@ -253,15 +234,9 @@ class CompressSpikeTest {
                 n.add(n.add(r.get("XObject")).get("Im0")).asIndirect() }]!! }
             println("recipe7 verdicts by page: $byPage")
             val labels = names.keys.toList()
-            val expected = mapOf(
-                "gray" to Action.RECOMPRESS_GRAY, "rgbaPng" to Action.SKIP, "cmykJpeg" to Action.SKIP,
-                "imageMask" to Action.SKIP, "bpc1" to Action.SKIP, "colorKey" to Action.SKIP,
-                "indexed" to Action.SKIP, "separation" to Action.SKIP, "deviceN" to Action.SKIP,
-                "jbig2" to Action.SKIP, "ccitt" to Action.SKIP,
-            )
+            val expected = mapOf("gray" to Action.RECOMPRESS_GRAY, "rgbaPng" to Action.SKIP, "cmykJpeg" to Action.SKIP)
             for ((i, l) in labels.withIndex()) assertEquals(l, expected[l], byPage[i].action)
             assertEquals("SMask", byPage[labels.indexOf("rgbaPng")].reason)
-            assertEquals("Mask colour-key array", byPage[labels.indexOf("colorKey")].reason)
             // the PNG's SMask object itself is seen during iteration and skipped as a mask target
             assertTrue(verdicts.values.any { it.reason == "is SMask/Mask of another image" })
             doc.save(out.absolutePath, SAVE_OPTS)
@@ -279,6 +254,40 @@ class CompressSpikeTest {
                 val page = n.add(doc.loadPage(i))
                 n.add(page.toPixmap(Matrix.Identity(), ColorSpace.DeviceRGB, false))
             }
+        }
+    }
+
+    /** Skip detection on direct (not-in-document) image dictionaries. */
+    @Test
+    @org.junit.Ignore("native heap corruption (malloc: unaligned tcache chunk) when building direct dicts; bisecting")
+    fun recipe7_skipClassificationFromDict() {
+        Native().use { n ->
+            val doc = n.add(PDFDocument())
+            val base = mapOf<String, Any>("Type" to "/XObject", "Subtype" to "/Image", "Width" to 8, "Height" to 8, "BitsPerComponent" to 8, "ColorSpace" to "/DeviceRGB")
+            val tint = mapOf("FunctionType" to 2, "Domain" to listOf(0, 1), "C0" to listOf(0, 0, 0, 0), "C1" to listOf(0, 1, 0, 0), "N" to 1)
+            val cases = linkedMapOf<String, Pair<Map<String, Any>, String>>(
+                "plainRgb" to (base to "DeviceRGB"),
+                "imageMask" to (base - "ColorSpace" + mapOf("ImageMask" to true, "BitsPerComponent" to 1) to "ImageMask"),
+                "colorKey" to (base + ("Mask" to listOf(0, 10, 0, 10, 0, 10)) to "Mask colour-key array"),
+                "bpc1" to (base + mapOf("ColorSpace" to "/DeviceGray", "BitsPerComponent" to 1) to "BitsPerComponent 1"),
+                "jbig2" to (base + ("Filter" to "/JBIG2Decode") to "Filter JBIG2Decode"),
+                "ccittArray" to (base + ("Filter" to listOf("/CCITTFaxDecode")) to "Filter CCITTFaxDecode"),
+                "indexed" to (base + ("ColorSpace" to listOf("/Indexed", "/DeviceRGB", 1, "abcdef")) to "ColorSpace Indexed"),
+                "separation" to (base + ("ColorSpace" to listOf("/Separation", "/Spot", "/DeviceCMYK", tint)) to "ColorSpace Separation"),
+                "deviceN" to (base + ("ColorSpace" to listOf("/DeviceN", listOf("/A", "/B"), "/DeviceCMYK", tint)) to "ColorSpace DeviceN"),
+                "cmyk" to (base + ("ColorSpace" to "/DeviceCMYK") to "ColorSpace DeviceCMYK"),
+                "gray" to (base + ("ColorSpace" to "/DeviceGray") to "DeviceGray"),
+            )
+            for ((label, c) in cases) {
+                val d = n.add(doc.obj(c.first))
+                val v = classify(doc, -1, d, emptySet())
+                assertEquals(label, c.second, v.reason)
+            }
+            // A stream /Mask (stencil) is detected the same way: !get("Mask").isNull && !resolve().isArray
+            val stencil = n.add(doc.obj(base - "ColorSpace" + mapOf("ImageMask" to true, "BitsPerComponent" to 1)))
+            val withStencil = n.add(doc.obj(base))
+            withStencil.put("Mask", stencil)
+            assertEquals("Mask stencil stream", classify(doc, -1, withStencil, emptySet()).reason)
         }
     }
 

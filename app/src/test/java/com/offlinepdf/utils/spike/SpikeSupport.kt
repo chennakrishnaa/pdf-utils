@@ -268,6 +268,9 @@ fun PDFDocument.addRaw(dict: Map<String, Any>, data: ByteArray): PDFObject {
         val d = n.add(obj(dict))
         val buf = n.add(Buffer())
         buf.writeBytes(data)
+        // GOTCHA: do NOT use PDFDocument.addObject(dict) in 1.28.5: the JNI calls
+        // pdf_add_object_drop and returns the *input* Java object (now dangling) instead of
+        // the new indirect ref -> heap corruption. addRawStream/addStream are fine.
         return addRawStream(buf, d)
     }
 }
