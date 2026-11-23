@@ -1,11 +1,11 @@
 package app.venkat.offkit.engine
 
 /**
- * Runs engine operations on a dedicated thread with a large explicit stack (SA-11, second line of
- * defence after [ObjectGraph]).
+ * Runs engine operations on a dedicated thread with a large explicit stack (SA-11, defence in
+ * depth: Compress and Add images no longer use the recursive `garbage` save on inputs, and Merge's
+ * graft depth is bounded by [ObjectGraph.checkPages] and by MuPDF's own `fz_try` stack).
  *
- * MuPDF's save-time garbage marking and page grafting recurse once per nesting level of the
- * document's objects; the depth is bounded by [ObjectGraph.MAX_DEPTH], but the engine is called on
+ * Any remaining MuPDF recursion is native and uses the calling thread's stack; the engine is called on
  * whatever thread the caller uses (in tests a JUnit thread, in the app the single engine thread),
  * whose native stack may be small. [run] executes the block on a new thread created with
  * `Thread(group, runnable, name, STACK_BYTES)` and waits for it. On the host JVM (HotSpot) the

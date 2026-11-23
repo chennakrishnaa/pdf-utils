@@ -79,6 +79,21 @@ internal object PdfInputs {
     }
 
     /**
+     * Runs an [ObjectGraph] check on an opened input: [PdfInputException]s pass through, any other
+     * MuPDF failure while walking (an unparsable object) is reported as [PdfError.Corrupt].
+     */
+    inline fun checkGraph(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: PdfInputException) {
+            throw e
+        } catch (e: RuntimeException) {
+            if (isOutOfMemoryFailure(e)) throw e
+            throw PdfInputException(PdfError.Corrupt, e)
+        }
+    }
+
+    /**
      * True when [pdf] uses PDF encryption, independent of password state: MuPDF reports a crypt
      * handler (`isUnencryptedPDF()` is false) or the trailer has an `/Encrypt` entry.
      */

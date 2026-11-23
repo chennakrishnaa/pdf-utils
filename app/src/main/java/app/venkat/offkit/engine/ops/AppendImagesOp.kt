@@ -3,6 +3,7 @@ package app.venkat.offkit.engine.ops
 import app.venkat.offkit.engine.ImageLimits
 import app.venkat.offkit.engine.ImagePages
 import app.venkat.offkit.engine.JobControl
+import app.venkat.offkit.engine.ObjectGraph
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfInputs
@@ -32,6 +33,8 @@ class AppendImagesOp {
         val total = images.size
         val doc = PdfInputs.open(pdf)
         try {
+            // SR2-3: the save loads every object; refuse inputs whose objects exceed the walk budget.
+            PdfInputs.checkGraph { ObjectGraph.checkObjects(doc) }
             val original = doc.countPages()
             val lastSize = ImagePages.pageSizeOf(doc, original - 1)
             images.forEachIndexed { i, image ->

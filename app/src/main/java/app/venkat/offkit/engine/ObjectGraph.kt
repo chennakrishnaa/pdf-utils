@@ -5,93 +5,150 @@ import com.artifex.mupdf.fitz.PDFObject
 import java.util.BitSet
 
 /**
- * Stack-depth guard for MuPDF's recursive object walks (security audit SA-11).
+ * Bounded, iterative pre-checks of an input PDF's object graph (security audits SA-11, SR2-2/3/4),
+ * run before the MuPDF calls whose cost grows with the attacker's graph.
  *
- * Saving with `garbage` makes MuPDF mark every reachable object recursively
- * (`source/pdf/pdf-write.c` `markobj`: one native frame per nested dictionary/array, following
- * indirect references), and grafting a page for Merge copies objects recursively too
- * (`pdf-graft.c` `pdf_graft_mapped_object`). A chain of indirect objects
- * (`4 0 obj <</Next 5 0 R>>`, `5 0 obj <</Next 6 0 R>>`, …) therefore costs one native frame per
- * link and overflows the thread stack: SIGSEGV, the whole process dies, nothing is catchable.
- * Measured on the host JVM (MuPDF 1.28.5, x86_64): 12,000 links save fine on a 1 MB thread
- * stack, 15,000 crash it (see [MAX_DEPTH]).
+ * What MuPDF 1.28.5 actually does (read in the sources and measured in capped child JVMs):
+ * - **Saving** (`pdf-write.c`): without `garbage` no step follows indirect references
+ *   (`markobj`, the recursive one, runs only for `do_garbage >= 1`), so Compress and Add images
+ *   save with [PdfInputs.EDIT_SAVE_OPTIONS] and have no depth limit. But a full save loads EVERY
+ *   object (`preloadobjstms`, `unpack_objstm_objs`) and keeps it parsed in memory, at roughly 55 B
+ *   per reference: a 2 MB file of identical 1,000-reference arrays in object streams costs ~1.1 GB.
+ *   [checkObjects] therefore counts every object's entries under a [Budget] first.
+ * - **Grafting** (`pdf-graft.c` `pdf_graft_mapped_object`, Merge): recursive per indirect link and
+ *   per container, starting from the page's `Contents Resources MediaBox CropBox BleedBox TrimBox
+ *   ArtBox Rotate UserUnit` (inheritable lookup; the page's own `/Parent` is not copied, but every
+ *   key inside what it reaches is followed). Each level opens an `fz_try`, and the context's
+ *   256-slot exception stack runs out after ~125 links: the graft then silently truncates
+ *   (`pdf_resolve_indirect` swallows the error), so its native depth is capped by MuPDF itself
+ *   (no crash at any chain length, even on a 64 KB thread), but the page loses content.
+ *   It also copies everything reachable: 20,000 × 1,000 references hung off a page cost 1.3 GB.
+ *   [checkPages] walks exactly what the graft will copy, under a [Budget], and refuses nesting
+ *   beyond [MAX_GRAFT_NESTING] (well below the truncation point) as Corrupt.
+ * - `garbage` on Merge's NEW document recurses over the grafted copy only, whose depth the graft
+ *   caps as above, so Merge keeps [PdfInputs.SAVE_OPTIONS].
  *
- * [check] walks the object graph ITERATIVELY (explicit stack, visited set, the same order as
- * `markobj`: depth first from the trailer, an object is entered once) and measures the deepest
- * nesting of dictionaries/arrays. Documents nested deeper than [MAX_DEPTH], or with more than
- * [MAX_OBJECTS] objects, are rejected before any recursive native call. This holds whatever the
- * calling thread's stack; on top of it the engine runs every operation on a thread with a large
- * explicit stack ([EngineStack]).
+ * Neither walk recurses (explicit stacks), and neither makes MuPDF load more than the following
+ * operation loads anyway. Engine operations also run on [EngineStack]'s large thread as defence in
+ * depth.
  */
 internal object ObjectGraph {
-    /**
-     * Deepest accepted nesting (dictionaries/arrays, through indirect references). Measured with a
-     * plain `garbage=deduplicate` save of a `/Next` chain: on a 1 MB thread stack 12,000 links
-     * save, 15,000 crash (≈ 70-85 B per level); on a 128 MB stack 200,000 links save (19 s). The
-     * bound is 4× below the 1 MB crash point, so the guard alone protects even a default-size
-     * thread (in case a platform ignores [EngineStack]'s stack size), and ~65× below what the
-     * 128 MB stack was shown to hold. Ordinary PDFs nest a few dozen levels; the deepest
-     * legitimate shape is a linked list such as sibling bookmarks (`/Next`), so a document with
-     * more than ~3,000 top-level bookmarks is refused as damaged.
-     */
-    const val MAX_DEPTH = 3_000
-
     /** Most objects (xref entries) an input PDF may have; larger documents are "too large". */
     const val MAX_OBJECTS = 500_000
 
+    /** Most references/entries a walk may visit before the input is "too large" (~110 MB of parsed objects). */
+    const val MAX_REFERENCES = 2_000_000
+
+    /** Wall-clock budget of one walk. */
+    const val MAX_WALK_MILLIS = 3_000L
+
     /**
-     * @throws PdfInputException [PdfError.OutOfMemory] when [doc] has more than [MAX_OBJECTS]
-     *   objects, [PdfError.Corrupt] when its reachable objects nest deeper than [maxDepth].
+     * Deepest nesting (indirect links + containers along a path from a page key) that Merge
+     * accepts. Each level costs the graft one or two of MuPDF's 256 `fz_try` slots; a chain of
+     * ~125 links is where the graft starts to truncate silently. 200 levels ≈ 98 links: refused as
+     * Corrupt before that. Real pages nest a dozen levels (resources → forms → resources → fonts …).
      */
-    fun check(doc: PDFDocument, maxDepth: Int = MAX_DEPTH) {
+    const val MAX_GRAFT_NESTING = 200
+
+    /** Graft's copy list (`pdf-graft.c` `pdf_graft_mapped_page`), in its order. */
+    private val GRAFT_KEYS = listOf("Contents", "Resources", "MediaBox", "CropBox", "BleedBox", "TrimBox", "ArtBox", "Rotate", "UserUnit")
+
+    /** Reference and time budget of one walk; [spend] throws `PdfInputException(OutOfMemory)` once exceeded. */
+    class Budget(private val maxRefs: Int = MAX_REFERENCES, maxMillis: Long = MAX_WALK_MILLIS) {
+        private val deadline = System.nanoTime() + maxMillis * 1_000_000
+        var spent = 0
+            private set
+
+        fun spend() {
+            spent++
+            if (spent > maxRefs) throw PdfInputException(PdfError.OutOfMemory)
+            if (spent and 0x3FF == 0 && System.nanoTime() > deadline) throw PdfInputException(PdfError.OutOfMemory)
+        }
+    }
+
+    /**
+     * Compress / Add images: counts every object (1 until `countObjects()`) and every entry of its
+     * direct structure, NOT following indirect references (the save writes each object once).
+     * @throws PdfInputException `OutOfMemory` when [budget] runs out.
+     */
+    fun checkObjects(doc: PDFDocument, budget: Budget = Budget()) {
         val count = doc.countObjects()
         if (count > MAX_OBJECTS) throw PdfInputException(PdfError.OutOfMemory)
-        if (depth(doc, count, maxDepth) > maxDepth) throw PdfInputException(PdfError.Corrupt)
-    }
-
-    /** A container being walked: [obj] (owned, destroyed when popped), its keys if a dictionary, the next index. */
-    private class Frame(val obj: PDFObject, val keys: List<String>?, var next: Int = 0) {
-        val size: Int = keys?.size ?: obj.size()
-    }
-
-    /**
-     * Deepest container nesting reachable from the trailer, stopping early once it exceeds [limit]
-     * (then returns limit + 1).
-     */
-    fun depth(doc: PDFDocument, count: Int, limit: Int): Int {
-        val visited = BitSet(count)
         val stack = ArrayList<Frame>()
-        var deepest = 0
         try {
-            enter(doc.trailer, count, visited)?.let { stack.add(it) }
-            deepest = stack.size
-            while (stack.isNotEmpty()) {
-                val top = stack[stack.size - 1]
-                if (top.next >= top.size) {
-                    stack.removeAt(stack.size - 1)
-                    top.obj.destroy()
-                    continue
+            for (num in 1 until count) {
+                budget.spend()
+                val ref = doc.newIndirect(num, 0)
+                val obj = try { ref.resolve() } finally { ref.destroy() }
+                frameOf(obj, 0)?.let { stack.add(it) }
+                while (stack.isNotEmpty()) {
+                    val top = stack[stack.size - 1]
+                    if (top.next >= top.size) {
+                        stack.removeAt(stack.size - 1).obj.destroy()
+                        continue
+                    }
+                    budget.spend()
+                    val child = top.child(top.next++)
+                    if (child.isIndirect) destroy(child) else frameOf(child, 0)?.let { stack.add(it) }
                 }
-                val i = top.next++
-                val child = if (top.keys != null) top.obj.get(top.keys[i]) else top.obj.get(i)
-                val frame = enter(child, count, visited) ?: continue
-                stack.add(frame)
-                if (stack.size > deepest) deepest = stack.size
-                if (deepest > limit) return limit + 1
             }
-            return deepest
         } finally {
             for (f in stack) f.obj.destroy()
         }
     }
 
     /**
-     * Follows [value] (owned: destroyed here unless returned inside a frame) through indirect
-     * references, marking each object number once; returns a frame if it ends at a container not
-     * yet entered.
+     * Merge: walks, for every page, what `pdf_graft_mapped_page` will copy (the [GRAFT_KEYS]
+     * values, looked up with inheritance, and everything reachable from them; one visited set per
+     * document, as Merge uses one graft map per input).
+     * @throws PdfInputException `OutOfMemory` when [budget] runs out, `Corrupt` when a path nests
+     *   deeper than [maxNesting].
      */
-    private fun enter(value: PDFObject, count: Int, visited: BitSet): Frame? {
+    fun checkPages(doc: PDFDocument, budget: Budget = Budget(), maxNesting: Int = MAX_GRAFT_NESTING) {
+        val count = doc.countObjects()
+        if (count > MAX_OBJECTS) throw PdfInputException(PdfError.OutOfMemory)
+        val visited = BitSet(count)
+        val stack = ArrayList<Frame>()
+        try {
+            for (p in 0 until doc.countPages()) {
+                val page = doc.findPage(p)
+                try {
+                    for (key in GRAFT_KEYS) {
+                        budget.spend()
+                        val v = page.getInheritable(key)
+                        enter(v, 1, count, visited, budget, maxNesting)?.let { stack.add(it) }
+                        while (stack.isNotEmpty()) {
+                            val top = stack[stack.size - 1]
+                            if (top.next >= top.size) {
+                                stack.removeAt(stack.size - 1).obj.destroy()
+                                continue
+                            }
+                            budget.spend()
+                            enter(top.child(top.next++), top.level + 1, count, visited, budget, maxNesting)?.let { stack.add(it) }
+                        }
+                    }
+                } finally {
+                    destroy(page)
+                }
+            }
+        } finally {
+            for (f in stack) f.obj.destroy()
+        }
+    }
+
+    /** A container being walked: [obj] (owned), its keys if a dictionary, the next index, its nesting [level]. */
+    private class Frame(val obj: PDFObject, val keys: List<String>?, val level: Int, var next: Int = 0) {
+        val size: Int = keys?.size ?: obj.size()
+        fun child(i: Int): PDFObject = if (keys != null) obj.get(keys[i]) else obj.get(i)
+    }
+
+    /**
+     * Follows [value] (owned) through indirect references as the graft does (each hop is a level,
+     * each object number entered once); returns a frame if it ends at a container not yet entered.
+     */
+    private fun enter(value: PDFObject, level: Int, count: Int, visited: BitSet, budget: Budget, maxNesting: Int): Frame? {
         var v = value
+        var lvl = level
         while (v.isIndirect) {
             val num = v.asIndirect()
             if (num <= 0 || num >= count || visited.get(num)) {
@@ -99,22 +156,33 @@ internal object ObjectGraph {
                 return null
             }
             visited.set(num)
+            budget.spend()
             val r = v.resolve()
             destroy(v)
             v = r
-            if (v.isIndirect && v.asIndirect() == num) { destroy(v); return null }
+            lvl++
         }
-        return when {
-            v.isDictionary -> {
-                val keys = ArrayList<String>()
-                for (k in v) {
-                    if (k.isName) keys.add(k.asName())
-                    destroy(k)
-                }
-                Frame(v, keys)
+        if (lvl > maxNesting && (v.isDictionary || v.isArray)) {
+            destroy(v)
+            throw PdfInputException(PdfError.Corrupt)
+        }
+        return frameOf(v, lvl)
+    }
+
+    /** A frame for [v] (owned) if it is a dictionary or an array, else destroys it and returns null. */
+    private fun frameOf(v: PDFObject, level: Int): Frame? = when {
+        v.isDictionary -> {
+            val keys = ArrayList<String>()
+            for (k in v) {
+                if (k.isName) keys.add(k.asName())
+                destroy(k)
             }
-            v.isArray -> Frame(v, null)
-            else -> { destroy(v); null }
+            Frame(v, keys, level)
+        }
+        v.isArray -> Frame(v, null, level)
+        else -> {
+            destroy(v)
+            null
         }
     }
 
