@@ -22,7 +22,7 @@ You choose files through the system file picker or photo picker. They are proces
 
 While a job runs, the app keeps temporary working copies in its private cache. They are deleted after each job (when the result is saved or discarded, or the job fails or is cancelled). Any copies left behind, for example if the app was closed mid-job, are deleted the next time a tool is opened after the app starts.
 
-The result is written only to the place you choose in the save dialog.
+The result is written only to the place you choose in the save dialog. If you choose a cloud storage location, that storage app may upload the file; Offkit itself never sends it anywhere.
 
 RECENT FILES
 ------------
@@ -36,7 +36,7 @@ The app also remembers on your device that you have seen the introduction and wh
 PHOTO METADATA
 --------------
 
-When the app places images into a PDF, it removes photo metadata such as location and camera details. Unusual or damaged image files may still keep some embedded metadata. Metadata already inside a PDF you give the app (to Merge, Compress or Add images) may remain in the result.
+When the app places images into a PDF, it removes photo metadata such as location and camera details. Unusual or damaged image files may still keep some embedded metadata. Colour-profile data inside photos (which can name the camera or device model) is kept, because it is needed to show colours correctly. A PDF you give to Compress or Add images keeps its own document properties, such as author, title and other embedded metadata. Metadata inside the pages of PDFs you give to Merge may also remain in the result.
 
 LINKS
 -----

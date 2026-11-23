@@ -7,6 +7,7 @@ import app.venkat.offkit.R
 import app.venkat.offkit.core.JobInput
 import app.venkat.offkit.core.JobViewModel
 import app.venkat.offkit.core.PickedFile
+import app.venkat.offkit.core.UriIo
 import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.formatBytes
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,7 +40,8 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
      * Appends [uris] (in picker order) after describing them off the main thread. Discards any
      * result of the previous list. Ignored while running or saving.
      */
-    fun add(uris: List<Uri>) {
+    fun add(picked: List<Uri>) {
+        val uris = picked.filter(UriIo::isContentUri) // only content Uris from the picker (SB-14)
         if (uris.isEmpty() || locked) return
         viewModelScope.launch {
             val picked = describe(uris)

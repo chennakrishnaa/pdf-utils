@@ -33,14 +33,21 @@ object UriIo {
     const val FALLBACK_NAME = "file"
 
     /**
+     * True if [uri] is a `content:` Uri, the only kind the system pickers and save dialog return.
+     * Anything else (`file:`, `android.resource:`, no scheme) is never read or written by the app.
+     */
+    fun isContentUri(uri: Uri?): Boolean = uri?.scheme == ContentResolver.SCHEME_CONTENT
+
+    /**
      * Describes [uri] for display: name and size from the provider's [OpenableColumns], falling
-     * back to the Uri's last path segment (and, for `file://` Uris, the file's length).
-     * Never throws; a blank name becomes [FALLBACK_NAME].
+     * back to the Uri's last path segment. The name is untrusted and is passed through
+     * [sanitizeDisplayName]. Non-`content:` Uris are not queried (name from the Uri only, no
+     * size). Never throws; a blank name becomes [FALLBACK_NAME].
      */
     fun describe(context: Context, uri: Uri): PickedFile {
         var name: String? = null
         var size: Long? = null
-        try {
+        if (isContentUri(uri)) try {
             context.contentResolver.query(
                 uri,
                 arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
@@ -58,20 +65,12 @@ object UriIo {
         } catch (e: Exception) {
             // Fall through to the Uri-derived fallback.
         }
-        if (uri.scheme == ContentResolver.SCHEME_FILE) {
-            try {
-                val f = uri.path?.let(::File)
-                if (f != null && f.isFile && size == null) size = f.length()
-            } catch (e: Exception) {
-                // Ignore: size stays unknown.
-            }
-        }
         val fallback = try {
             uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
         } catch (e: Exception) {
             null
         }
-        val finalName = name?.takeIf { it.isNotBlank() } ?: fallback?.takeIf { it.isNotBlank() } ?: FALLBACK_NAME
+        val finalName = sanitizeDisplayName(name, sanitizeDisplayName(fallback, FALLBACK_NAME))
         return PickedFile(uri, finalName, size)
     }
 

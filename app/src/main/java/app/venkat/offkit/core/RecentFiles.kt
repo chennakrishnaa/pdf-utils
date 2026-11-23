@@ -55,7 +55,11 @@ class RecentFilesStore private constructor(context: Context) {
      * persistable read grant on its Uri if the provider allows. Entries beyond [MAX_ENTRIES]
      * are dropped and their grants released.
      */
-    fun add(file: RecentFile) {
+    fun add(entry: RecentFile) {
+        val file = entry.copy(
+            name = sanitizeDisplayName(entry.name, UriIo.FALLBACK_NAME),
+            tool = entry.tool.take(MAX_TOOL_LENGTH),
+        )
         try {
             appContext.contentResolver.takePersistableUriPermission(file.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (e: Exception) {
@@ -174,32 +178,51 @@ class RecentFilesStore private constructor(context: Context) {
             return array.toString()
         }
 
-        /** Parses stored JSON; malformed entries are skipped, malformed data gives an empty list. */
+        /** Longest stored JSON accepted; anything larger was not written by this app. */
+        private const val MAX_JSON_LENGTH = 256 * 1024
+        private const val MAX_URI_LENGTH = 4096
+        private const val MAX_TOOL_LENGTH = 32
+
+        /**
+         * Parses stored JSON. Never throws: oversized, malformed or wrongly typed data gives an
+         * empty list; bad entries (missing, wrongly typed or oversized fields, duplicate Uris) are
+         * skipped; at most [MAX_ENTRIES] are kept. Names are re-sanitised, as the stored data may
+         * predate [sanitizeDisplayName].
+         */
         internal fun decode(json: String?): List<RecentFile> {
-            if (json.isNullOrBlank()) return emptyList()
+            if (json.isNullOrBlank() || json.length > MAX_JSON_LENGTH) return emptyList()
             val array = try {
                 JSONArray(json)
             } catch (e: Exception) {
                 return emptyList()
+            } catch (e: StackOverflowError) {
+                return emptyList() // deeply nested garbage
             }
             val out = ArrayList<RecentFile>()
             for (i in 0 until array.length()) {
+                if (out.size >= MAX_ENTRIES) break
                 try {
-                    val o = array.getJSONObject(i)
-                    val uri = Uri.parse(o.getString("uri").takeIf { it.isNotBlank() } ?: continue)
+                    val o = array.optJSONObject(i) ?: continue
+                    val rawUri = o.opt("uri") as? String ?: continue
+                    if (rawUri.isBlank() || rawUri.length > MAX_URI_LENGTH) continue
+                    val uri = Uri.parse(rawUri)
                     if (out.any { it.uri == uri }) continue
+                    val at = o.opt("at") as? Number ?: continue
+                    val size = o.opt("size") as? Number
+                    val tool = o.opt("tool") as? String ?: ""
+                    if (tool.length > MAX_TOOL_LENGTH) continue
                     out += RecentFile(
                         uri = uri,
-                        name = o.optString("name").ifBlank { UriIo.FALLBACK_NAME },
-                        sizeBytes = if (o.isNull("size")) null else o.getLong("size").takeIf { it >= 0 },
-                        savedAtMillis = o.getLong("at"),
-                        tool = o.optString("tool"),
+                        name = sanitizeDisplayName(o.opt("name") as? String, UriIo.FALLBACK_NAME),
+                        sizeBytes = size?.toLong()?.takeIf { it >= 0 },
+                        savedAtMillis = at.toLong(),
+                        tool = tool,
                     )
                 } catch (e: Exception) {
                     // Skip this entry.
                 }
             }
-            return out.take(MAX_ENTRIES)
+            return out
         }
     }
 }

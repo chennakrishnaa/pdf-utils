@@ -7,6 +7,8 @@ import app.venkat.offkit.R
 import app.venkat.offkit.core.JobInput
 import app.venkat.offkit.core.JobViewModel
 import app.venkat.offkit.core.PickedFile
+import app.venkat.offkit.core.UriIo
+import app.venkat.offkit.core.sanitizeDisplayName
 import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.formatBytes
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,7 +47,7 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
      * result. Ignored while running or saving.
      */
     fun choosePdf(uris: List<Uri>) {
-        val uri = uris.firstOrNull() ?: return
+        val uri = uris.firstOrNull()?.takeIf(UriIo::isContentUri) ?: return // only content Uris (SB-14)
         if (locked) return
         viewModelScope.launch {
             val picked = describe(listOf(uri)).first()
@@ -56,7 +58,8 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
     }
 
     /** Appends [uris] (in picker order) to the image list, discarding any result. Ignored while running or saving. */
-    fun addImages(uris: List<Uri>) {
+    fun addImages(picked: List<Uri>) {
+        val uris = picked.filter(UriIo::isContentUri) // only content Uris from the picker (SB-14)
         if (uris.isEmpty() || locked) return
         viewModelScope.launch {
             val picked = describe(uris)
@@ -123,12 +126,10 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
          * null or blank -> [FALLBACK_FILE_NAME]. Only a suggestion for the system dialog, never a path.
          */
         fun suggestedNameFor(originalName: String?): String {
-            val base = originalName.orEmpty()
-                .substringAfterLast('/')
-                .trim()
+            val base = sanitizeDisplayName(originalName.orEmpty().substringAfterLast('/'), "")
                 .let { if (it.endsWith(PDF_EXT, ignoreCase = true)) it.dropLast(PDF_EXT.length) else it }
                 .trim()
-            return if (base.isEmpty()) FALLBACK_FILE_NAME else "$base$SUFFIX$PDF_EXT"
+            return if (base.isEmpty()) FALLBACK_FILE_NAME else sanitizeDisplayName("$base$SUFFIX$PDF_EXT", FALLBACK_FILE_NAME)
         }
     }
 }

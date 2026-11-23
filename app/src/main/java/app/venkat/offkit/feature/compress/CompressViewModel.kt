@@ -7,6 +7,8 @@ import app.venkat.offkit.R
 import app.venkat.offkit.core.JobInput
 import app.venkat.offkit.core.JobViewModel
 import app.venkat.offkit.core.PickedFile
+import app.venkat.offkit.core.UriIo
+import app.venkat.offkit.core.sanitizeDisplayName
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.formatBytes
@@ -41,7 +43,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
      * previous choice is discarded (see [inputsChanged]). Ignored while running or saving.
      */
     fun choose(uri: Uri) {
-        if (locked) return
+        if (locked || !UriIo.isContentUri(uri)) return // only content Uris from the picker (SB-14)
         viewModelScope.launch {
             val picked = describe(listOf(uri)).first()
             if (locked) return@launch
@@ -111,7 +113,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
          * [fallback]. Only ever a suggestion for the system dialog, never a path.
          */
         fun compressedFileName(originalName: String?, fallback: String = "compressed.pdf"): String {
-            var base = originalName.orEmpty().replace(UNSAFE_CHARS, "_").trim()
+            var base = sanitizeDisplayName(originalName, "").replace(UNSAFE_CHARS, "_").trim()
             if (base.endsWith(EXTENSION, ignoreCase = true)) base = base.dropLast(EXTENSION.length)
             base = base.trim().trimStart('.').take(MAX_BASE_LENGTH).trim()
             if (base.isEmpty() || base.all { it == '_' }) return fallback
