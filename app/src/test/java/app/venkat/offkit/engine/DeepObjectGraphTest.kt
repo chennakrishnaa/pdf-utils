@@ -49,18 +49,30 @@ class DeepObjectGraphTest {
         for ((op, r) in results) assertTrue("$op: $r", r is PdfResult.Ok)
     }
 
+    /**
+     * SR2-4: Compress and Add images save without `garbage`, so no recursive pass follows the
+     * chain: a 5,000-link chain (refused as Corrupt under the old trailer-walk guard) now gives a
+     * valid Ok that keeps the chain. Normal engine path (128 MB stack) only.
+     */
     @Test
-    fun chainJustAboveTheBound_isCorrupt_everywhere_withoutOutput() {
-        val pdf = write("chain-deep.pdf", chainPdf(ObjectGraph.MAX_DEPTH + 10))
+    fun longTrailerChain_compressAndAppend_areOk_andKeepTheChain() {
+        val links = 5_000
+        val pdf = write("chain-5000.pdf", chainPdf(links))
         val img = Fixtures.jpeg(dir, "b.jpg", 40, 30)
-        val outs = listOf(out("c2.pdf"), out("m2.pdf"), out("a2.pdf"))
-        val results = mapOf(
-            "compress" to engine.compress(pdf, CompressionLevel.HIGH, outs[0]),
-            "merge" to engine.merge(listOf(pdf), outs[1]),
-            "append" to engine.appendImages(pdf, listOf(img), outs[2]),
-        )
-        for ((op, r) in results) assertEquals(op, PdfResult.Err(PdfError.Corrupt), r)
-        for (o in outs) assertFalse(o.exists())
+        val c = out("c2.pdf")
+        val a = out("a2.pdf")
+        val rc = engine.compress(pdf, CompressionLevel.HIGH, c)
+        val ra = engine.appendImages(pdf, listOf(img), a)
+        assertEquals(PdfResult.Ok(pages = 1, bytes = c.length()), rc)
+        assertEquals(PdfResult.Ok(pages = 2, bytes = a.length()), ra)
+        for (o in listOf(c, a)) {
+            val doc = PdfInputs.open(o)
+            try {
+                assertTrue("${o.name} keeps the chain", doc.countObjects() > links)
+            } finally {
+                doc.destroy()
+            }
+        }
     }
 
     @Test

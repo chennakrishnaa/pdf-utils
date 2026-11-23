@@ -64,7 +64,7 @@ class CompressOp {
             if (job.isCancelled()) return@toResult PdfResult.Err(PdfError.Cancelled)
 
             val pages = doc.countPages()
-            doc.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
+            doc.save(out.absolutePath, PdfInputs.EDIT_SAVE_OPTIONS)
             if (out.length() >= pdf.length()) {
                 // Deliver the original bytes, but only if the original itself is fully readable.
                 PdfInputs.checkPages(pdf, pages, job)?.let { return@toResult it }

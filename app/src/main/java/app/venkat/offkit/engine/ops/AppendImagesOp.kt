@@ -41,7 +41,7 @@ class AppendImagesOp {
             }
             if (job.isCancelled()) return PdfResult.Err(PdfError.Cancelled)
             val pages = doc.countPages()
-            doc.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
+            doc.save(out.absolutePath, PdfInputs.EDIT_SAVE_OPTIONS)
             PdfInputs.validateOutput(out, pages, job)?.let { return it }
             PdfResult.Ok(pages = pages, bytes = out.length())
         } finally {
