@@ -31,7 +31,7 @@ The Recent files list on the home screen shows files you saved with the app. For
 
 If you open or share a file from the list, Android hands it to another app on your device.
 
-The app also remembers on your device that you have seen the introduction; this is a single yes/no setting, contains nothing about you or your files, is excluded from backup, and is removed by clearing the app's data or uninstalling.
+The app also remembers on your device that you have seen the introduction and which cards you have hidden; these are simple settings, contain nothing about you or your files, are excluded from backup, and are removed by clearing the app's data or uninstalling.
 
 PHOTO METADATA
 --------------
@@ -41,7 +41,7 @@ When the app places images into a PDF, it removes photo metadata such as locatio
 LINKS
 -----
 
-Tapping the source code link or the privacy policy link in About opens it in your browser, or in another app that handles web links. That app is outside Offkit, and its own privacy terms apply.
+Tapping the source code link or the privacy policy link in About opens it in your browser, or in another app that handles web links. That app is outside Offkit, and its own privacy terms apply. The same goes for the Support page: opening a link, email or share sheet hands over to another app of your choice, and Offkit itself sends nothing.
 
 CHILDREN
 --------

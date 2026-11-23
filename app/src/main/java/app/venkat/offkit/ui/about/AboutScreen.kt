@@ -57,6 +57,7 @@ const val TAG_ABOUT_PRIVACY = "about_privacy"
 const val TAG_ABOUT_PRIVACY_URL = "about_privacy_url"
 const val TAG_ABOUT_NO_DATA = "about_no_data"
 const val TAG_ABOUT_INTRO = "about_intro"
+const val TAG_ABOUT_SUPPORT = "about_support"
 
 /** Asset holding a verbatim copy of the repository's `LICENSE` (GNU AGPL v3). */
 const val ASSET_LICENSE = "LICENSE"
@@ -73,7 +74,7 @@ const val ASSET_PRIVACY = "PRIVACY.md"
  * code URL and the online privacy policy URL.
  */
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(onBack: () -> Unit, onOpenSupport: () -> Unit = {}) {
     // Whether the introduction is open (shown over About; finishing it returns here).
     var introduction by rememberSaveable { mutableStateOf(false) }
     if (introduction) {
@@ -122,6 +123,12 @@ fun AboutScreen(onBack: () -> Unit) {
                 text = stringResource(R.string.about_intro_row),
                 testTag = TAG_ABOUT_INTRO,
                 onClick = { introduction = true },
+            )
+            LinkRow(
+                icon = AppIcons.heart,
+                text = stringResource(R.string.about_support_row),
+                testTag = TAG_ABOUT_SUPPORT,
+                onClick = onOpenSupport,
             )
 
             SectionHeader(stringResource(R.string.about_license_header))

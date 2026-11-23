@@ -14,6 +14,7 @@ import app.venkat.offkit.feature.imagestopdf.ImagesToPdfScreen
 import app.venkat.offkit.feature.merge.MergeScreen
 import app.venkat.offkit.ui.about.AboutScreen
 import app.venkat.offkit.ui.home.HomeScreen
+import app.venkat.offkit.ui.support.SupportScreen
 
 /** Navigation route names. */
 object Routes {
@@ -23,6 +24,7 @@ object Routes {
     const val MERGE = "merge"
     const val ADD_IMAGES = "add-images"
     const val ABOUT = "about"
+    const val SUPPORT = "support"
 }
 
 /** The app's navigation graph, starting at [Routes.HOME]. */
@@ -39,7 +41,11 @@ fun AppNavHost(
                     navController.navigate(route) { launchSingleTop = true }
                 }
             }
-            HomeScreen(onOpenTool = navigate, onOpenAbout = { navigate(Routes.ABOUT) })
+            HomeScreen(
+                onOpenTool = navigate,
+                onOpenAbout = { navigate(Routes.ABOUT) },
+                onOpenSupport = { navigate(Routes.SUPPORT) },
+            )
         }
         composable(Routes.IMAGES_TO_PDF) {
             ImagesToPdfScreen(onBack = dropUnlessResumed { navController.popBackStack() })
@@ -53,8 +59,18 @@ fun AppNavHost(
         composable(Routes.ADD_IMAGES) {
             AddImagesScreen(onBack = dropUnlessResumed { navController.popBackStack() })
         }
-        composable(Routes.ABOUT) {
-            AboutScreen(onBack = dropUnlessResumed { navController.popBackStack() })
+        composable(Routes.ABOUT) { entry ->
+            AboutScreen(
+                onBack = dropUnlessResumed { navController.popBackStack() },
+                onOpenSupport = {
+                    if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                        navController.navigate(Routes.SUPPORT) { launchSingleTop = true }
+                    }
+                },
+            )
+        }
+        composable(Routes.SUPPORT) {
+            SupportScreen(onBack = dropUnlessResumed { navController.popBackStack() })
         }
     }
 }

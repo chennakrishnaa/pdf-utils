@@ -27,4 +27,9 @@ object AppIcons {
     val close: Painter @Composable get() = painterResource(R.drawable.ic_close)
     val history: Painter @Composable get() = painterResource(R.drawable.ic_history)
     val chevronRight: Painter @Composable get() = painterResource(R.drawable.ic_chevron_right)
+    val star: Painter @Composable get() = painterResource(R.drawable.ic_star)
+    val mail: Painter @Composable get() = painterResource(R.drawable.ic_mail)
+    val heart: Painter @Composable get() = painterResource(R.drawable.ic_heart)
+    val feedback: Painter @Composable get() = painterResource(R.drawable.ic_feedback)
+    val code: Painter @Composable get() = painterResource(R.drawable.ic_code)
 }

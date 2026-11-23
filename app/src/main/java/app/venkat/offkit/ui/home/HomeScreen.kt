@@ -58,6 +58,9 @@ import app.venkat.offkit.core.RecentFile
 import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.nav.Routes
+import app.venkat.offkit.ui.support.HOUSE_PROMOS
+import app.venkat.offkit.ui.support.HomeSupportCards
+import app.venkat.offkit.ui.support.HousePromo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -109,12 +112,18 @@ private fun toolIcon(route: String): Painter = when (route) {
 }
 
 /**
- * Home screen: one card per tool, then the recently saved files. [onOpenTool] receives the
- * tool's route from [Routes]. The whole content scrolls as one column.
+ * Home screen: one card per tool, then the recently saved files, then (unless hidden) one house
+ * promo card from [promos] and the "Support the app" card, which calls [onOpenSupport].
+ * [onOpenTool] receives the tool's route from [Routes]. The whole content scrolls as one column.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onOpenTool: (route: String) -> Unit, onOpenAbout: () -> Unit) {
+fun HomeScreen(
+    onOpenTool: (route: String) -> Unit,
+    onOpenAbout: () -> Unit,
+    onOpenSupport: () -> Unit = {},
+    promos: List<HousePromo> = HOUSE_PROMOS,
+) {
     val vm: HomeViewModel = viewModel {
         HomeViewModel(checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]))
     }
@@ -173,6 +182,8 @@ fun HomeScreen(onOpenTool: (route: String) -> Unit, onOpenAbout: () -> Unit) {
                 onRemove = vm::remove,
                 onClear = vm::clear,
             )
+
+            HomeSupportCards(onOpenSupport = onOpenSupport, promos = promos)
 
             Text(
                 text = stringResource(R.string.home_footer),
