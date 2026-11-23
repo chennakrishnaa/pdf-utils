@@ -70,6 +70,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import app.venkat.offkit.R
@@ -144,7 +145,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         val landscape = maxWidth > maxHeight
         val fontScale = density.fontScale
         val compact = maxHeight < 700.dp || fontScale >= 1.3f
-        val heroHeight = if (landscape) maxHeight else maxHeight * (if (compact) 0.38f else 0.54f)
+        val heroHeight = if (landscape) maxHeight else maxHeight * (if (compact) 0.36f else 0.5f)
         val heroWidth = if (landscape) maxWidth * 0.44f else maxWidth
         val pageWidthPx = with(density) { maxWidth.toPx() }
         var barHeightPx by remember { mutableIntStateOf(0) }
@@ -165,7 +166,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                         Modifier.fillMaxHeight().width(maxWidth - heroWidth).align(Alignment.CenterEnd)
                             .background(sheetColor, RoundedCornerShape(topStart = SheetRadius, bottomStart = SheetRadius))
                     } else {
-                        Modifier.fillMaxWidth().height(maxHeight - heroHeight).align(Alignment.BottomCenter)
+                        Modifier.fillMaxWidth().height(maxHeight - heroHeight + SheetRadius).align(Alignment.BottomCenter)
                             .background(sheetColor, RoundedCornerShape(topStart = SheetRadius, topEnd = SheetRadius))
                     },
                 ),
@@ -186,6 +187,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     entrance = { entrance.value },
                     pageWidthPx = pageWidthPx,
                     rtl = rtl,
+                    dark = dark,
                     modifier = modifier,
                 )
             }
@@ -216,7 +218,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     hero(
                         Modifier.fillMaxWidth().height(heroHeight)
                             .windowInsetsPadding(WindowInsets.statusBars)
-                            .padding(start = 24.dp, end = 24.dp, top = 48.dp, bottom = SheetRadius + 12.dp),
+                            .padding(start = 24.dp, end = 24.dp, top = 48.dp, bottom = SheetRadius + 8.dp),
                     )
                     content(
                         Modifier.weight(1f).fillMaxWidth()
@@ -237,14 +239,26 @@ fun OnboardingScreen(onFinished: () -> Unit) {
             )
         }
 
-        // Bottom bar on the sheet: indicator at the start, primary action at the end.
+        // Bottom bar on the sheet: indicator at the start, primary action at the end, over a short fade.
+        Box(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .then(if (landscape) Modifier.width(maxWidth - heroWidth) else Modifier.fillMaxWidth())
+                .padding(bottom = barHeight)
+                .height(24.dp)
+                .background(Brush.verticalGradient(listOf(sheetColor.copy(alpha = 0f), sheetColor))),
+        )
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .then(if (landscape) Modifier.width(maxWidth - heroWidth) else Modifier.fillMaxWidth())
                 .background(sheetColor)
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Bottom + if (landscape) WindowInsetsSides.End else WindowInsetsSides.Horizontal,
+                    ),
+                )
                 .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 16.dp)
                 .onSizeChanged { barHeightPx = it.height },
         ) {
@@ -287,7 +301,7 @@ private fun PageContent(number: Int, compact: Boolean, entrance: () -> Float, bo
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
-            .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = bottomPadding + 16.dp)
+            .padding(start = 24.dp, end = 24.dp, top = 0.dp, bottom = bottomPadding + 16.dp)
             .widthIn(max = 560.dp)
             .graphicsLayer {
                 val p = ((entrance() - 0.25f) / 0.6f).coerceIn(0f, 1f)
@@ -295,7 +309,7 @@ private fun PageContent(number: Int, compact: Boolean, entrance: () -> Float, bo
                 alpha = eased
                 translationY = (1f - eased) * 16.dp.toPx()
             },
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         when (number) {
             1 -> {
@@ -304,12 +318,13 @@ private fun PageContent(number: Int, compact: Boolean, entrance: () -> Float, bo
             }
             2 -> {
                 PageTitle(2, stringResource(R.string.onboarding_tools_title), compact)
-                Body(stringResource(R.string.onboarding_tools_text))
+                Spacer(Modifier.height(4.dp))
                 ToolGrid()
             }
             3 -> {
                 PageTitle(3, stringResource(R.string.onboarding_private_title), compact)
                 Body(stringResource(R.string.onboarding_private_text))
+                Spacer(Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     PointRow(AppIcons.check, stringResource(R.string.onboarding_private_accounts))
                     PointRow(AppIcons.image, stringResource(R.string.onboarding_private_metadata))
@@ -318,6 +333,7 @@ private fun PageContent(number: Int, compact: Boolean, entrance: () -> Float, bo
             else -> {
                 PageTitle(4, stringResource(R.string.onboarding_control_title), compact)
                 Body(stringResource(R.string.onboarding_control_choose))
+                Spacer(Modifier.height(4.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     PointRow(AppIcons.history, stringResource(R.string.onboarding_control_recent))
                     PointRow(AppIcons.check, stringResource(R.string.onboarding_control_nothing))
@@ -345,7 +361,7 @@ private fun PageTitle(number: Int, text: String, compact: Boolean) {
 private fun Body(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 26.sp),
+        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 1.5.em),
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth(),
     )
@@ -378,9 +394,9 @@ private fun ToolGrid() {
         Triple(AppIcons.merge, R.string.tool_merge_title, R.string.onboarding_tools_merge),
         Triple(AppIcons.addToPdf, R.string.tool_add_images_title, R.string.onboarding_tools_add),
     )
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         tools.chunked(2).forEach { row ->
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 row.forEach { (icon, name, benefit) ->
                     ToolCard(
                         icon = icon,
@@ -403,10 +419,10 @@ private fun ToolCard(icon: Painter, name: String, benefit: String, accent: Boole
         color = colors.surfaceContainerHigh,
         modifier = modifier.semantics(mergeDescendants = true) {},
     ) {
-        Column(Modifier.padding(16.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Box(
                 Modifier
-                    .size(36.dp)
+                    .size(32.dp)
                     .background(if (accent) OnboardingBrand.Coral else colors.primaryContainer, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
             ) {
@@ -414,10 +430,10 @@ private fun ToolCard(icon: Painter, name: String, benefit: String, accent: Boole
                     icon,
                     contentDescription = null,
                     tint = if (accent) Color.White else colors.onPrimaryContainer,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(18.dp),
                 )
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             Text(name, style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
             Spacer(Modifier.height(2.dp))
             Text(benefit, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)

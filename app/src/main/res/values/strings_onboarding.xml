@@ -10,11 +10,10 @@
     <string name="onboarding_welcome_text">PDF tools that work entirely on your phone.</string>
 
     <string name="onboarding_tools_title">Four tools</string>
-    <string name="onboarding_tools_text">Everything runs on your device, even offline.</string>
     <!-- Short benefit under each tool name in the 2x2 grid; at most five words each. -->
     <string name="onboarding_tools_images">Pick quality, preview the size</string>
     <string name="onboarding_tools_compress">Smaller files, three levels</string>
-    <string name="onboarding_tools_merge">Order, then combine into one</string>
+    <string name="onboarding_tools_merge">Order, then combine</string>
     <string name="onboarding_tools_add">Pictures as new pages</string>
 
     <string name="onboarding_private_title">Private by design</string>
