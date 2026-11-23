@@ -15,9 +15,15 @@ class ImageTooLargeException(val file: File) : RuntimeException("image too large
  *
  * Reasoning for the numbers (a phone gives an app a few hundred MB of native memory at best):
  * - A decoded RGB pixel is 3 bytes: 50 MP ≈ 150 MB raw, the largest single buffer we accept.
- * - A PNG is always decoded to a full pixmap (plus MuPDF's inflated sample buffer, which can be
- *   twice that for 16-bit samples, plus a Java-heap copy for the size estimate), so PNG is capped
- *   lower, at [MAX_PNG_PIXELS].
+ * - A PNG is always decoded to a full pixmap (plus MuPDF's inflated sample buffer, which is twice
+ *   as large for 16-bit samples, an alpha channel that becomes a separate SMask, and a Java-heap
+ *   copy of the raw stream for the size estimate). Peak memory grows ~14 MB per MP for 8-bit RGB,
+ *   and an attacker can craft a tiny PNG just under any cap, so PNG is capped twice: at
+ *   [MAX_PNG_PIXELS] (20 MP) and at [MAX_PNG_SAMPLE_BYTES] of declared decoded samples (60 MB, what
+ *   20 MP 8-bit RGB needs), which bounds 16-bit and alpha formats: 8-bit RGBA 15 MP, 16-bit RGB
+ *   10 MP, 16-bit RGBA 7.5 MP. A `tRNS` chunk makes MuPDF decode an alpha channel too, so it
+ *   counts as one (20 MP RGB + tRNS peaked at 397 MB; with it counted, 8-bit RGB/palette + tRNS
+ *   is capped at 15 MP).
  * - A progressive or multi-scan JPEG (SOF2/6/10/14, lossless/hierarchical/arithmetic types, or a
  *   sequential frame whose first scan does not carry every component) makes libjpeg buffer the
  *   WHOLE image as DCT coefficients, about 2 bytes per sample ≈ 6 B/px: 50 MP ≈ 300 MB. Capped at
@@ -28,18 +34,30 @@ class ImageTooLargeException(val file: File) : RuntimeException("image too large
  * - No edge may exceed [MAX_EDGE] (and none may be 0).
  * Peak resident memory (host x86_64, MuPDF 1.28.5, -Xmx512m, flat-colour images right at the cap,
  * worst of `estimate` and `imagesToPdf` at every level): 50 MP progressive JPEG 238 MB, 250 MP
- * baseline JPEG 159 MB, 50 MP PNG 690 MB (hence the PNG cap of 40 MP).
+ * baseline JPEG 159 MB; 8-bit RGB PNG: 12 MP 213 MB, 30 MP 466 MB, 50 MP 690 MB (hence the PNG
+ * limits). Flat-colour PNGs right at the PNG limits, peak RSS of `estimate` / `imagesToPdf`
+ * Original / HIGH (`estimate` is the worst, 1.0-1.9 s in process): 20 MP 8-bit RGB
+ * 339/192/260 MB, 20 MP interlaced 8-bit RGB 338/191/261 MB, 20 MP 8-bit palette 307/191/298 MB,
+ * 15 MP 8-bit RGBA 327/191/242 MB, 10 MP 16-bit RGB 234/161/168 MB, 7.5 MP 16-bit RGBA
+ * 251/163/175 MB, 15 MP 8-bit RGB + tRNS 309/178/223 MB, 15 MP palette + tRNS 278/208/257 MB:
+ * all under ~400 MB.
  */
 internal object ImageLimits {
     /** Largest accepted width or height, in pixels. */
     const val MAX_EDGE = 65_500
 
     /**
-     * Largest accepted PNG, in pixels (width × height). Lowered from 50 MP after measuring: a flat
-     * 50 MP RGB PNG peaked at 690 MB RSS in `estimate` (pixmap + raw stream + its Java-heap copy for
-     * the deflate estimate), 30 MP at 466 MB; 40 MP ≈ 580 MB.
+     * Largest accepted PNG, in pixels (width × height), whatever its sample format. Lowered from
+     * 40 MP after measuring (see the class KDoc): a flat 30 MP 8-bit RGB PNG peaked at 466 MB RSS.
      */
-    const val MAX_PNG_PIXELS = 40_000_000L
+    const val MAX_PNG_PIXELS = 20_000_000L
+
+    /**
+     * Largest accepted PNG, in declared decoded sample bytes: width × height × channels × bytes per
+     * sample, from the IHDR colour type and bit depth (see [pngBytesPerPixel]). Equal to what a
+     * [MAX_PNG_PIXELS] 8-bit RGB image needs (60 MB), so e.g. a 16-bit RGBA PNG is capped at 7.5 MP.
+     */
+    const val MAX_PNG_SAMPLE_BYTES = MAX_PNG_PIXELS * 3
 
     /** Largest accepted progressive / multi-scan / non-sequential JPEG, in pixels. */
     const val MAX_BUFFERED_JPEG_PIXELS = 50_000_000L
@@ -79,10 +97,37 @@ internal object ImageLimits {
         return dimensions(frame.width.toLong(), frame.height.toLong(), cap)
     }
 
-    /** Verdict for a PNG with IHDR [width] × [height] (read as unsigned 32-bit values). */
-    fun png(width: Long, height: Long): Verdict =
-        if (width > Int.MAX_VALUE || height > Int.MAX_VALUE) Verdict.UNSUPPORTED
-        else dimensions(width, height, MAX_PNG_PIXELS)
+    /**
+     * Verdict for a PNG with IHDR [width] × [height] (read as unsigned 32-bit values), [bitDepth]
+     * and [colorType], and a `tRNS` chunk if [transparency]: within [MAX_PNG_PIXELS] and
+     * [MAX_PNG_SAMPLE_BYTES]; an invalid colour type / bit depth combination is unsupported.
+     */
+    fun png(width: Long, height: Long, bitDepth: Int, colorType: Int, transparency: Boolean = false): Verdict {
+        if (width > Int.MAX_VALUE || height > Int.MAX_VALUE) return Verdict.UNSUPPORTED
+        val dims = dimensions(width, height, MAX_PNG_PIXELS)
+        if (dims != Verdict.OK) return dims
+        val bytesPerPixel = pngBytesPerPixel(bitDepth, colorType, transparency) ?: return Verdict.UNSUPPORTED
+        return if (width * height * bytesPerPixel > MAX_PNG_SAMPLE_BYTES) Verdict.TOO_LARGE else Verdict.OK
+    }
+
+    /**
+     * Decoded bytes per pixel of a PNG sample format, or null for a combination the PNG spec does
+     * not allow: channels (gray 1, RGB 3, gray+alpha 2, RGBA 4; palette 3, as it is expanded to RGB;
+     * plus 1 for gray, RGB or palette with a `tRNS` chunk [transparency], decoded with alpha)
+     * × bytes per sample (2 for 16-bit, else 1: sub-byte samples are unpacked to a byte each).
+     */
+    fun pngBytesPerPixel(bitDepth: Int, colorType: Int, transparency: Boolean = false): Int? {
+        val alpha = if (transparency) 1 else 0
+        val channels = when (colorType) {
+            0 -> if (bitDepth in intArrayOf(1, 2, 4, 8, 16)) 1 + alpha else return null
+            2 -> if (bitDepth == 8 || bitDepth == 16) 3 + alpha else return null
+            3 -> if (bitDepth in intArrayOf(1, 2, 4, 8)) 3 + alpha else return null
+            4 -> if (bitDepth == 8 || bitDepth == 16) 2 else return null
+            6 -> if (bitDepth == 8 || bitDepth == 16) 4 else return null
+            else -> return null
+        }
+        return channels * (if (bitDepth == 16) 2 else 1)
+    }
 
     private val ALLOWED_COMPONENTS = setOf(1, 3, 4)
 }
