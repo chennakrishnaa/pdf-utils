@@ -4,6 +4,7 @@ import com.artifex.mupdf.fitz.Link
 import com.artifex.mupdf.fitz.PDFDocument
 import com.artifex.mupdf.fitz.Page
 import app.venkat.offkit.engine.JobControl
+import app.venkat.offkit.engine.ObjectGraph
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfInputs
 import app.venkat.offkit.engine.PdfResult
@@ -34,6 +35,8 @@ class MergeOp {
             if (job.isCancelled()) return@toResult PdfResult.Err(PdfError.Cancelled)
             val doc = PdfInputs.open(file)
             try {
+                // SA-11 / SR2-3: bound what grafting this input's pages will touch.
+                PdfInputs.checkGraph { ObjectGraph.checkPages(doc) }
                 doc.countPages()
             } finally {
                 doc.destroy()

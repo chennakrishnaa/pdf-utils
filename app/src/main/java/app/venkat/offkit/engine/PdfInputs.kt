@@ -11,8 +11,25 @@ class PdfInputException(val error: PdfError, cause: Throwable? = null) :
 
 /** Opening and classifying input PDFs, and the error mapping shared by all ops. */
 internal object PdfInputs {
-    /** Save options for every PDF the engine writes. */
+    /**
+     * Save options for documents the engine BUILDS (Images to PDF, the new document of Merge): their
+     * object graph is either the engine's own or a grafted copy, whose depth MuPDF itself caps (see
+     * [ObjectGraph]), so the recursive `garbage` marking is safe and removes unused objects.
+     */
     const val SAVE_OPTIONS = "garbage=deduplicate,compress,objstms"
+
+    /**
+     * Save options for an INPUT document saved after in-place edits (Compress, Add images; SA-11 /
+     * SR2-4). No `garbage`: in MuPDF 1.28.5 `pdf-write.c` the only step that follows indirect
+     * references is `markobj` (recursive, one native frame per link), and it runs only when
+     * `do_garbage >= 1`; without it every xref entry is simply marked used, and the remaining steps
+     * (object-stream unpack/gather, stream deflate, serialisation) iterate over object numbers.
+     * Serialisation recurses only over DIRECT nesting, which the parser caps at the 256-slot
+     * `fz_try` stack. So the save cost no longer depends on the attacker's reference depth. Price:
+     * objects the input itself left unreferenced are kept (Compress overwrites image streams in
+     * place, Add images only adds objects, so the ops themselves orphan nothing).
+     */
+    const val EDIT_SAVE_OPTIONS = "compress,objstms"
 
     /**
      * Opens [file] as a PDF. The caller owns the result and must `destroy()` it.
@@ -25,8 +42,11 @@ internal object PdfInputs {
      * - [PdfError.Io] when the file cannot be opened (missing, unreadable);
      * - [PdfError.OutOfMemory] when it is larger than [ImageLimits.MAX_INPUT_PDF_BYTES] (checked
      *   before MuPDF opens it; the user is told "Not enough memory. Try fewer or smaller files.")
-     *   or has more than [ObjectGraph.MAX_OBJECTS] objects;
-     * - [PdfError.Corrupt] also when its objects nest deeper than [ObjectGraph.MAX_DEPTH] (SA-11).
+     *   or has more than [ObjectGraph.MAX_OBJECTS] objects.
+     * The object graph is NOT walked here (SR2-3: a walk over every reachable object costs memory
+     * proportional to the references): Compress and Add images save without the recursive
+     * `garbage` pass ([EDIT_SAVE_OPTIONS]), and Merge bounds what grafting touches itself
+     * ([ObjectGraph.checkPages]).
      * On failure nothing opened is left alive.
      *
      * MuPDF picks the document handler by file name extension. A file whose name does not end in
@@ -50,18 +70,26 @@ internal object PdfInputs {
                 throw PdfInputException(PdfError.Corrupt, e)
             }
             if (pages <= 0) throw PdfInputException(PdfError.Corrupt)
-            // SA-11: refuse object graphs deep enough to overflow MuPDF's recursive save/graft.
-            try {
-                ObjectGraph.check(pdf)
-            } catch (e: PdfInputException) {
-                throw e
-            } catch (e: RuntimeException) {
-                throw PdfInputException(PdfError.Corrupt, e)
-            }
+            if (pdf.countObjects() > ObjectGraph.MAX_OBJECTS) throw PdfInputException(PdfError.OutOfMemory)
             return pdf
         } catch (t: Throwable) {
             doc.destroy()
             throw t
+        }
+    }
+
+    /**
+     * Runs an [ObjectGraph] check on an opened input: [PdfInputException]s pass through, any other
+     * MuPDF failure while walking (an unparsable object) is reported as [PdfError.Corrupt].
+     */
+    inline fun checkGraph(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: PdfInputException) {
+            throw e
+        } catch (e: RuntimeException) {
+            if (isOutOfMemoryFailure(e)) throw e
+            throw PdfInputException(PdfError.Corrupt, e)
         }
     }
 

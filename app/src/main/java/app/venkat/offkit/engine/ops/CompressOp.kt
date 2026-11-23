@@ -12,6 +12,7 @@ import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.ImageLimits
 import app.venkat.offkit.engine.ImagePages
 import app.venkat.offkit.engine.JobControl
+import app.venkat.offkit.engine.ObjectGraph
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfInputs
 import app.venkat.offkit.engine.PdfResult
@@ -31,7 +32,9 @@ import kotlin.math.roundToInt
  * (abbreviations normalised exactly as MuPDF does) with integer `/Width`/`/Height`,
  * `/BitsPerComponent` 8 and a direct integer `/Length` is ever decoded; any other chain, any
  * abbreviated or external-file key, or a Flate predictor that does not describe the image (SR-5)
- * leaves it untouched. Images over
+ * leaves it untouched. The colour space is vetted the same way before `loadImage` ([ColorSpaceGate],
+ * SR2-1: device RGB/Gray, Cal forms with a direct dictionary, or an ICC profile proven ≤ 4 MiB
+ * decoded; everything else skipped). Images over
  * [MAX_PIXELS] are skipped without decoding, and so is a DCT image whose stream header (SOF) does
  * not declare exactly the dictionary's size or fails [ImageLimits.jpeg] (a progressive JPEG can
  * otherwise make libjpeg allocate without bound). Only one image is decoded at a time.
@@ -51,6 +54,8 @@ class CompressOp {
     fun run(pdf: File, level: CompressionLevel, out: File, job: JobControl): PdfResult = PdfInputs.toResult {
         val doc = PdfInputs.open(pdf)
         try {
+            // SR2-3: the save loads every object; refuse inputs whose objects exceed the walk budget.
+            PdfInputs.checkGraph { ObjectGraph.checkObjects(doc) }
             val (images, maskTargets) = scanImages(doc)
             val total = images.size
             for ((index, num) in images.withIndex()) {
@@ -62,7 +67,7 @@ class CompressOp {
             if (job.isCancelled()) return@toResult PdfResult.Err(PdfError.Cancelled)
 
             val pages = doc.countPages()
-            doc.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
+            doc.save(out.absolutePath, PdfInputs.EDIT_SAVE_OPTIONS)
             if (out.length() >= pdf.length()) {
                 // Deliver the original bytes, but only if the original itself is fully readable.
                 PdfInputs.checkPages(pdf, pages, job)?.let { return@toResult it }
@@ -231,26 +236,11 @@ class CompressOp {
         val bpc = s.add(dict.get("BitsPerComponent"))
         if (!bpc.isInteger || bpc.asInteger() != 8) return Kind.SKIP
 
-        val cs = s.add(s.add(dict.get("ColorSpace")).resolve())
-        val family = when {
-            cs.isName -> cs.asName()
-            cs.isArray && cs.size() > 0 -> s.add(s.add(cs.get(0)).resolve()).let { if (it.isName) it.asName() else "" }
-            else -> ""
-        }
-        return when (family) {
-            "DeviceRGB", "CalRGB" -> Kind.RGB
-            "DeviceGray", "CalGray" -> Kind.GRAY
-            "ICCBased" -> {
-                if (cs.size() < 2) return Kind.SKIP
-                val n = s.add(s.add(s.add(cs.get(1)).resolve()).get("N"))
-                when (if (n.isNumber) n.asInteger() else 0) {
-                    1 -> Kind.GRAY
-                    3 -> Kind.RGB
-                    else -> Kind.SKIP
-                }
-            }
-            // DeviceCMYK, Indexed, Separation, DeviceN, Lab, Pattern, missing: skip.
-            else -> Kind.SKIP
+        // SR2-1: the colour space is loaded by loadImage without bounds; vet it fully first.
+        return when (ColorSpaceGate.classify(s.add(dict.get("ColorSpace")))) {
+            ColorSpaceGate.Kind.RGB -> Kind.RGB
+            ColorSpaceGate.Kind.GRAY -> Kind.GRAY
+            ColorSpaceGate.Kind.SKIP -> Kind.SKIP
         }
     }
 
