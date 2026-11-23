@@ -23,7 +23,7 @@
     <string name="onboarding_private_badge_permissions">No permissions</string>
     <string name="onboarding_private_badge_ads">No ads</string>
     <string name="onboarding_private_accounts">No accounts</string>
-    <string name="onboarding_private_metadata">Location and camera details are removed from photos placed into PDFs.</string>
+    <string name="onboarding_private_metadata">GPS location and camera settings (EXIF) are removed from photos placed into PDFs.</string>
 
     <string name="onboarding_control_title">You\'re in control</string>
     <string name="onboarding_control_choose">You choose the files, and where results are saved.</string>

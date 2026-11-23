@@ -9,7 +9,7 @@ Offkit is a free, open-source Android toolkit for everyday PDF jobs. It works en
 - **Merge PDFs**: put several PDFs in order and combine them into one.
 - **Add images to PDF**: append pictures as new pages at the end of a PDF.
 
-Location and camera details are removed from photos the app places into PDFs. Recently saved files are listed on the home screen; the list stays on the device.
+GPS location and camera settings (EXIF) are removed from photos the app places into PDFs (see PRIVACY.md for what is kept, such as colour profiles). Recently saved files are listed on the home screen; the list stays on the device.
 
 ## Requirements
 
