@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PDF Utils</string>
+    <string name="app_name">PaperPixel</string>
 
     <!-- Home -->
     <string name="home_about">About</string>
