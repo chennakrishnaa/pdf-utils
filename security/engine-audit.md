@@ -233,7 +233,11 @@ Seed 4242 (the audit used 1, 7 and 20261123), 170 s per target, one capped child
 | Target | Iterations | Ok | Violations | Child peak RSS |
 |---|---|---|---|---|
 | jpeg | 2,195 | 914 | 0 (1,280 UnsupportedImage, 1 ImageTooLarge) | 326 MB |
-| png, compress, merge, append | see the next commit (running) | | | |
+| png | 182,110 | 15,943 | 0 (152,804 UnsupportedImage, 13,363 ImageTooLarge) | 221 MB |
+| compress | 14,067 | 1,855 | 0 per-call (12,212 Corrupt); **child peak RSS 1,287 MB > the 600 MB oracle** | 1,287 MB |
+| merge, append | not recorded in time (still running when the session ended) | | | |
+
+No hs_err file, no JVM death, no escaped exception and no `Err` with output left behind. The compress child breached the 600 MB RSS criterion once. The probe does not record RSS per iteration, so the input was not isolated. The seeds included `dct-lie.pdf`, so a mutant reaching the decoder by another filter spelling (as in SR-1) or a predictor/Width mismatch (SR-5) is the likely cause. Treat this as unexplained until it is reproduced, for example by bisecting with per-iteration VmHWM.
 
 ### Updated verdict (engine)
 **Not yet acceptable for public release: one Medium remains.** The image gate holds against every structural trick I tried on picked JPEG/PNG files (SA-1/2/3 fixed), and output validation fixes SA-5 without itself becoming a bomb. But the Compress DCT gate (SA-6) is bypassed by the `/DCT` filter abbreviation (SR-1), so a 2 KB PDF still drives a Compress job to an unbounded allocation. This is a one-line class of fix; with SR-1 fixed and tested, I would rate the engine acceptable, with SR-2 to SR-5 as Low follow-ups.
