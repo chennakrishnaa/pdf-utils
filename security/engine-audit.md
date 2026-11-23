@@ -253,7 +253,7 @@ No hs_err file, no JVM death, no escaped exception and no `Err` with output left
 
 ## Second re-check (SR2)
 
-Re-checker: SR2, independent of the fix authors. Code at `main` `eda2751` (merged ff-only). Work in progress: sections are filled in as they are run.
+Re-checker: SR2, independent of the fix authors. Code at `main` `eda2751` (merged ff-only). Throwaway harness and inputs in `scratchpad/sr2/` (not committed).
 
 ### Status
 - **SR-1 (Compress filter gate): Holds for the filter chain; default-deny is bypassed one level further, through the colour space (SR2-1, Medium).** Every spelling, indirection, duplicate-key and xref trick on `/Filter` was refused (section A), but `ICCBased` images are decoded and `loadImage` reads the whole ICC profile stream without a bound.
@@ -316,10 +316,41 @@ Observations:
 - A 490k-link chain hidden behind the reverse shortcut is accepted (depth 6) and costs 113 s in Compress (single uncancellable `save`, SR2-2).
 
 ### C. On-device (emulator)
-pending
+I wrote a throwaway instrumented test (`Sr2ThrowawayTest`, deleted afterwards and never committed) and ran it with `./scripts/emulator-smoke.sh`. The AVD is `pdfutils-smoke`, Android 12 (API 31) `aosp_atd` x86_64, and it booted on the first attempt. The test reported through a deliberate assertion failure; the other 19 instrumented tests passed.
+
+- **Stack actually obtained.** I counted Java recursion depth until `StackOverflowError` (a trivial recursive Kotlin function) on threads of different sizes.
+
+  | Thread | Frames before overflow |
+  |---|---|
+  | `Thread(null, r, name, 128 MB)` (the `EngineStack` shape) | **2,656,932** |
+  | Explicit 1 MB | 43,684 |
+  | Explicit 256 KB | 27,300 |
+  | Plain `Thread(r)` | 1,204 |
+
+  - The plain `Thread(r)` figure was measured first, while the function was probably still interpreted, so it is not comparable with the others.
+  - The 128 MB thread goes about 61x deeper than the explicit 1 MB thread. **ART honours the requested stack size**, at least on this x86_64 API 31 image.
+- **Chain PDFs generated on the device, run through the real `MuPdfEngine`.** There was no crash in any of these runs.
+  - 2,900 links: compress `Ok` (151 ms), merge `Ok` (315 ms), append `Ok` (92 ms).
+  - 3,100 links: all three `Err(Corrupt)` (78-79 ms).
+  - 20,000 links: all three `Err(Corrupt)` (72-95 ms).
+- **Alias-DCT bomb.** The `/Filter/DCT` lie over the 1,667-byte SOF2 65500² stream gave compress `Ok` in **3 ms**: the image was skipped.
+- **Not measured on the device:**
+  - native depth on a small stack;
+  - arm64;
+  - other API levels or vendor ART builds;
+  - RSS.
 
 ### D. Re-fuzz (merge, append)
-pending
+Seed 9001, 150 s per target, one capped child JVM per target (`ulimit -v 3000000`, `-Xmx256m`). The pool was 26 seeds: 12 `case-compress-1*`, 8 `case-append-1*`, `dct-lie`, `c-inline-dct`, `c-jpx`, `chain-2990`, `a-filter-ind` and `a-incr-dct`. The oracle is the audit's plus "no call > 10 s", with per-iteration VmHWM. The emulator was booting on the same host during the merge run.
+
+| Target | Iterations | Ok | Err | Violations | Max per-iteration HWM / child peak RSS |
+|---|---|---|---|---|---|
+| merge | 8,696 | 6,214 | 2,482 Corrupt | **1 (slow, 17.3 s)** | 334 MB / 292 MB |
+| append | 15,091 | 4,762 | 10,328 Corrupt, 1 Io (RuntimeException) | 0 | 349 MB / 355 MB |
+
+There was no JVM death, no hs_err, no escaped exception class and no `Err` with output left behind.
+
+The slow case, `scratchpad/sr2/fuzz/viol-merge-9001-8696.bin`, is a 15.9 MB mutant with no xref and no trailer. In isolation, merge returned `Ok` in **20.9 s** at 80 MB RSS. Each open repairs it by scanning the whole file, which takes about 4.5 s (`open` + `loadPage`), and the guard walk adds 2.3 s. Merge opens each input twice and then validates the output. This is CPU only, in the SR-3 class, and I filed nothing new for it. The single `Io` in append was not isolated.
 
 ### New findings (SR2)
 
@@ -327,13 +358,35 @@ pending
 |---|---|---|---|---|---|---|---|
 | SR2-1 | **Medium** | `engine/ops/CompressOp.kt` `classify` (`"ICCBased"` accepted from `/N` alone) → `doc.loadImage` → MuPDF `pdf-colorspace.c:66` `pdf_load_stream` of the profile | **Unbounded read of an ICC profile stream during Compress.** The filter gate checks only the image stream. Loading the image loads its colour space, and MuPDF inflates the whole `/ICCBased` profile stream into memory (growing with `realloc`) before it looks at it. It works directly and via the profile's `/Alternate`. | `scratchpad/sr2/c/a-icc-bomb.pdf` (about 1 MB: an 8×8 raw RGB image, profile stream = 1 GB of zeros in one Flate stream) | Compress of a 1 MB PDF: 963 MB RSS at a 3 GB address-space cap, ending in `realloc (1371016084 bytes) failed` → `Err(Io)`. Without a cap (Android) the allocation succeeds and grows, so the low-memory killer kills the app. Merge and Add images do not load it (72 MB). | Ran (2 variants; the double-Flate variant stayed at 189 MB) | Before `loadImage`, require the `ICCBased` profile stream (and every `/Alternate` it names) to have a direct `/Length` of at most a small budget (for example 4 MB), and no filter except one `FlateDecode`. Better: skip any ICCBased image whose profile is not a direct, unfiltered or Flate stream under that size; or treat ICCBased like DeviceRGB/Gray by replacing the colour space. Add a test with `a-icc-bomb.pdf`. |
 | SR2-3 | **Medium** | `engine/ObjectGraph.kt` `depth` (called for every input by `PdfInputs.open`, including each Merge input, twice) | **The deep-object guard is itself a memory and CPU bomb.** The walk resolves every reachable object, and MuPDF keeps each parsed object in its xref cache, so memory is proportional to the number of references, not to the file size. Identical arrays in a Flate object stream compress about 100:1. Before the fix, Merge only touched objects its pages reference. | `scratchpad/sr2/c/bipseq-objstm.pdf` (**2.0 MB**: 20,000 arrays × 1,000 references, depth 6) | Guard alone: 18.6 s and **1,092 MB** RSS. Merge: 72 s, 1,130 MB, `Ok`. Compress: 26.8 s, `Err(OutOfMemory)` at the 3 GB cap. Add images: 23 s, 1,094 MB. Open + `loadPage` alone: 0.25 s, 69 MB. Picking one 2 MB PDF gets the app killed by the low-memory killer. | Ran | Give the walk a reference budget: count every child visited (each `get` in `depth`), and stop at about 2 M with `PdfError.OutOfMemory` ("too large"). The walk resolves objects at about 55 B per reference (1,092 MB / 20 M), so 2 M references stops `bipseq-objstm` at roughly 110 MB and about 2 s. Real documents have far fewer references (the 30-page and 10,000-page fixtures have under 100k). Add a wall-clock budget (for example 3 s) as a second stop. The `MAX_OBJECTS` cap does not help here: the file has only 21,089 objects. |
-| SR2-4 | Low (Medium if Android ignores the stack size; see C) | `engine/ObjectGraph.kt` `MAX_DEPTH = 3_000`; `EngineStack` | **The depth bound is only safe because of the 128 MB thread.** Measured crash depth of a `garbage=deduplicate` save: between 2,800 and 3,000 links on a 256 KB stack, and between 12,000 and 15,000 on 1 MB. A 2,990-link chain that the guard accepts makes Compress and Add images crash the process (SIGSEGV) when run on a 256 KB thread. The KDoc claim "the guard alone protects even a default-size thread" holds for 1 MB (margin 4-5x), not for smaller stacks. | `scratchpad/sr2/c/chain-2990.pdf`, `rawop compress … 256` | None if the 128 MB stack is honoured. Otherwise, on a 1 MB thread, about 4x headroom. | Ran (host) | Keep `EngineStack`, and make the KDoc state the measured margins. Lower `MAX_DEPTH` to about 1,000: legitimate PDFs nest a few dozen levels, and a 3,000-bookmark `/Next` list would still be refused. Or drop `garbage` from Compress/Add images, so the save does not recurse at all (see the note below). |
+| SR2-4 | Low (the emulator honours the 128 MB stack, see C) | `engine/ObjectGraph.kt` `MAX_DEPTH = 3_000`; `EngineStack` | **The depth bound is only safe because of the 128 MB thread.** Measured crash depth of a `garbage=deduplicate` save: between 2,800 and 3,000 links on a 256 KB stack, and between 12,000 and 15,000 on 1 MB. A 2,990-link chain that the guard accepts makes Compress and Add images crash the process (SIGSEGV) when run on a 256 KB thread. The KDoc claim "the guard alone protects even a default-size thread" holds for 1 MB (margin 4-5x), not for smaller stacks. | `scratchpad/sr2/c/chain-2990.pdf`, `rawop compress … 256` | None if the 128 MB stack is honoured. Otherwise, on a 1 MB thread, about 4x headroom. | Ran (host) | Keep `EngineStack`, and make the KDoc state the measured margins. Lower `MAX_DEPTH` to about 1,000: legitimate PDFs nest a few dozen levels, and a 3,000-bookmark `/Next` list would still be refused. Or drop `garbage` from Compress/Add images, so the save does not recurse at all (see the note below). |
 | SR2-2 | Low | `PdfInputs.SAVE_OPTIONS` save inside Compress (single native call) | **Long uncancellable Compress on an accepted graph.** A 490,000-link chain hidden behind a reverse-order index array passes the guard (depth 6), because the walker and `markobj` take the same shallow path. Compress then spends 113 s in one `save` (`garbage=deduplicate`). Merge of the same file takes 14 s. | `scratchpad/sr2/c/shortcut-rev-490000.pdf` (35 MB) | Engine thread blocked for about 2 minutes, with 471-488 MB RSS. Cancel has no effect until it finishes. | Ran (also 200k: 20 s compress, 6 s merge) | The same reference budget as SR2-3, plus a per-input object budget for Compress (for example 200k), or `garbage=compact` instead of `deduplicate` (deduplication is the quadratic part; not measured separately). |
 
 Note on removing the recursion (by reading `pdf-write.c` 1.28.5): `markobj` (`:191`, recursive) is called only under `if (opts->do_garbage >= 1)` (`:2740-2742`). Without `garbage`, every object is marked used (`:2746-2747`), and no other step of the save follows references. Deduplication and renumbering both need `garbage`. Object serialisation recurses only on direct nesting, which the parser caps. So saving Compress and Add images **without `garbage`** removes the indirect-depth recursion from those two ops, at the cost of keeping unreferenced objects, including the replaced image data, which is overwritten in place, so nothing is orphaned. Merge cannot drop it this way: `pdf_graft_mapped_object` (`pdf-graft.c:94-190`) recurses once per indirect link, through `pdf_resolve_indirect` for dictionaries and arrays. The guard (or the large stack) therefore stays necessary for Merge. In my runs the Merge graft never reached the chain depth (outputs were 1.5 KB; not root-caused), so this is from reading only.
 
 ### Verdict (SR2)
-pending
+**Not yet acceptable for public release: two Mediums remain, both new, and both kill the app on a phone.**
+- The SR-1 filter gate holds. Every name spelling, indirection, duplicate-key, incremental-update and repair trick failed to get a DCT stream past it.
+- But default-deny does not extend to the colour space. A 1 MB PDF whose ICCBased profile is a Flate bomb drives Compress to an unbounded allocation through `loadImage` (SR2-1: 963 MB at a 3 GB cap).
+- The SA-11 fix holds where it matters: the 128 MB stack is honoured on the emulator, chains up to the 500k-object limit run without a crash on the host, and on the device 2,900 links give `Ok` while 3,100 and 20,000 give `Corrupt`.
+- But the new guard walk is itself a bomb. A 2 MB object-stream PDF costs about 1.1 GB and about 19 s in `PdfInputs.open`, for every operation including Merge (SR2-3).
+- SR2-4 (the guard alone is not enough on a 256 KB stack) is Low, given the device result.
+- SR2-2 (a 113 s uncancellable save) is Low.
+- With SR2-1 fixed (a size/filter bound on ICC profile streams before `loadImage`) and SR2-3 fixed (a reference budget in the walk of about 2 M, plus a time budget), each with a regression test, I would rate the engine acceptable.
 
 ### Not covered (SR2)
-pending
+- No arm64 device and no API level other than 31. RSS was not measured on the device, and the native recursion depth on Android was not measured (only the Java depth ratio).
+- **Merge graft depth.** In every run the merged output was 1.5 KB and did not contain the chain, so the recursion of `pdf_graft_mapped_object` was never exercised deeply. I did not root-cause why. The 50-input Merge of a just-under-3,000 chain was not run.
+- **Not built:**
+  - JPEG with DNL plus a matching SOF, arithmetic tables, or a second frame inside a matching stream;
+  - DeviceN/Separation with a function (Compress skips these colour spaces by reading);
+  - Indexed with a huge lookup table (skipped by `classify`);
+  - images reached only through Pattern, Type3, `/Thumb`, `/OPI`, annotation appearances or soft-mask groups (covered by reading: the scan is over all object numbers);
+  - a generation-number mismatch.
+- **Not run:**
+  - `garbage=deduplicate` on wide-and-deep objects (`pdf_objcmp`): the guard rejects depth over 3,000, and `pdf_objcmp` does not follow references;
+  - a deep content stream through `compress`;
+  - a 100 MB xref;
+  - the guard on 500,000 objects × 1,000 references (the file would exceed the disk quota; the 20M-reference case already breaches the budget);
+  - `a-icc-bomb` through append.
+- **Not proven:** that dropping `garbage` from Compress/Add images removes every recursion. This is from reading `pdf-write.c` only.
+- **No ASan run and no coverage-guided fuzzing.** The fuzz ran 150 s per target.
