@@ -10,19 +10,24 @@
     <string name="onboarding_welcome_text">PDF tools that work entirely on your phone.</string>
 
     <string name="onboarding_tools_title">Four tools</string>
-    <string name="onboarding_tools_images">Choose the quality and see the size before you save.</string>
-    <string name="onboarding_tools_compress">Make a PDF smaller, with three levels to choose from.</string>
-    <string name="onboarding_tools_merge">Put PDFs in order, then combine them into one.</string>
-    <string name="onboarding_tools_add">Add pictures as new pages to an existing PDF.</string>
+    <string name="onboarding_tools_text">Everything runs on your device, even offline.</string>
+    <!-- Short benefit under each tool name in the 2x2 grid; at most five words each. -->
+    <string name="onboarding_tools_images">Pick quality, preview the size</string>
+    <string name="onboarding_tools_compress">Smaller files, three levels</string>
+    <string name="onboarding_tools_merge">Order, then combine into one</string>
+    <string name="onboarding_tools_add">Pictures as new pages</string>
 
     <string name="onboarding_private_title">Private by design</string>
-    <string name="onboarding_private_offline">No internet connection and no permissions.</string>
-    <string name="onboarding_private_accounts">No accounts and no ads.</string>
-    <string name="onboarding_private_files">Your files never leave your device.</string>
+    <string name="onboarding_private_text">Your files never leave your device.</string>
+    <!-- Badges drawn in the illustration of the privacy page. -->
+    <string name="onboarding_private_badge_internet">No internet</string>
+    <string name="onboarding_private_badge_permissions">No permissions</string>
+    <string name="onboarding_private_badge_ads">No ads</string>
+    <string name="onboarding_private_accounts">No accounts</string>
     <string name="onboarding_private_metadata">Location and camera details are removed from photos placed into PDFs.</string>
 
     <string name="onboarding_control_title">You\'re in control</string>
     <string name="onboarding_control_choose">You choose the files, and where results are saved.</string>
-    <string name="onboarding_control_recent">Recently saved files appear on the home screen.</string>
-    <string name="onboarding_control_nothing">Nothing is uploaded or backed up.</string>
+    <string name="onboarding_control_recent">Recently saved files appear on the home screen</string>
+    <string name="onboarding_control_nothing">Nothing is uploaded or backed up</string>
 </resources>
