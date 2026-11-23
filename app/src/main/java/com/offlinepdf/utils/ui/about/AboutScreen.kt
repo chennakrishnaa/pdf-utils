@@ -1,25 +1,47 @@
 package com.offlinepdf.utils.ui.about
 
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.offlinepdf.utils.R
+import com.offlinepdf.utils.ui.components.AppIcons
+import com.offlinepdf.utils.ui.components.IconBadge
+import com.offlinepdf.utils.ui.components.InfoNote
 import com.offlinepdf.utils.ui.components.SectionHeader
 import com.offlinepdf.utils.ui.components.ToolScaffold
 
@@ -28,10 +50,34 @@ const val TAG_ABOUT_LICENSE = "about_license"
 const val TAG_ABOUT_LICENSE_NOTICE = "about_license_notice"
 const val TAG_ABOUT_MUPDF = "about_mupdf"
 const val TAG_ABOUT_SOURCE_URL = "about_source_url"
+const val TAG_ABOUT_AGPL_TEXT = "about_agpl_text"
+const val TAG_ABOUT_NOTICES = "about_notices"
 
-/** About screen: version, offline statement, licence, MuPDF credit and source code URL. */
+/** Asset holding a verbatim copy of the repository's `LICENSE` (GNU AGPL v3). */
+const val ASSET_LICENSE = "LICENSE"
+
+/** Asset holding a verbatim copy of the repository's `THIRD_PARTY_NOTICES.md`. */
+const val ASSET_NOTICES = "THIRD_PARTY_NOTICES.md"
+
+/**
+ * About screen: app name and version, offline statement, licence, MuPDF credit, the full AGPL
+ * text and third-party notices (both shown offline from bundled assets), and the source code URL.
+ */
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
+    // Which bundled text is open, if any (an asset name); survives rotation.
+    var document by rememberSaveable { mutableStateOf<String?>(null) }
+    val open = document
+    if (open != null) {
+        BackHandler { document = null }
+        LicenceTextScreen(
+            title = stringResource(if (open == ASSET_LICENSE) R.string.about_agpl_title else R.string.about_notices_title),
+            asset = open,
+            onBack = { document = null },
+        )
+        return
+    }
+
     val context = LocalContext.current
     val version = remember(context) { appVersionName(context) }
     ToolScaffold(title = stringResource(R.string.about_title), onBack = onBack) { padding ->
@@ -43,43 +89,140 @@ fun AboutScreen(onBack: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            AppHeader(version)
+            InfoNote(stringResource(R.string.about_offline))
+
+            SectionHeader(stringResource(R.string.about_license_header))
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = stringResource(R.string.about_license),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.testTag(TAG_ABOUT_LICENSE),
+                    )
+                    Text(
+                        text = stringResource(R.string.about_license_notice),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag(TAG_ABOUT_LICENSE_NOTICE),
+                    )
+                    Text(
+                        text = stringResource(R.string.about_mupdf),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.testTag(TAG_ABOUT_MUPDF),
+                    )
+                }
+            }
+            LinkRow(
+                icon = AppIcons.info,
+                text = stringResource(R.string.about_agpl_row),
+                testTag = TAG_ABOUT_AGPL_TEXT,
+                onClick = { document = ASSET_LICENSE },
+            )
+            LinkRow(
+                icon = AppIcons.info,
+                text = stringResource(R.string.about_notices_row),
+                detail = stringResource(R.string.about_notices_detail),
+                testTag = TAG_ABOUT_NOTICES,
+                onClick = { document = ASSET_NOTICES },
+            )
+
+            SectionHeader(stringResource(R.string.about_source_header))
+            val sourceUrl = stringResource(R.string.source_code_url)
+            LinkRow(
+                icon = AppIcons.open,
+                text = sourceUrl,
+                testTag = TAG_ABOUT_SOURCE_URL,
+                onClick = { openLink(context, sourceUrl) },
+                linkStyle = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppHeader(version: String?) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        IconBadge(
+            icon = AppIcons.pdf,
+            container = MaterialTheme.colorScheme.primaryContainer,
+            content = MaterialTheme.colorScheme.onPrimaryContainer,
+            size = 52.dp,
+        )
+        Spacer(Modifier.width(16.dp))
+        Column {
             Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineSmall)
             if (version != null) {
                 Text(
                     text = stringResource(R.string.about_version, version),
                     style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.testTag(TAG_ABOUT_VERSION),
                 )
             }
-            Text(stringResource(R.string.about_offline), style = MaterialTheme.typography.bodyMedium)
-
-            SectionHeader(stringResource(R.string.about_license_header))
-            Text(
-                text = stringResource(R.string.about_license),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.testTag(TAG_ABOUT_LICENSE),
-            )
-            Text(
-                text = stringResource(R.string.about_license_notice),
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.testTag(TAG_ABOUT_LICENSE_NOTICE),
-            )
-            Text(
-                text = stringResource(R.string.about_mupdf),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.testTag(TAG_ABOUT_MUPDF),
-            )
-
-            SectionHeader(stringResource(R.string.about_source_header))
-            SelectionContainer {
-                Text(
-                    text = stringResource(R.string.source_code_url),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.testTag(TAG_ABOUT_SOURCE_URL),
-                )
-            }
         }
+    }
+}
+
+/** A tappable card row: icon badge, [text] (and optional [detail]) and a chevron. Its texts merge into one node. */
+@Composable
+private fun LinkRow(
+    icon: Painter,
+    text: String,
+    testTag: String,
+    onClick: () -> Unit,
+    detail: String? = null,
+    linkStyle: Boolean = false,
+) {
+    Card(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier.fillMaxWidth().testTag(testTag),
+    ) {
+        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconBadge(icon)
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (linkStyle) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                )
+                if (detail != null) {
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Icon(
+                painter = AppIcons.chevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Opens [url] in whatever app handles it (a plain `ACTION_VIEW`; the app itself never goes
+ * online). Shows a short message instead of crashing when no app can open links.
+ */
+internal fun openLink(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, R.string.about_no_browser, Toast.LENGTH_SHORT).show()
+    } catch (_: SecurityException) {
+        Toast.makeText(context, R.string.about_no_browser, Toast.LENGTH_SHORT).show()
     }
 }
 

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="about_agpl_row">GNU AGPL v3 licence text</string>
+    <string name="about_agpl_title">GNU AGPL v3</string>
+    <string name="about_notices_row">Open-source licences</string>
+    <string name="about_notices_detail">Libraries, fonts and icons used in this app</string>
+    <string name="about_notices_title">Open-source licences</string>
+</resources>
