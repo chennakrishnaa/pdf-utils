@@ -313,6 +313,51 @@ object Fixtures {
         return f
     }
 
+    /**
+     * One page with a text line and one image XObject whose dictionary says [dictWidth]x[dictHeight],
+     * 8 bpc DeviceRGB, `/Filter /[filter]`, and whose stream is exactly [data] (not checked).
+     */
+    fun rawImagePdf(dir: File, name: String, dictWidth: Int, dictHeight: Int, filter: String, data: ByteArray): File {
+        val f = File(dir, name)
+        buildPdf { doc ->
+            addRawPage(doc, imageDict(dictWidth, dictHeight, 8, "/DeviceRGB", "/$filter"), data, 400, 300, "Raw image")
+        }.save(f)
+        return f
+    }
+
+    /** [jpeg] with the dimensions of its first SOF [marker] segment replaced (the walk stops at SOS). */
+    fun patchSof(jpeg: ByteArray, marker: Int, width: Int, height: Int): ByteArray {
+        val out = jpeg.copyOf()
+        var i = 2
+        while (i + 4 < out.size) {
+            val m = out[i + 1].toInt() and 0xFF
+            val len = ((out[i + 2].toInt() and 0xFF) shl 8) or (out[i + 3].toInt() and 0xFF)
+            if (m == marker) {
+                out[i + 5] = (height shr 8).toByte(); out[i + 6] = height.toByte()
+                out[i + 7] = (width shr 8).toByte(); out[i + 8] = width.toByte()
+                return out
+            }
+            require(m != 0xDA) { "no SOF ${marker.toString(16)} before SOS" }
+            i += 2 + len
+        }
+        error("no SOF found")
+    }
+
+    /**
+     * A tiny PNG whose IHDR declares [width]x[height] (unsigned 32-bit), [bitDepth], [colorType] and
+     * [interlace], with a few bytes of zlib data (decompression bomb shape of SA-3). Never decode it.
+     */
+    fun pngDeclaring(width: Long, height: Long, bitDepth: Int = 8, colorType: Int = 2, interlace: Int = 0): ByteArray {
+        val ihdr = java.nio.ByteBuffer.allocate(13).putInt(width.toInt()).putInt(height.toInt())
+            .put(bitDepth.toByte()).put(colorType.toByte()).put(0).put(0).put(interlace.toByte()).array()
+        val out = ByteArrayOutputStream()
+        out.write(byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10))
+        out.write(pngChunk("IHDR", ihdr))
+        out.write(pngChunk("IDAT", deflate(ByteArray(64))))
+        out.write(pngChunk("IEND", ByteArray(0)))
+        return out.toByteArray()
+    }
+
     /** One A4 text page with an external URI link [uri] at [LINK_RECT]. */
     fun linkPdf(dir: File, name: String, uri: String): File {
         val f = File(dir, name)

@@ -9,6 +9,8 @@ import com.artifex.mupdf.fitz.PDFDocument
 import com.artifex.mupdf.fitz.PDFObject
 import com.artifex.mupdf.fitz.Pixmap
 import app.venkat.offkit.engine.CompressionLevel
+import app.venkat.offkit.engine.ImageLimits
+import app.venkat.offkit.engine.ImagePages
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfInputs
@@ -25,11 +27,15 @@ import kotlin.math.roundToInt
  * downscales it so its long edge is at most [CompressionLevel.maxLongEdgePx] (never upscaling),
  * re-encodes it as JPEG at [CompressionLevel.jpegQuality] and replaces the stream in place — but
  * only when the new JPEG is strictly smaller than the existing encoded stream. Images over
- * [MAX_PIXELS] are skipped without decoding. Only one image is decoded at a time.
+ * [MAX_PIXELS] are skipped without decoding, and so is a DCT image whose stream header (SOF) does
+ * not declare exactly the dictionary's size or fails [ImageLimits.jpeg] (a progressive JPEG can
+ * otherwise make libjpeg allocate without bound). Only one image is decoded at a time.
  *
  * Whole-file guarantee: if the saved result is not smaller than the input, `out` is replaced by a
  * byte-for-byte copy of the input, so the output is never larger than the original. The caller
- * detects "no gain" by comparing `Ok.bytes` with the input size.
+ * detects "no gain" by comparing `Ok.bytes` with the input size. Either way the delivered file is
+ * reopened and every page loaded first ([PdfInputs.validateOutput] / [PdfInputs.checkPages]); if
+ * that fails the result is `Err(Corrupt)`, never `Ok` with an unreadable file.
  *
  * Progress is reported once per image examined (total = number of image objects; a document
  * without images reports `(1, 1)` once); cancellation is checked before each image and before
@@ -50,11 +56,16 @@ class CompressOp {
             if (total == 0) job.progress(1, 1)
             if (job.isCancelled()) return@toResult PdfResult.Err(PdfError.Cancelled)
 
+            val pages = doc.countPages()
             doc.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
             if (out.length() >= pdf.length()) {
+                // Deliver the original bytes, but only if the original itself is fully readable.
+                PdfInputs.checkPages(pdf, pages, job)?.let { return@toResult it }
                 pdf.copyTo(out, overwrite = true)
+            } else {
+                PdfInputs.validateOutput(out, pages, job)?.let { return@toResult it }
             }
-            PdfResult.Ok(pages = doc.countPages(), bytes = out.length())
+            PdfResult.Ok(pages = pages, bytes = out.length())
         } finally {
             doc.destroy()
         }
@@ -93,8 +104,19 @@ class CompressOp {
             val w = s.add(obj.get("Width")).let { if (it.isNumber) it.asInteger() else 0 }
             val h = s.add(obj.get("Height")).let { if (it.isNumber) it.asInteger() else 0 }
             if (w <= 0 || h <= 0 || w.toLong() * h.toLong() > MAX_PIXELS) return
+            // Encoded size from /Length (SA-9: readRawStream() would copy the whole stream to the heap).
+            val length = s.add(s.add(obj.get("Length")).resolve()).let { if (it.isNumber) it.asInteger() else 0 }
+            if (length <= 0) return
+
+            // MuPDF sizes a DCT decode from the stream's own SOF, not from the dictionary (SA-6).
+            val filters = filtersOf(s, obj)
+            if ("DCTDecode" in filters) {
+                if (filters.size != 1 || !dctHeaderMatches(obj, w, h, length)) return
+            }
 
             val img = s.add(doc.loadImage(obj))
+            // Last line of defence: MuPDF must decode exactly what was checked above.
+            if (img.width != w || img.height != h) return
             val scale = minOf(1.0, level.maxLongEdgePx.toDouble() / max(img.width, img.height))
             val nw = max(1, (img.width * scale).roundToInt())
             val nh = max(1, (img.height * scale).roundToInt())
@@ -106,8 +128,7 @@ class CompressOp {
             dev.close()
             val jpeg = s.add(pix.asJPEG(level.jpegQuality, false))
 
-            val oldLength = obj.readRawStream().size
-            if (jpeg.length >= oldLength) return
+            if (jpeg.length >= length) return
 
             obj.writeRawStream(jpeg) // keeps the object number; updates Length
             obj.put("Width", nw)
@@ -118,6 +139,35 @@ class CompressOp {
             obj.put("Filter", s.add(doc.newName("DCTDecode")))
             for (k in DROPPED_KEYS) obj.delete(k)
         }
+    }
+
+    /**
+     * True when the DCT stream of [obj] ([length] bytes per `/Length`) has exactly one frame header
+     * declaring [w] × [h] and passes [ImageLimits.jpeg]. Only the header is parsed; streams larger
+     * than [MAX_DCT_INSPECT_BYTES] are not read at all (false: the image is left untouched).
+     */
+    private fun dctHeaderMatches(obj: PDFObject, w: Int, h: Int, length: Int): Boolean {
+        if (length > MAX_DCT_INSPECT_BYTES) return false
+        val raw = obj.readRawStream()
+        val layout = ImagePages.jpegScan(raw.inputStream(), headerOnly = true) ?: return false
+        val frame = layout.frame ?: return false
+        if (frame.width != w || frame.height != h) return false
+        return ImageLimits.jpeg(frame, layout.frameCount, layout.firstScanComponents) == ImageLimits.Verdict.OK
+    }
+
+    /** Filter names of image [dict] (a single name or an array of names). */
+    private fun filtersOf(s: Scope, dict: PDFObject): List<String> {
+        val filter = s.add(s.add(dict.get("Filter")).resolve())
+        val filters = ArrayList<String>()
+        if (filter.isName) {
+            filters.add(filter.asName())
+        } else if (filter.isArray) {
+            for (i in 0 until filter.size()) {
+                val f = s.add(s.add(filter.get(i)).resolve())
+                if (f.isName) filters.add(f.asName())
+            }
+        }
+        return filters
     }
 
     private enum class Kind { RGB, GRAY, SKIP }
@@ -131,17 +181,7 @@ class CompressOp {
         if (!s.add(dict.get("SMask")).isNull) return Kind.SKIP
         if (!s.add(dict.get("Mask")).isNull) return Kind.SKIP
 
-        val filter = s.add(s.add(dict.get("Filter")).resolve())
-        val filters = ArrayList<String>()
-        if (filter.isName) {
-            filters.add(filter.asName())
-        } else if (filter.isArray) {
-            for (i in 0 until filter.size()) {
-                val f = s.add(s.add(filter.get(i)).resolve())
-                if (f.isName) filters.add(f.asName())
-            }
-        }
-        if (filters.any { it in UNSUPPORTED_FILTERS }) return Kind.SKIP
+        if (filtersOf(s, dict).any { it in UNSUPPORTED_FILTERS }) return Kind.SKIP
 
         val bpc = s.add(dict.get("BitsPerComponent"))
         if (!bpc.isNumber || bpc.asInteger() != 8) return Kind.SKIP
@@ -193,8 +233,17 @@ class CompressOp {
     }
 
     private companion object {
-        /** Images larger than this (width × height) are skipped rather than decoded. */
-        const val MAX_PIXELS = 100_000_000L
+        /**
+         * Images larger than this (width × height, from the dictionary, which for DCT must also match
+         * the stream's SOF) are skipped rather than decoded: 40 MP × 3 B ≈ 120 MB per decode.
+         */
+        const val MAX_PIXELS = 40_000_000L
+
+        /**
+         * DCT streams longer than this are not read to inspect their header (the binding can only
+         * copy a whole stream to the Java heap); such images are left untouched.
+         */
+        const val MAX_DCT_INSPECT_BYTES = 32 * 1024 * 1024
 
         val MASK_KEYS = listOf("SMask", "Mask")
         val UNSUPPORTED_FILTERS = setOf("JBIG2Decode", "CCITTFaxDecode", "CCF", "JPXDecode")

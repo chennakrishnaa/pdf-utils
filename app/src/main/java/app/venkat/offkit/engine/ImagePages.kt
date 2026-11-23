@@ -71,24 +71,42 @@ internal object ImagePages {
         val length: Long
         val end: Long
         var layout: JpegLayout? = null
+        var declaredW = -1L
+        var declaredH = -1L
         try {
             format = formatOf(file)
             length = file.length()
             end = when (format) {
                 Format.JPEG -> jpegScan(file)?.also { layout = it }?.end
-                Format.PNG -> pngEnd(file)
+                Format.PNG -> pngScan(file)?.also { declaredW = it.width; declaredH = it.height }?.end
                 Format.OTHER -> length
             } ?: throw UnsupportedImageFileException(file, null)
         } catch (e: IOException) {
             throw UnsupportedImageFileException(file, e)
         }
-        val strip = layout?.metadata.orEmpty()
+        // Declared-size gate, before ANY MuPDF call on the file (see ImageLimits).
+        val verdict = when (format) {
+            Format.JPEG -> layout!!.let { l ->
+                l.frame?.let { declaredW = it.width.toLong(); declaredH = it.height.toLong() }
+                ImageLimits.jpeg(l.frame, l.frameCount, l.firstScanComponents)
+            }
+            Format.PNG -> ImageLimits.png(declaredW, declaredH)
+            Format.OTHER -> ImageLimits.Verdict.OK // already re-encoded at <= 4096 px by ImageNormalizer
+        }
+        when (verdict) {
+            ImageLimits.Verdict.OK -> Unit
+            ImageLimits.Verdict.UNSUPPORTED -> throw UnsupportedImageFileException(file, null)
+            ImageLimits.Verdict.TOO_LARGE -> throw ImageTooLargeException(file)
+        }
+        // Edits: metadata segments are dropped, kept JFIF/Adobe segments rewritten bare (ascending, disjoint).
+        val edits = (layout?.metadata.orEmpty().map { Rewrite(it, ByteArray(0)) } + layout?.rewrites.orEmpty())
+            .sortedBy { it.span.start }
         var orientation = -1
         val img = try {
             when {
-                strip.isNotEmpty() -> {
+                edits.isNotEmpty() -> {
                     orientation = jpegOrientation(file, layout!!)
-                    Image(readKept(file, end, strip))
+                    Image(readKept(file, end, edits))
                 }
                 end >= length -> Image(file.absolutePath)
                 else -> Image(readPrefix(file, end))
@@ -100,8 +118,12 @@ internal object ImagePages {
         }
         try {
             if (img.width <= 0 || img.height <= 0) throw UnsupportedImageFileException(file, null)
+            // MuPDF must work with exactly the size the gate checked.
+            if (format != Format.OTHER && (img.width.toLong() != declaredW || img.height.toLong() != declaredH)) {
+                throw UnsupportedImageFileException(file, null)
+            }
             if (orientation < 0) orientation = img.orientation
-            return Opened(img, format, end - strip.sumOf { it.end - it.start }, orientation)
+            return Opened(img, format, end + edits.sumOf { it.bytes.size - (it.span.end - it.span.start) }, orientation)
         } catch (t: Throwable) {
             img.destroy()
             throw t
@@ -113,20 +135,25 @@ internal object ImagePages {
         return ByteArray(n.toInt()).also { b -> RandomAccessFile(file, "r").use { it.readFully(b) } }
     }
 
-    /** Bytes `[0, end)` of [file] without the [drop] spans (ascending, disjoint), in one array. */
-    private fun readKept(file: File, end: Long, drop: List<Span>): ByteArray {
-        val n = end - drop.sumOf { it.end - it.start }
+    /**
+     * Bytes `[0, end)` of [file] with each edit's span (ascending, disjoint) replaced by its bytes
+     * (empty = dropped), in one array.
+     */
+    private fun readKept(file: File, end: Long, edits: List<Rewrite>): ByteArray {
+        val n = end + edits.sumOf { it.bytes.size - (it.span.end - it.span.start) }
         if (n > Int.MAX_VALUE - 16) throw IOException("image too large")
         val out = ByteArray(n.toInt())
         RandomAccessFile(file, "r").use { raf ->
             var pos = 0L
             var o = 0
-            for (s in drop + Span(end, end)) {
-                val k = (s.start - pos).toInt()
+            for (e in edits + Rewrite(Span(end, end), ByteArray(0))) {
+                val k = (e.span.start - pos).toInt()
                 raf.seek(pos)
                 raf.readFully(out, o, k)
                 o += k
-                pos = s.end
+                e.bytes.copyInto(out, o)
+                o += e.bytes.size
+                pos = e.span.end
             }
         }
         return out
@@ -232,21 +259,52 @@ internal object ImagePages {
      * [isJpegMetadata] selects, ascending, each from its first `FF` (fill bytes included) to the end
      * of its payload.
      */
-    internal class JpegLayout(val end: Long, val scanStart: Long, val metadata: List<Span>)
+    internal class JpegLayout(
+        val end: Long,
+        val scanStart: Long,
+        val metadata: List<Span>,
+        /** The first frame header (SOFn) before the first start-of-scan, or null if there is none. */
+        val frame: JpegFrame? = null,
+        /** Number of frame headers in the whole walked range (before and after the first scan). */
+        val frameCount: Int = 0,
+        /** Component count of the first start-of-scan header; -1 if there is none. */
+        val firstScanComponents: Int = -1,
+        /** Kept segments to replace by their bare defined header (see [isJpegMetadata]); ascending. */
+        val rewrites: List<Rewrite> = emptyList(),
+    )
+
+    /** Replace bytes [span] of the file by [bytes]. */
+    internal class Rewrite(val span: Span, val bytes: ByteArray)
+
+    /** A JPEG frame header: SOF [marker] (`0xC0`..`0xCF`), declared size and component count. */
+    internal class JpegFrame(val marker: Int, val width: Int, val height: Int, val components: Int)
 
     internal fun jpegScan(file: File): JpegLayout? = FileInputStream(file).use { jpegScan(it) }
+
+    /** True for the frame-header markers SOF0-SOF15 (`C4` DHT, `C8` JPG and `CC` DAC are not frames). */
+    private fun isSof(b: Int) = b in 0xC0..0xCF && b != 0xC4 && b != 0xC8 && b != 0xCC
 
     /**
      * The structural walk documented at [jpegEnd]. Additionally, before the first start-of-scan,
      * the first [META_PEEK] payload bytes of each APPn/COM segment are read to classify it with
-     * [isJpegMetadata]. Nothing after the first SOS is ever classified.
+     * [isJpegMetadata]. Nothing after the first SOS is ever classified. Frame headers (SOFn) are
+     * counted everywhere; the first one before the first SOS is parsed into [JpegLayout.frame], and
+     * the component count of the first SOS header is recorded (see [ImageLimits.jpeg]).
+     *
+     * With [headerOnly] the walk stops right after the first SOS header and returns a layout whose
+     * `end` is -1 (or null if the data ends first); entropy data is never read. Used to inspect
+     * JPEG streams inside PDFs, which need not have an end-of-image marker.
      */
-    internal fun jpegScan(input: InputStream): JpegLayout? {
+    internal fun jpegScan(input: InputStream, headerOnly: Boolean = false): JpegLayout? {
         val r = ByteReader(input)
         if (r.read() != 0xFF || r.read() != 0xD8) return null
         val metadata = ArrayList<Span>()
         var scanStart = -1L
         val head = ByteArray(META_PEEK)
+        var frame: JpegFrame? = null
+        var frameCount = 0
+        var scanComponents = -1
+        val rewrites = ArrayList<Rewrite>()
         while (true) {
             var b = r.read()
             if (b < 0) return null
@@ -255,7 +313,7 @@ internal object ImagePages {
             do b = r.read() while (b == 0xFF)
             when {
                 b < 0 -> return null
-                b == 0xD9 -> return JpegLayout(r.pos, scanStart, metadata)
+                b == 0xD9 -> return JpegLayout(r.pos, scanStart, metadata, frame, frameCount, scanComponents, rewrites)
                 b == 0x00 -> continue // stuffed byte (or stray FF 00 outside a scan)
                 b in 0xD0..0xD7 -> continue // restart marker
                 b == 0x01 || b == 0xD8 -> continue // standalone markers
@@ -270,10 +328,40 @@ internal object ImagePages {
                         val k = r.read(head, minOf(payload, META_PEEK.toLong()).toInt())
                         if (k < minOf(payload, META_PEEK.toLong())) return null
                         payload -= k
-                        if (isJpegMetadata(b, head, k)) metadata.add(Span(markerStart, r.pos + payload))
+                        if (isJpegMetadata(b, head, k)) {
+                            metadata.add(Span(markerStart, r.pos + payload))
+                        } else if (k == META_PEEK && payload > 0 && (b == 0xE0 || b == 0xEE)) {
+                            // Kept JFIF / Adobe segment with bytes beyond its defined header: rewrite it bare.
+                            val tail = if (b == 0xE0) byteArrayOf(0, 0) else ByteArray(0) // JFIF: thumbnail 0x0
+                            val seg = byteArrayOf(0xFF.toByte(), b.toByte(), 0, (2 + k + tail.size).toByte()) + head + tail
+                            rewrites.add(Rewrite(Span(markerStart, r.pos + payload), seg))
+                        }
+                    }
+                    if (isSof(b)) {
+                        frameCount++
+                        if (frame == null && scanStart < 0 && payload < 6) {
+                            frame = JpegFrame(b, 0, 0, 0) // too short to be a frame header: rejected by the gate
+                        } else if (frame == null && scanStart < 0) {
+                            if (r.read(head, 6) < 6) return null
+                            payload -= 6
+                            frame = JpegFrame(
+                                marker = b,
+                                height = ((head[1].toInt() and 0xFF) shl 8) or (head[2].toInt() and 0xFF),
+                                width = ((head[3].toInt() and 0xFF) shl 8) or (head[4].toInt() and 0xFF),
+                                components = head[5].toInt() and 0xFF,
+                            )
+                        }
+                    }
+                    if (b == 0xDA && scanStart < 0 && payload >= 1) {
+                        scanComponents = r.read()
+                        if (scanComponents < 0) return null
+                        payload -= 1
                     }
                     if (!r.skip(payload)) return null
-                    if (b == 0xDA && scanStart < 0) scanStart = r.pos
+                    if (b == 0xDA && scanStart < 0) {
+                        scanStart = r.pos
+                        if (headerOnly) return JpegLayout(-1, scanStart, metadata, frame, frameCount, scanComponents)
+                    }
                 }
             }
         }
@@ -291,6 +379,13 @@ internal object ImagePages {
      * and taken from the original header instead, see [jpegOrientation]). So everything else is
      * dropped: APP0 other than JFIF (JFXX thumbnails), APP1 (EXIF incl. GPS, thumbnail; XMP), APP2
      * other than ICC (MPF), APP3-APP13, APP14 other than Adobe, APP15 and COM.
+     *
+     * Kept segments are cleaned by [jpegScan] (security audit SA-7): a JFIF APP0 is rewritten to its
+     * bare 16-byte header (version, units, densities, thumbnail 0×0, so an embedded JFIF thumbnail
+     * and any trailing bytes are dropped); an Adobe APP14 is cut to its 12 defined payload bytes
+     * (version, flags, colour transform, so the transform is still honoured). ICC_PROFILE APP2 chunks
+     * are kept unchanged because the colours depend on them: text tags inside the profile (its
+     * description, copyright, device model) therefore survive.
      */
     private fun isJpegMetadata(marker: Int, head: ByteArray, n: Int): Boolean = when (marker) {
         0xE0 -> !startsWith(head, n, JFIF)
@@ -310,17 +405,32 @@ internal object ImagePages {
      * Offset just past the CRC of the PNG `IEND` chunk of [file], or null if the file ends before
      * it or a chunk runs past the end of the file. Chunks are skipped by seeking; CRCs are not checked.
      */
-    internal fun pngEnd(file: File): Long? {
+    internal fun pngEnd(file: File): Long? = pngScan(file)?.end
+
+    /**
+     * Result of [pngScan]: [end] as for [pngEnd]; [width]/[height] from the IHDR chunk as unsigned
+     * values, or -1 when the first chunk is not a 13-byte IHDR (such a file is rejected).
+     */
+    internal class PngLayout(val end: Long, val width: Long, val height: Long)
+
+    /** The walk of [pngEnd], also reading the declared size from the first chunk (IHDR). */
+    internal fun pngScan(file: File): PngLayout? {
         RandomAccessFile(file, "r").use { raf ->
             val fileLen = raf.length()
             var pos = 8L
+            var width = -1L
+            var height = -1L
             while (pos + 12 <= fileLen) {
                 raf.seek(pos)
                 val len = raf.readInt().toLong() and 0xFFFFFFFFL
                 val type = raf.readInt()
                 val next = pos + 12 + len
                 if (next > fileLen) return null
-                if (type == IEND) return next
+                if (pos == 8L && type == IHDR && len == 13L) {
+                    width = raf.readInt().toLong() and 0xFFFFFFFFL
+                    height = raf.readInt().toLong() and 0xFFFFFFFFL
+                }
+                if (type == IEND) return PngLayout(next, width, height)
                 pos = next
             }
             return null
@@ -328,6 +438,7 @@ internal object ImagePages {
     }
 
     private const val IEND = 0x49454E44 // "IEND"
+    private const val IHDR = 0x49484452 // "IHDR"
 
     /**
      * Downscales [img] so that its long edge is at most [level]'s `maxLongEdgePx` (never upscales)
@@ -390,6 +501,21 @@ internal object ImagePages {
         }
     }
 
+    /**
+     * Runs [block], which decodes or embeds the picked image [file]. A MuPDF failure there (for
+     * example a PNG with corrupt IDAT data: "ran out of output before input", or "Overly large
+     * image") means the image is unusable, so it becomes [UnsupportedImageFileException]; failures
+     * that are really out-of-memory (see [isOutOfMemoryFailure]) propagate unchanged.
+     */
+    private inline fun <T> decoding(file: File, block: () -> T): T = try {
+        block()
+    } catch (e: UnsupportedImageFileException) {
+        throw e
+    } catch (e: RuntimeException) {
+        if (isOutOfMemoryFailure(e)) throw e
+        throw UnsupportedImageFileException(file, e)
+    }
+
     /** Size of stream [obj] after a `compress` save: unfiltered data is deflated, filtered data kept. */
     private fun savedStreamSize(obj: PDFObject): Long {
         val raw = obj.readRawStream()
@@ -420,16 +546,18 @@ internal object ImagePages {
         val opened = open(file)
         val img = opened.img
         try {
-            val original = originalEmbeddedSize(opened)
-            val byLevel = CompressionLevel.entries.associateWith { level ->
-                val jpeg = encodeJpeg(img, level)
-                try {
-                    minOf(jpeg.length.toLong(), original)
-                } finally {
-                    jpeg.destroy()
+            return decoding(file) {
+                val original = originalEmbeddedSize(opened)
+                val byLevel = CompressionLevel.entries.associateWith { level ->
+                    val jpeg = encodeJpeg(img, level)
+                    try {
+                        minOf(jpeg.length.toLong(), original)
+                    } finally {
+                        jpeg.destroy()
+                    }
                 }
+                PdfEstimate.Ok(original, byLevel)
             }
-            return PdfEstimate.Ok(original, byLevel)
         } finally {
             img.destroy()
         }
@@ -520,7 +648,7 @@ internal object ImagePages {
             val y = (pageH - h) / 2
 
             val cm = uprightCm(orientation, x, y, w, h)
-            val ref = addImageObject(doc, opened, compression)
+            val ref = decoding(image) { addImageObject(doc, opened, compression) }
             val xobjects = doc.newDictionary()
             val resources = doc.newDictionary()
             try {

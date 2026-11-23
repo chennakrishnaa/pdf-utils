@@ -1,5 +1,6 @@
 package app.venkat.offkit.engine.ops
 
+import app.venkat.offkit.engine.ImageLimits
 import app.venkat.offkit.engine.ImagePages
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageSize
@@ -27,6 +28,7 @@ import java.io.File
 class AppendImagesOp {
     fun run(pdf: File, images: List<File>, out: File, job: JobControl): PdfResult = PdfInputs.toResult {
         if (images.isEmpty()) return PdfResult.Err(PdfError.Io(IllegalArgumentException("no images")))
+        if (images.size > ImageLimits.MAX_IMAGES_PER_JOB) return PdfResult.Err(PdfError.OutOfMemory)
         val total = images.size
         val doc = PdfInputs.open(pdf)
         try {
@@ -40,6 +42,7 @@ class AppendImagesOp {
             if (job.isCancelled()) return PdfResult.Err(PdfError.Cancelled)
             val pages = doc.countPages()
             doc.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
+            PdfInputs.validateOutput(out, pages, job)?.let { return it }
             PdfResult.Ok(pages = pages, bytes = out.length())
         } finally {
             doc.destroy()

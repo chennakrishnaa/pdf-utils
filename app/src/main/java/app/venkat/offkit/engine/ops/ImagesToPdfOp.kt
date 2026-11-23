@@ -2,6 +2,7 @@ package app.venkat.offkit.engine.ops
 
 import com.artifex.mupdf.fitz.PDFDocument
 import app.venkat.offkit.engine.CompressionLevel
+import app.venkat.offkit.engine.ImageLimits
 import app.venkat.offkit.engine.ImagePages
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageSize
@@ -33,6 +34,7 @@ class ImagesToPdfOp {
         compression: CompressionLevel? = null,
     ): PdfResult = PdfInputs.toResult {
         if (images.isEmpty()) return PdfResult.Err(PdfError.Io(IllegalArgumentException("no images")))
+        if (images.size > ImageLimits.MAX_IMAGES_PER_JOB) return PdfResult.Err(PdfError.OutOfMemory)
         val total = images.size
         val doc = PDFDocument()
         try {
@@ -44,6 +46,7 @@ class ImagesToPdfOp {
             if (job.isCancelled()) return PdfResult.Err(PdfError.Cancelled)
             val pages = doc.countPages()
             doc.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
+            PdfInputs.validateOutput(out, pages, job)?.let { return it }
             PdfResult.Ok(pages = pages, bytes = out.length())
         } finally {
             doc.destroy()
