@@ -131,13 +131,18 @@ class EngineSecurityTest {
         assertEquals(ok, ImageLimits.jpeg(frame(0xC0, 15000, 16000), 1, 3))
         assertEquals(ok, ImageLimits.jpeg(frame(0xC1, 15000, 16000), 1, 3))
         assertEquals(big, ImageLimits.jpeg(frame(0xC0, 16000, 16000), 1, 3))
-        // Baseline whose first scan lacks components = multi-scan: buffered, 50 MP.
+        // Baseline whose first scan lacks components = multi-scan: buffered, 120 M samples.
         assertEquals(big, ImageLimits.jpeg(frame(0xC0, 10000, 6000), 1, 1))
-        assertEquals(ok, ImageLimits.jpeg(frame(0xC0, 10000, 5000), 1, 1))
-        // Progressive, lossless, hierarchical, arithmetic: buffered, 50 MP.
+        assertEquals(big, ImageLimits.jpeg(frame(0xC0, 10000, 5000), 1, 1))
+        assertEquals(ok, ImageLimits.jpeg(frame(0xC0, 8000, 5000), 1, 1))
+        // Progressive, lossless, hierarchical, arithmetic: buffered, 120 M samples (SR-2) and 50 MP.
         for (m in listOf(0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF)) {
-            assertEquals(ok, ImageLimits.jpeg(frame(m, 10000, 5000), 1, 3))
-            assertEquals(big, ImageLimits.jpeg(frame(m, 10000, 5001), 1, 3))
+            assertEquals(ok, ImageLimits.jpeg(frame(m, 8000, 5000), 1, 3))
+            assertEquals(big, ImageLimits.jpeg(frame(m, 8000, 5001), 1, 3))
+            assertEquals(ok, ImageLimits.jpeg(frame(m, 6000, 5000, nc = 4), 1, 4))
+            assertEquals(big, ImageLimits.jpeg(frame(m, 6000, 5001, nc = 4), 1, 4))
+            assertEquals(ok, ImageLimits.jpeg(frame(m, 10000, 5000, nc = 1), 1, 1))
+            assertEquals(big, ImageLimits.jpeg(frame(m, 10000, 5001, nc = 1), 1, 1))
         }
         assertEquals(big, ImageLimits.jpeg(frame(0xC0, 65501, 10), 1, 3))
         assertEquals(bad, ImageLimits.jpeg(frame(0xC0, 0, 10), 1, 3))

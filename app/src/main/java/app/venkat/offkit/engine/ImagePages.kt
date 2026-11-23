@@ -56,7 +56,8 @@ internal object ImagePages {
      * file, so completeness is checked here, in one streaming pass ([jpegScan] / [pngEnd]):
      * - JPEG (`FF D8 FF`): marker segments are walked from the start up to the end-of-image marker.
      * - PNG: chunks are walked from the signature up to `IEND`.
-     * - Other formats are not checked; the image is the whole file.
+     * - Anything else is rejected as unsupported before any MuPDF call (SR-4); the app's
+     *   ImageNormalizer transcodes other formats to JPEG/PNG with the same signatures first.
      *
      * Data after the end of the image (motion-photo videos, camera trailers, padding) is accepted
      * but never handed to MuPDF. JPEG metadata segments (see [isJpegMetadata]: EXIF with GPS,
@@ -80,7 +81,9 @@ internal object ImagePages {
             end = when (format) {
                 Format.JPEG -> jpegScan(file)?.also { layout = it }?.end
                 Format.PNG -> pngScan(file)?.also { png = it; declaredW = it.width; declaredH = it.height }?.end
-                Format.OTHER -> length
+                // SR-4: only positively identified, gated formats ever reach MuPDF. MuPDF would
+                // recognise a JPEG from `FF D8` alone (and GIF, BMP, TIFF, ...) with no size gate.
+                Format.OTHER -> null
             } ?: throw UnsupportedImageFileException(file, null)
         } catch (e: IOException) {
             throw UnsupportedImageFileException(file, e)
@@ -92,7 +95,7 @@ internal object ImagePages {
                 ImageLimits.jpeg(l.frame, l.frameCount, l.firstScanComponents)
             }
             Format.PNG -> png!!.let { ImageLimits.png(it.width, it.height, it.bitDepth, it.colorType, it.transparency) }
-            Format.OTHER -> ImageLimits.Verdict.OK // already re-encoded at <= 4096 px by ImageNormalizer
+            Format.OTHER -> ImageLimits.Verdict.UNSUPPORTED // unreachable: rejected above
         }
         when (verdict) {
             ImageLimits.Verdict.OK -> Unit
@@ -120,7 +123,7 @@ internal object ImagePages {
         try {
             if (img.width <= 0 || img.height <= 0) throw UnsupportedImageFileException(file, null)
             // MuPDF must work with exactly the size the gate checked.
-            if (format != Format.OTHER && (img.width.toLong() != declaredW || img.height.toLong() != declaredH)) {
+            if (img.width.toLong() != declaredW || img.height.toLong() != declaredH) {
                 throw UnsupportedImageFileException(file, null)
             }
             if (orientation < 0) orientation = img.orientation
@@ -177,14 +180,19 @@ internal object ImagePages {
         }
     }
 
+    /**
+     * JPEG (`FF D8 FF`) or PNG (the full 8-byte signature), the same signatures as
+     * `core.ImageNormalizer.sniff`; anything else is [Format.OTHER] and rejected by [open] (SR-4).
+     */
     private fun formatOf(file: File): Format {
-        val head = ByteArray(4)
-        val n = RandomAccessFile(file, "r").use { it.read(head) }
+        val head = ByteArray(8)
+        val n = RandomAccessFile(file, "r").use { raf -> raf.read(head).let { if (it < 0) 0 else it } }
         if (n >= 3 && head[0] == 0xFF.toByte() && head[1] == 0xD8.toByte() && head[2] == 0xFF.toByte()) return Format.JPEG
-        val png = n >= 4 && head[0] == 0x89.toByte() && head[1] == 'P'.code.toByte() &&
-            head[2] == 'N'.code.toByte() && head[3] == 'G'.code.toByte()
+        val png = n >= 8 && PNG_SIGNATURE.indices.all { head[it] == PNG_SIGNATURE[it].toByte() }
         return if (png) Format.PNG else Format.OTHER
     }
+
+    private val PNG_SIGNATURE = intArrayOf(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
 
     /** Sequential reader with its own buffer and position; [read] returns -1 at end of file. */
     private class ByteReader(private val input: InputStream) {

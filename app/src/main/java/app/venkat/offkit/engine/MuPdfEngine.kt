@@ -49,9 +49,10 @@ class MuPdfEngine : PdfEngine {
  * Runs [block] and normalises its outcome: an uncaught throwable is mapped by [classifyFailure],
  * and on any [PdfResult.Err] (returned or mapped) a partially written [out] is deleted.
  */
-internal inline fun guardedRun(out: File, block: () -> PdfResult): PdfResult {
+internal fun guardedRun(out: File, block: () -> PdfResult): PdfResult {
     val result = try {
-        block()
+        // SA-11: MuPDF recursion depth is bounded by ObjectGraph, and runs on a large stack anyway.
+        EngineStack.run(block)
     } catch (t: Throwable) {
         PdfResult.Err(classifyFailure(t))
     }

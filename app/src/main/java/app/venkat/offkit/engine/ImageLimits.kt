@@ -26,14 +26,20 @@ class ImageTooLargeException(val file: File) : RuntimeException("image too large
  *   is capped at 15 MP).
  * - A progressive or multi-scan JPEG (SOF2/6/10/14, lossless/hierarchical/arithmetic types, or a
  *   sequential frame whose first scan does not carry every component) makes libjpeg buffer the
- *   WHOLE image as DCT coefficients, about 2 bytes per sample ≈ 6 B/px: 50 MP ≈ 300 MB. Capped at
- *   [MAX_BUFFERED_JPEG_PIXELS].
+ *   WHOLE image as DCT coefficients, about 2 bytes per SAMPLE, so it is capped in samples
+ *   ([MAX_BUFFERED_JPEG_SAMPLES], 120 M: 40 MP RGB/YCbCr, 30 MP CMYK/YCCK) as well as at
+ *   [MAX_BUFFERED_JPEG_PIXELS] (50 MP, which binds for gray). Hostile tiny-data progressive
+ *   headers right at the cap (SR-2; capped JVM, `estimate` + `imagesToPdf` HIGH/Original +
+ *   append): 3 components 6324×6324 (40.0 MP) 348 MB, 4 components 5477×5477 (30.0 MP) 370 MB
+ *   (370 MB with an Adobe marker); one more pixel per edge is ImageTooLarge at 73 MB. The previous
+ *   pixel-only 50 MP cap measured 409 MB (3 components) and 520 MB (4 components).
  * - A single-scan baseline (SOF0) or extended-sequential Huffman (SOF1) JPEG is streamed by libjpeg
  *   a few rows at a time, and MuPDF decodes it with DCT scaling (down to 1/8) when it only needs a
  *   smaller pixmap, so it may be larger: [MAX_SEQUENTIAL_JPEG_PIXELS].
  * - No edge may exceed [MAX_EDGE] (and none may be 0).
  * Peak resident memory (host x86_64, MuPDF 1.28.5, -Xmx512m, flat-colour images right at the cap,
- * worst of `estimate` and `imagesToPdf` at every level): 50 MP progressive JPEG 238 MB, 250 MP
+ * worst of `estimate` and `imagesToPdf` at every level; real images, not hostile headers, see
+ * above for those): 50 MP progressive JPEG 238 MB, 250 MP
  * baseline JPEG 159 MB; 8-bit RGB PNG: 12 MP 213 MB, 30 MP 466 MB, 50 MP 690 MB (hence the PNG
  * limits). Flat-colour PNGs right at the PNG limits, peak RSS of `estimate` / `imagesToPdf`
  * Original / HIGH (`estimate` is the worst, 1.0-1.9 s in process): 20 MP 8-bit RGB
@@ -59,8 +65,15 @@ internal object ImageLimits {
      */
     const val MAX_PNG_SAMPLE_BYTES = MAX_PNG_PIXELS * 3
 
-    /** Largest accepted progressive / multi-scan / non-sequential JPEG, in pixels. */
+    /** Largest accepted progressive / multi-scan / non-sequential JPEG, in pixels (gray is capped here). */
     const val MAX_BUFFERED_JPEG_PIXELS = 50_000_000L
+
+    /**
+     * Largest accepted progressive / multi-scan / non-sequential JPEG, in samples
+     * (width × height × components, SR-2): 3 components → 40 MP, 4 components (CMYK/YCCK) → 30 MP.
+     * See the class KDoc for the measurements.
+     */
+    const val MAX_BUFFERED_JPEG_SAMPLES = 120_000_000L
 
     /** Largest accepted single-scan baseline or extended-sequential JPEG, in pixels. */
     const val MAX_SEQUENTIAL_JPEG_PIXELS = 250_000_000L
@@ -94,7 +107,11 @@ internal object ImageLimits {
         if (frame.components !in ALLOWED_COMPONENTS) return Verdict.UNSUPPORTED
         val streamed = isSequentialSof(frame.marker) && firstScanComponents == frame.components
         val cap = if (streamed) MAX_SEQUENTIAL_JPEG_PIXELS else MAX_BUFFERED_JPEG_PIXELS
-        return dimensions(frame.width.toLong(), frame.height.toLong(), cap)
+        val dims = dimensions(frame.width.toLong(), frame.height.toLong(), cap)
+        if (dims != Verdict.OK || streamed) return dims
+        // SR-2: libjpeg buffers coefficients per SAMPLE, so the buffered budget counts components.
+        val samples = frame.width.toLong() * frame.height.toLong() * frame.components
+        return if (samples > MAX_BUFFERED_JPEG_SAMPLES) Verdict.TOO_LARGE else Verdict.OK
     }
 
     /**
