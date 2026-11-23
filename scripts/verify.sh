@@ -13,7 +13,7 @@ cd "$ROOT"
 
 AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
 APKANALYZER="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
-ALLOWED_EXPORTED="app.venkat.filetools.MainActivity"
+ALLOWED_EXPORTED="app.venkat.offkit.MainActivity"
 
 fail() {
     echo "VERIFY FAIL: $*" >&2

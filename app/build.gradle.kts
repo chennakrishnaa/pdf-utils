@@ -41,13 +41,13 @@ val releaseSigning: Map<String, String>? = run {
 }
 
 android {
-    namespace = "app.venkat.filetools"
+    namespace = "app.venkat.offkit"
     compileSdk {
         version = release(37) { minorApiLevel = 1 }
     }
 
     defaultConfig {
-        applicationId = "app.venkat.filetools"
+        applicationId = "app.venkat.offkit"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
