@@ -33,8 +33,12 @@ import java.util.BitSet
  * depth.
  */
 internal object ObjectGraph {
-    /** Most objects (xref entries) an input PDF may have; larger documents are "too large". */
-    const val MAX_OBJECTS = 500_000
+    /**
+     * Most objects (xref entries) an input PDF may have; larger documents are "too large" (SR2-2:
+     * a 490,000-object file cost 3.4 s and 340 MB before the walk budget stopped it). For scale, a
+     * 500-page text PDF with one link per page has about 1,500 objects.
+     */
+    const val MAX_OBJECTS = 200_000
 
     /** Most references/entries a walk may visit before the input is "too large" (~110 MB of parsed objects). */
     const val MAX_REFERENCES = 2_000_000
