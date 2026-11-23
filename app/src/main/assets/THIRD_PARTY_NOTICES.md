@@ -1,7 +1,7 @@
 THIRD-PARTY NOTICES
 ===================
 
-PDF Utils is free software, licensed under the GNU Affero General Public License, version 3 (see the LICENSE file; the app shows the full text under About). Its source code is at https://github.com/chennakrishnaa/pdf-utils.
+PaperPixel is free software, licensed under the GNU Affero General Public License, version 3 (see the LICENSE file; the app shows the full text under About). Its source code is at https://github.com/chennakrishnaa/pdf-utils.
 
 The app contains the third-party components listed below. Each is distributed under its own licence; the licence texts follow at the end of this file (the LaTeX Project Public License, named by some hyphenation patterns, is not available offline and is identified by name, version and URL only). This list was derived from the MuPDF 1.28.5 build files (platform/java/Android.mk, Makelists), the strings and symbols of the libmupdf_java.so that ships in the app, and the Gradle releaseRuntimeClasspath.
 
@@ -59,7 +59,7 @@ as (Assamese) — pattern version 0.9.0 2016-01-16 — This file is available un
 
 be (Belarusian) — pattern version 1.01 (October 2016) — MIT (M) — Copyright (C) 2016 Maksim Salau
 
-bg (Bulgarian) — pattern version 21 October 2017 — unnamed licence notice (quoted below) — Copyright (C) 2000, 2004, 2017 Anton Zinoviev
+bg (Bulgarian) — pattern version 21 October 2017 — unnamed licence notice (quoted below) (the .info file comments on this text: "# Seems equivalent to 3-clause BSD") — Copyright (C) 2000, 2004, 2017 Anton Zinoviev
 
 bg, licence notice, as given in the .info file:
 
@@ -3450,4 +3450,4 @@ EXHIBIT A -Mozilla Public License.
 (S) LaTeX Project Public License (hyphenation patterns)
 -------------------------------------------------------
 
-Full text not bundled: no copy of the LaTeX Project Public License was available locally when this file was prepared, and it is not reproduced from memory. The hyphenation patterns name it as follows: version 1 or later: ca, hr, la, sl, tr; version 1.2 or later: is, ru, sv; version 1.3 or later: da, et, it, mn-cyrl, th; no version stated: el-polyton. Canonical URL of the licence and all its versions: https://www.latex-project.org/lppl/ (the URL each pattern file gives is listed in its entry above).
+Full text not bundled: no copy of the LaTeX Project Public License was available locally when this file was prepared, and it is not reproduced from memory. The hyphenation patterns name it as follows: version 1 or later: ca, hr, la, sl, tr; version 1.2 or later: is, ru, sv; version 1.3 or later: da, et, it, mn-cyrl, th; no version stated: el-polyton. URL of the licence and its versions, as given in the .info files for ca, la, ru and th: https://latex-project.org/lppl/ (the URL each pattern file gives is listed in its entry above).
