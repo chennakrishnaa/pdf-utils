@@ -26,7 +26,12 @@ import kotlin.math.roundToInt
  * are never touched. Pass 2 visits every image XObject stream and, if [classify] allows it,
  * downscales it so its long edge is at most [CompressionLevel.maxLongEdgePx] (never upscaling),
  * re-encodes it as JPEG at [CompressionLevel.jpegQuality] and replaces the stream in place — but
- * only when the new JPEG is strictly smaller than the existing encoded stream. Images over
+ * only when the new JPEG is strictly smaller than the existing encoded stream. Decoding is
+ * default-deny ([ImageFilters]): only an unfiltered, `[FlateDecode]` or `[DCTDecode]` image
+ * (abbreviations normalised exactly as MuPDF does) with integer `/Width`/`/Height`,
+ * `/BitsPerComponent` 8 and a direct integer `/Length` is ever decoded; any other chain, any
+ * abbreviated or external-file key, or a Flate predictor that does not describe the image (SR-5)
+ * leaves it untouched. Images over
  * [MAX_PIXELS] are skipped without decoding, and so is a DCT image whose stream header (SOF) does
  * not declare exactly the dictionary's size or fails [ImageLimits.jpeg] (a progressive JPEG can
  * otherwise make libjpeg allocate without bound). Only one image is decoded at a time.
@@ -101,17 +106,23 @@ class CompressOp {
             val kind = classify(s, num, obj, maskTargets)
             if (kind == Kind.SKIP) return
 
-            val w = s.add(obj.get("Width")).let { if (it.isNumber) it.asInteger() else 0 }
-            val h = s.add(obj.get("Height")).let { if (it.isNumber) it.asInteger() else 0 }
+            val w = s.add(obj.get("Width")).let { if (it.isInteger) it.asInteger() else 0 }
+            val h = s.add(obj.get("Height")).let { if (it.isInteger) it.asInteger() else 0 }
             if (w <= 0 || h <= 0 || w.toLong() * h.toLong() > MAX_PIXELS) return
             // Encoded size from /Length (SA-9: readRawStream() would copy the whole stream to the heap).
-            val length = s.add(s.add(obj.get("Length")).resolve()).let { if (it.isNumber) it.asInteger() else 0 }
+            // A missing, indirect or non-integer /Length is skipped: MuPDF would then guess the size.
+            val lengthObj = s.add(obj.get("Length"))
+            if (lengthObj.isIndirect || !lengthObj.isInteger) return
+            val length = lengthObj.asInteger()
             if (length <= 0) return
 
-            // MuPDF sizes a DCT decode from the stream's own SOF, not from the dictionary (SA-6).
-            val filters = filtersOf(s, obj)
-            if ("DCTDecode" in filters) {
-                if (filters.size != 1 || !dctHeaderMatches(obj, w, h, length)) return
+            // Default deny (SR-1/SR-5): decide from the filter chain exactly as MuPDF reads it.
+            when (chainOf(s, obj)) {
+                ImageFilters.Chain.SKIP -> return
+                ImageFilters.Chain.RAW -> if (!s.add(obj.get("DecodeParms")).isNull) return
+                ImageFilters.Chain.FLATE -> if (!flateParamsOk(s, obj, w, if (kind == Kind.GRAY) 1 else 3)) return
+                // MuPDF sizes a DCT decode from the stream's own SOF, not from the dictionary (SA-6).
+                ImageFilters.Chain.DCT -> if (!dctHeaderMatches(obj, w, h, length)) return
             }
 
             val img = s.add(doc.loadImage(obj))
@@ -155,19 +166,51 @@ class CompressOp {
         return ImageLimits.jpeg(frame, layout.frameCount, layout.firstScanComponents) == ImageLimits.Verdict.OK
     }
 
-    /** Filter names of image [dict] (a single name or an array of names). */
-    private fun filtersOf(s: Scope, dict: PDFObject): List<String> {
-        val filter = s.add(s.add(dict.get("Filter")).resolve())
-        val filters = ArrayList<String>()
-        if (filter.isName) {
-            filters.add(filter.asName())
-        } else if (filter.isArray) {
-            for (i in 0 until filter.size()) {
-                val f = s.add(s.add(filter.get(i)).resolve())
-                if (f.isName) filters.add(f.asName())
+    /**
+     * The [ImageFilters] decision for image [dict]: `/Filter` read as MuPDF reads it (a single name,
+     * or an array whose every element counts; a non-name element makes the chain unknown).
+     * Abbreviated keys (`/F`, `/DP`, ...) are rejected earlier, in [classify].
+     */
+    private fun chainOf(s: Scope, dict: PDFObject): ImageFilters.Chain {
+        val raw = s.add(dict.get("Filter"))
+        if (raw.isNull) return ImageFilters.decide(present = false, names = null)
+        val filter = s.add(raw.resolve())
+        val names: List<String?>? = when {
+            filter.isName -> listOf(filter.asName())
+            filter.isArray -> (0 until filter.size()).map { i ->
+                s.add(s.add(filter.get(i)).resolve()).let { if (it.isName) it.asName() else null }
+            }
+            else -> null
+        }
+        return ImageFilters.decide(present = true, names = names)
+    }
+
+    /**
+     * SR-5: a Flate image's `/DecodeParms` must be absent, a dictionary, or a one-element array
+     * holding one, and its predictor must describe exactly this image ([ImageFilters.flateParamsOk]).
+     * Any present predictor key that is not an integer makes the image skipped.
+     */
+    private fun flateParamsOk(s: Scope, dict: PDFObject, w: Int, components: Int): Boolean {
+        var parms = s.add(s.add(dict.get("DecodeParms")).resolve())
+        if (parms.isNull) return true
+        if (parms.isArray) {
+            if (parms.size() != 1) return false
+            parms = s.add(s.add(parms.get(0)).resolve())
+            if (parms.isNull) return true
+        }
+        if (!parms.isDictionary) return false
+        val values = HashMap<String, Int?>()
+        for (key in listOf("Predictor", "Columns", "Colors", "BitsPerComponent")) {
+            val v = s.add(s.add(parms.get(key)).resolve())
+            values[key] = when {
+                v.isNull -> null
+                v.isInteger -> v.asInteger()
+                else -> return false
             }
         }
-        return filters
+        return ImageFilters.flateParamsOk(
+            values["Predictor"], values["Columns"], values["Colors"], values["BitsPerComponent"], w, components,
+        )
     }
 
     private enum class Kind { RGB, GRAY, SKIP }
@@ -181,10 +224,12 @@ class CompressOp {
         if (!s.add(dict.get("SMask")).isNull) return Kind.SKIP
         if (!s.add(dict.get("Mask")).isNull) return Kind.SKIP
 
-        if (filtersOf(s, dict).any { it in UNSUPPORTED_FILTERS }) return Kind.SKIP
+        // Abbreviated or external-file keys MuPDF would honour: never guess, skip (SR-1).
+        if (ImageFilters.SKIP_KEYS.any { !s.add(dict.get(it)).isNull }) return Kind.SKIP
+        if (chainOf(s, dict) == ImageFilters.Chain.SKIP) return Kind.SKIP
 
         val bpc = s.add(dict.get("BitsPerComponent"))
-        if (!bpc.isNumber || bpc.asInteger() != 8) return Kind.SKIP
+        if (!bpc.isInteger || bpc.asInteger() != 8) return Kind.SKIP
 
         val cs = s.add(s.add(dict.get("ColorSpace")).resolve())
         val family = when {
@@ -246,7 +291,6 @@ class CompressOp {
         const val MAX_DCT_INSPECT_BYTES = 32 * 1024 * 1024
 
         val MASK_KEYS = listOf("SMask", "Mask")
-        val UNSUPPORTED_FILTERS = setOf("JBIG2Decode", "CCITTFaxDecode", "CCF", "JPXDecode")
         val DROPPED_KEYS = listOf("DecodeParms", "Decode", "SMaskInData", "Intent", "Alternates")
     }
 }
