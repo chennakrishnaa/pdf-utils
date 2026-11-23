@@ -263,7 +263,35 @@ Re-checker: SR2, independent of the fix authors. Code at `main` `eda2751` (merge
 pending
 
 ### B. Deep-object guard attempts
-pending
+Harness: `scratchpad/sr2/src/SR.java` (copy of SR's, plus `rawop` = the internal op class run directly on a thread of a given stack size with no `EngineStack`, and `resave`), one child JVM per run, `-Xmx256m`, `ulimit -v 3000000`, classes compiled from this worktree. Generators: `scratchpad/sr2/gen2.py`; inputs in `scratchpad/sr2/c/`. Peak RSS is `/usr/bin/time %M`.
+
+| Input | Op | Result | Time | Peak RSS |
+|---|---|---|---|---|
+| `shortcut-20000` (catalog `/A` lists every chain node in chain order, page hangs the 20k chain) | compress / merge / append | Corrupt (walker depth 20,003: DFS enters node 1 first and follows the chain) | 0.3 s | 74 MB |
+| `shortcut-rev-20000` (same, array in REVERSE order; walker depth 6) | compress / merge / append | Ok (markobj visits in the same order as the walker, so it is shallow too) | 0.7-0.95 s | 90-137 MB |
+| same, `rawop` on a 256 KB and a 1 MB thread (no EngineStack) | all three | Ok | 0.7-0.8 s | 88-110 MB |
+| `shortcut-rev-200000` | merge / compress | Ok / Ok | 5.9 s / **20.4 s** | 348 / 263 MB |
+| `shortcut-rev-490000` (35 MB, just under `MAX_OBJECTS`) | merge / compress | Ok / Ok | 14.0 s / **113.5 s** | **488 / 471 MB** |
+| `pagetree-10000` (10,000-deep `/Kids`) | all three | Corrupt | 0.3 s | 73 MB |
+| `wrapped-2900` (2,900 indirect links, each wrapped in 50 direct arrays; walker depth 147,906) | all three | Corrupt | 0.25 s | 72 MB |
+| `outline-20000` (`/Outlines` `/First` chain) | all three | Corrupt | 0.3 s | 74 MB |
+| `chain-2990` (accepted by the guard), **`rawop` on a 256 KB thread** | compress / append | **SIGSEGV (rc 139)** | 0.3 s | 71 MB |
+| same | merge | Ok | 0.4 s | 77 MB |
+| `chain-3000`, `rawop` 256 KB and 1 MB | all three | Corrupt (guard) | 0.3 s | 72 MB |
+| Unguarded `garbage=deduplicate` save (`rawsave`), 256 KB thread | - | 2,000 / 2,200 / 2,500 / 2,800 links save; **3,000 crash** (SIGSEGV) | | |
+| Unguarded save, 1 MB thread | - | 12,000 links save; **15,000 crash** | | |
+| `dense-20000x1000` (pseudo-random refs) | compress / merge | Corrupt (DFS gets deep fast) | 1.4 s | 190 MB |
+| `bip-20000x1000` (202 MB, 20M refs, depth 6): guard alone (`depth`) | - | depth 6 | **19.4 s** | **1,137 MB** |
+| same | compress / merge | Ok / Err(OutOfMemory) | 35 s / 34.5 s | **1,442 / 1,135 MB** |
+| `bipseq-objstm` (**2.0 MB**: 20,000 identical 1,000-ref arrays in Flate object streams): guard alone | - | depth 6 | **18.6 s** | **1,092 MB** |
+| same | compress / merge / append | Err(OutOfMemory) / Ok / Ok | 26.8 s / **72 s** / 23 s | **1,114 / 1,130 / 1,094 MB** |
+| same, open + `countPages` + `loadPage` only (no walk) | - | Ok | 0.25 s | 69 MB |
+
+Observations:
+- The walker's depth is order-dependent (DFS with a visited set), but it walks from the trailer in the same dictionary/array index order as `markobj`, so for the save it measures the depth `markobj` actually reaches. I found no ordering that makes the walker shallow and `markobj` deep. Merge grafts from the page, not the trailer, but in every run the graft did not recurse deep enough to matter: Merge outputs were 1.5 KB even for chain inputs (the chain is not in the merged output; not root-caused).
+- **The guard alone is not enough on a 256 KB stack**: a 2,990-link chain passes the guard and Compress/Add images then crash the process. Measured crash depth of the unguarded save: between 2,800 and 3,000 links on 256 KB, and between 12,000 and 15,000 on 1 MB. Margin of `MAX_DEPTH` 3,000: about **4-5x on a 1 MB stack, below 1x on 256 KB**. On the 128 MB `EngineStack` thread the whole `MAX_OBJECTS` range (490k links) is safe, so the defence relies on the stack size being honoured (section C).
+- **The guard itself is a memory and CPU bomb** (SR2-1): the walk resolves every reachable object, and MuPDF keeps each parsed object cached, so a 2 MB file of object streams costs 1.1 GB and about 19 s before any operation starts. Pre-fix, Merge never touched objects its pages do not reference; now every Merge input is fully walked.
+- A 490k-link chain hidden behind the reverse shortcut is accepted (depth 6) and costs 113 s in Compress (single uncancellable `save`, SR2-2).
 
 ### C. On-device (emulator)
 pending
