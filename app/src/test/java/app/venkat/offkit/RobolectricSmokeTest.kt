@@ -12,6 +12,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class RobolectricSmokeTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
     @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
 

@@ -44,6 +44,7 @@ import app.venkat.offkit.ui.components.IconBadge
 import app.venkat.offkit.ui.components.InfoNote
 import app.venkat.offkit.ui.components.SectionHeader
 import app.venkat.offkit.ui.components.ToolScaffold
+import app.venkat.offkit.ui.onboarding.OnboardingScreen
 
 const val TAG_ABOUT_VERSION = "about_version"
 const val TAG_ABOUT_LICENSE = "about_license"
@@ -55,6 +56,7 @@ const val TAG_ABOUT_NOTICES = "about_notices"
 const val TAG_ABOUT_PRIVACY = "about_privacy"
 const val TAG_ABOUT_PRIVACY_URL = "about_privacy_url"
 const val TAG_ABOUT_NO_DATA = "about_no_data"
+const val TAG_ABOUT_INTRO = "about_intro"
 
 /** Asset holding a verbatim copy of the repository's `LICENSE` (GNU AGPL v3). */
 const val ASSET_LICENSE = "LICENSE"
@@ -72,6 +74,12 @@ const val ASSET_PRIVACY = "PRIVACY.md"
  */
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
+    // Whether the introduction is open (shown over About; finishing it returns here).
+    var introduction by rememberSaveable { mutableStateOf(false) }
+    if (introduction) {
+        OnboardingScreen(onFinished = { introduction = false })
+        return
+    }
     // Which bundled text is open, if any (an asset name); survives rotation.
     var document by rememberSaveable { mutableStateOf<String?>(null) }
     val open = document
@@ -108,6 +116,12 @@ fun AboutScreen(onBack: () -> Unit) {
                 text = stringResource(R.string.about_no_data),
                 style = MaterialTheme.typography.titleSmall,
                 modifier = Modifier.testTag(TAG_ABOUT_NO_DATA),
+            )
+            LinkRow(
+                icon = AppIcons.info,
+                text = stringResource(R.string.about_intro_row),
+                testTag = TAG_ABOUT_INTRO,
+                onClick = { introduction = true },
             )
 
             SectionHeader(stringResource(R.string.about_license_header))

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="onboarding_skip">Skip</string>
+    <string name="onboarding_next">Next</string>
+    <string name="onboarding_done">Get started</string>
+    <!-- Page indicator, read by screen readers: "Page 2 of 4". -->
+    <string name="onboarding_page_of">Page %1$d of %2$d</string>
+
+    <string name="onboarding_welcome_title">Welcome to Offkit</string>
+    <string name="onboarding_welcome_text">PDF tools that work entirely on your phone.</string>
+
+    <string name="onboarding_tools_title">Four tools</string>
+    <string name="onboarding_tools_images">Choose the quality and see the size before you save.</string>
+    <string name="onboarding_tools_compress">Make a PDF smaller, with three levels to choose from.</string>
+    <string name="onboarding_tools_merge">Put PDFs in order, then combine them into one.</string>
+    <string name="onboarding_tools_add">Add pictures as new pages to an existing PDF.</string>
+
+    <string name="onboarding_private_title">Private by design</string>
+    <string name="onboarding_private_offline">No internet connection and no permissions.</string>
+    <string name="onboarding_private_accounts">No accounts and no ads.</string>
+    <string name="onboarding_private_files">Your files never leave your device.</string>
+    <string name="onboarding_private_metadata">Location and camera details are removed from photos placed into PDFs.</string>
+
+    <string name="onboarding_control_title">You\'re in control</string>
+    <string name="onboarding_control_choose">You choose the files, and where results are saved.</string>
+    <string name="onboarding_control_recent">Recently saved files appear on the home screen.</string>
+    <string name="onboarding_control_nothing">Nothing is uploaded or backed up.</string>
+</resources>

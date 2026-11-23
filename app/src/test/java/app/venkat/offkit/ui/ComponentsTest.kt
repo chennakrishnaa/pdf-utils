@@ -20,6 +20,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.platform.testTag
 import app.venkat.offkit.MainActivity
+import app.venkat.offkit.OnboardingSeenRule
 import app.venkat.offkit.R
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.ui.components.FileList
@@ -54,6 +55,9 @@ import java.io.IOException
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class ComponentsTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 

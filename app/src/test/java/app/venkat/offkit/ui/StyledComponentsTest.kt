@@ -24,6 +24,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import app.venkat.offkit.MainActivity
+import app.venkat.offkit.OnboardingSeenRule
 import app.venkat.offkit.R
 import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.ChoiceCard
@@ -46,6 +47,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class StyledComponentsTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 
