@@ -12,6 +12,7 @@ fun pdfErrorMessage(error: PdfError): Int = when (error) {
     PdfError.Corrupt -> R.string.error_corrupt
     PdfError.UnsupportedImage -> R.string.error_unsupported_image
     PdfError.OutOfMemory -> R.string.error_out_of_memory
+    PdfError.ImageTooLarge -> R.string.core_error_image_too_large
     PdfError.Cancelled -> R.string.error_cancelled
     PdfError.NotImplemented -> R.string.error_not_implemented
     is PdfError.Io -> R.string.error_generic

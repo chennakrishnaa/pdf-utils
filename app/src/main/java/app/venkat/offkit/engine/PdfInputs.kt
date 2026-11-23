@@ -22,7 +22,9 @@ internal object PdfInputs {
      *   has only an owner password (permission restrictions, empty user password). Policy: every
      *   encrypted PDF is rejected, so no operation can strip restrictions from its output;
      * - [PdfError.Corrupt] when it cannot be parsed, is not a PDF, or has no pages;
-     * - [PdfError.Io] when the file cannot be opened (missing, unreadable).
+     * - [PdfError.Io] when the file cannot be opened (missing, unreadable);
+     * - [PdfError.OutOfMemory] when it is larger than [ImageLimits.MAX_INPUT_PDF_BYTES] (checked
+     *   before MuPDF opens it; the user is told "Not enough memory. Try fewer or smaller files.").
      * On failure nothing opened is left alive.
      *
      * MuPDF picks the document handler by file name extension. A file whose name does not end in
@@ -30,6 +32,7 @@ internal object PdfInputs {
      * to content sniffing), and non-PDF content is reported as Corrupt.
      */
     fun open(file: File): PDFDocument {
+        if (file.length() > ImageLimits.MAX_INPUT_PDF_BYTES) throw PdfInputException(PdfError.OutOfMemory)
         val doc = try {
             Document.openDocument(file.absolutePath)
         } catch (e: RuntimeException) {
@@ -81,6 +84,47 @@ internal object PdfInputs {
     }
 
     /**
+     * Output check after a save (security audit SA-5): MuPDF can repair a damaged input and then
+     * save a document whose page tree is cyclic or malformed. Reopens [out] and requires exactly
+     * [expectedPages] pages, every one of which loads (each page and the document are destroyed;
+     * cancellation is polled between pages). Returns null when [out] is good; otherwise deletes [out]
+     * and returns `Err(Corrupt)` (or `Err(Cancelled)`).
+     */
+    fun validateOutput(out: File, expectedPages: Int, job: JobControl): PdfResult.Err? {
+        val err = checkPages(out, expectedPages, job)
+        if (err != null) out.delete()
+        return err
+    }
+
+    /**
+     * Null when [file] opens with exactly [expectedPages] pages and every page loads; otherwise
+     * `Err(Corrupt)`, or `Err(Cancelled)` if [job] is cancelled between pages. Never modifies [file].
+     * Out-of-memory failures propagate (see [isOutOfMemoryFailure]).
+     */
+    fun checkPages(file: File, expectedPages: Int, job: JobControl): PdfResult.Err? {
+        val corrupt = PdfResult.Err(PdfError.Corrupt)
+        val doc = try {
+            Document.openDocument(file.absolutePath)
+        } catch (e: RuntimeException) {
+            if (isOutOfMemoryFailure(e)) throw e
+            return corrupt
+        }
+        try {
+            for (i in 0 until expectedPages) {
+                if (job.isCancelled()) return PdfResult.Err(PdfError.Cancelled)
+                if (i == 0 && doc.countPages() != expectedPages) return corrupt
+                doc.loadPage(i).destroy()
+            }
+            return if (expectedPages > 0) null else corrupt
+        } catch (e: RuntimeException) {
+            if (isOutOfMemoryFailure(e)) throw e
+            return corrupt
+        } finally {
+            doc.destroy()
+        }
+    }
+
+    /**
      * Runs [block], mapping a thrown [PdfInputException] to `Err(error)` and an
      * [UnsupportedImageFileException] to `Err(UnsupportedImage)`. Anything else propagates
      * (MuPdfEngine's guardedRun maps it to OutOfMemory / Io).
@@ -91,5 +135,7 @@ internal object PdfInputs {
         PdfResult.Err(e.error)
     } catch (e: UnsupportedImageFileException) {
         PdfResult.Err(PdfError.UnsupportedImage)
+    } catch (e: ImageTooLargeException) {
+        PdfResult.Err(PdfError.ImageTooLarge)
     }
 }

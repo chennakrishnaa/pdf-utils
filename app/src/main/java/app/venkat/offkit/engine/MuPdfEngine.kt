@@ -29,10 +29,10 @@ class MuPdfEngine : PdfEngine {
         ImagePages.estimate(image)
     } catch (e: UnsupportedImageFileException) {
         PdfEstimate.Err(PdfError.UnsupportedImage)
-    } catch (oom: OutOfMemoryError) {
-        PdfEstimate.Err(PdfError.OutOfMemory)
+    } catch (e: ImageTooLargeException) {
+        PdfEstimate.Err(PdfError.ImageTooLarge)
     } catch (t: Throwable) {
-        PdfEstimate.Err(PdfError.Io(t))
+        PdfEstimate.Err(classifyFailure(t))
     }
 
     override fun compress(pdf: File, level: CompressionLevel, out: File, job: JobControl): PdfResult =
@@ -46,17 +46,14 @@ class MuPdfEngine : PdfEngine {
 }
 
 /**
- * Runs [block] and normalises its outcome: an uncaught [OutOfMemoryError] becomes
- * `Err(OutOfMemory)`, any other [Throwable] becomes `Err(Io(cause))`, and on any
- * [PdfResult.Err] (returned or mapped) a partially written [out] is deleted.
+ * Runs [block] and normalises its outcome: an uncaught throwable is mapped by [classifyFailure],
+ * and on any [PdfResult.Err] (returned or mapped) a partially written [out] is deleted.
  */
 internal inline fun guardedRun(out: File, block: () -> PdfResult): PdfResult {
     val result = try {
         block()
-    } catch (oom: OutOfMemoryError) {
-        PdfResult.Err(PdfError.OutOfMemory)
     } catch (t: Throwable) {
-        PdfResult.Err(PdfError.Io(t))
+        PdfResult.Err(classifyFailure(t))
     }
     if (result is PdfResult.Err) {
         try {
@@ -66,4 +63,39 @@ internal inline fun guardedRun(out: File, block: () -> PdfResult): PdfResult {
         }
     }
     return result
+}
+
+/**
+ * True when [t] is an out-of-memory failure: a Java [OutOfMemoryError], or a MuPDF
+ * [RuntimeException] carrying one (a JNI allocation such as `NewByteArray` in `readRawStream`
+ * comes back as `RuntimeException("java.lang.OutOfMemoryError: …")`) or a native `malloc (…) failed`.
+ */
+internal fun isOutOfMemoryFailure(t: Throwable): Boolean {
+    if (t is OutOfMemoryError) return true
+    val msg = t.message ?: return false
+    return msg.contains("OutOfMemoryError") || msg.startsWith("malloc (")
+}
+
+/** MuPDF messages of page-tree failures (typically during `graftPage` or `loadPage` of a damaged PDF). */
+private val PAGE_TREE_FAILURES = listOf(
+    "malformed page tree",
+    "cycle in page tree",
+    "cannot find page",
+    "source object number out of range",
+)
+
+/**
+ * Error kind for a throwable that escaped an operation (security audit SA-4): out of memory
+ * ([isOutOfMemoryFailure]) → [PdfError.OutOfMemory]; an image that cannot be decoded →
+ * [PdfError.UnsupportedImage]; an image over [ImageLimits] → [PdfError.ImageTooLarge]; a broken page
+ * tree → [PdfError.Corrupt]; an unusable input PDF → its [PdfInputException.error]; anything else →
+ * [PdfError.Io].
+ */
+internal fun classifyFailure(t: Throwable): PdfError = when {
+    isOutOfMemoryFailure(t) -> PdfError.OutOfMemory
+    t is ImageTooLargeException -> PdfError.ImageTooLarge
+    t is UnsupportedImageFileException -> PdfError.UnsupportedImage
+    t is PdfInputException -> t.error
+    t is RuntimeException && PAGE_TREE_FAILURES.any { t.message.orEmpty().contains(it) } -> PdfError.Corrupt
+    else -> PdfError.Io(t)
 }

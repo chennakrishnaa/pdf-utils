@@ -65,8 +65,10 @@ class MergeOp {
                 }
             }
             if (job.isCancelled()) return@toResult PdfResult.Err(PdfError.Cancelled)
+            val pages = dst.countPages()
             dst.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
-            PdfResult.Ok(pages = dst.countPages(), bytes = out.length())
+            PdfInputs.validateOutput(out, pages, job)?.let { return@toResult it }
+            PdfResult.Ok(pages = pages, bytes = out.length())
         } finally {
             dst.destroy()
         }

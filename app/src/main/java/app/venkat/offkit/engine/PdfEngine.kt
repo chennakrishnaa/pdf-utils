@@ -41,7 +41,8 @@ interface PdfEngine {
      * A whole document made by [imagesToPdf] is about
      * `PDF_DOCUMENT_OVERHEAD_BYTES + sum(image bytes + PDF_PAGE_OVERHEAD_BYTES)`, using
      * [PdfEstimate.Ok.original] for `compression = null` or [PdfEstimate.Ok.byLevel] for a level.
-     * Unreadable, truncated or unsupported image: `Err(UnsupportedImage)`; out of memory:
+     * Unreadable, truncated or unsupported image: `Err(UnsupportedImage)`; declared size over the
+     * limits: `Err(ImageTooLarge)` (decided from the header, nothing is decoded); out of memory:
      * `Err(OutOfMemory)`; anything else: `Err(Io)`.
      */
     fun estimateImage(image: File): PdfEstimate
@@ -142,8 +143,17 @@ sealed interface PdfError {
     /** An input image is in a format or state the engine cannot decode. */
     data object UnsupportedImage : PdfError
 
-    /** The engine ran out of memory. */
+    /**
+     * The engine ran out of memory, or a job exceeds the engine's size limits (more than 500 images,
+     * an input PDF over 1 GiB).
+     */
     data object OutOfMemory : PdfError
+
+    /**
+     * An input image declares more pixels than this device can safely decode (see
+     * `ImageLimits`); it was rejected from its header, before any decoding.
+     */
+    data object ImageTooLarge : PdfError
 
     /** The job was cancelled through [JobControl.isCancelled]. */
     data object Cancelled : PdfError
