@@ -250,3 +250,32 @@ No hs_err file, no JVM death, no escaped exception and no `Err` with output left
 - Type3-glyph images: covered by reading only (Compress enumerates every image object by number, as the Form-XObject case shows).
 - `/Length` lying low, indirect or absent: read only.
 - JBIG2 bombs: not built (skipped by filter name; `JBIG2Decode` has no abbreviation).
+
+## Second re-check (SR2)
+
+Re-checker: SR2, independent of the fix authors. Code at `main` `eda2751` (merged ff-only). Work in progress: sections are filled in as they are run.
+
+### Status
+- SR-1 (Compress filter gate): pending
+- SA-11 (deep-object guard): pending
+
+### A. Compress filter gate attempts
+pending
+
+### B. Deep-object guard attempts
+pending
+
+### C. On-device (emulator)
+pending
+
+### D. Re-fuzz (merge, append)
+pending
+
+### New findings (SR2)
+pending
+
+### Verdict (SR2)
+pending
+
+### Not covered (SR2)
+pending
