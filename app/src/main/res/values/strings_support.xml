@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="support_title">Support Offkit</string>
+    <string name="support_intro">Offkit is free, open source and works offline. Here is how you can help.</string>
+    <string name="support_rate_title">Rate on Google Play</string>
+    <string name="support_rate_detail">A rating helps other people find the app</string>
+    <string name="support_share_title">Share Offkit</string>
+    <string name="support_share_detail">Tell a friend who works with PDFs</string>
+    <string name="support_share_chooser">Share Offkit</string>
+    <string name="support_share_message">Offkit: a free, offline PDF toolkit for Android. %1$s</string>
+    <string name="support_issues_title">Report a problem or suggest a feature</string>
+    <string name="support_issues_detail">Opens the issue tracker on GitHub</string>
+    <string name="support_source_title">Source code</string>
+    <string name="support_source_detail">Read or improve the code on GitHub</string>
+    <string name="support_email_title">Email the developer</string>
+    <string name="support_email_detail">Questions, ideas or feedback</string>
+    <string name="support_email_subject">Offkit %1$s</string>
+    <string name="support_donate_title">Donate</string>
+    <string name="support_donate_detail">Support the development of the app</string>
+    <string name="support_no_email">No email app found on this device</string>
+    <string name="support_no_share">No app found to share with</string>
+    <string name="support_more_header">More from the developer</string>
+    <string name="support_promoted">Promoted</string>
+    <string name="support_card_text">Enjoying Offkit? Support the app</string>
+    <string name="support_hide">Hide</string>
+    <string name="support_issues_url" translatable="false">https://github.com/chennakrishnaa/pdf-utils/issues</string>
+    <string name="support_email_address" translatable="false">chennakrishnaa@yahoo.com</string>
+    <!-- Donation link; leave empty to hide the Donate row. -->
+    <string name="support_donate_url" translatable="false"></string>
+</resources>
