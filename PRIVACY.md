@@ -31,6 +31,8 @@ The Recent files list on the home screen shows files you saved with the app. For
 
 If you open or share a file from the list, Android hands it to another app on your device.
 
+The app also remembers on your device that you have seen the introduction; this is a single yes/no setting, contains nothing about you or your files, is excluded from backup, and is removed by clearing the app's data or uninstalling.
+
 PHOTO METADATA
 --------------
 
