@@ -41,17 +41,17 @@ val releaseSigning: Map<String, String>? = run {
 }
 
 android {
-    namespace = "com.offlinepdf.utils"
+    namespace = "app.venkat.paperpixel"
     compileSdk {
         version = release(37) { minorApiLevel = 1 }
     }
 
     defaultConfig {
-        applicationId = "com.offlinepdf.utils"
+        applicationId = "app.venkat.paperpixel"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

@@ -17,5 +17,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PDFUtils"
+rootProject.name = "PaperPixel"
 include(":app")
