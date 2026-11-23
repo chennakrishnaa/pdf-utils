@@ -2,6 +2,11 @@
 # On-device smoke test: boots the `pdfutils-smoke` AVD headless, runs the instrumented tests
 # (./gradlew connectedDebugAndroidTest) against it, and always shuts the emulator down.
 # Prints "SMOKE OK" on success, "SMOKE FAIL: <reason>" and exits non-zero otherwise.
+# Any installed copy of the app and its test APK is uninstalled first (a differently signed copy,
+# e.g. left by release-smoke.sh, would otherwise make the install fail while Gradle still reports
+# success), and the connected-test result XMLs must show at least one test and no failures/errors.
+#
+# `emulator-smoke.sh --check-results DIR` only runs that result check against DIR (no emulator).
 #
 # Environment overrides: ANDROID_HOME, JAVA_HOME, AVD_NAME (default pdfutils-smoke),
 # BOOT_TIMEOUT seconds (default 300), EMULATOR_PORT (default 5584).
@@ -23,6 +28,8 @@ PORT="${EMULATOR_PORT:-5584}"
 SERIAL="emulator-$PORT"
 EMULATOR="$ANDROID_HOME/emulator/emulator"
 ADB="$ANDROID_HOME/platform-tools/adb"
+AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
+RESULTS_DIR="$ROOT/app/build/outputs/androidTest-results/connected"
 LOG="$(mktemp -t pdfutils-emulator.XXXXXX.log)"
 EMU_PID=""
 
@@ -52,7 +59,36 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-for tool in "$EMULATOR" "$ADB"; do
+# Sums tests/failures/errors over the JUnit XMLs under $1; fails unless tests > 0 and no
+# failures or errors. Prints "tests=N failures=F errors=E".
+check_results() {
+    local dir="$1" counts tests failures errors
+    command -v python3 >/dev/null || fail "python3 is required to parse the test results"
+    counts="$(python3 -I - "$dir" <<'PY'
+import pathlib, sys
+import xml.etree.ElementTree as ET
+t = f = e = 0
+for p in sorted(pathlib.Path(sys.argv[1]).rglob("*.xml")):
+    root = ET.parse(p).getroot()
+    suites = [root] if root.tag == "testsuite" else root.iter("testsuite")
+    for s in suites:
+        t += int(s.get("tests", 0)); f += int(s.get("failures", 0)); e += int(s.get("errors", 0))
+print(t, f, e)
+PY
+)" || fail "could not parse test result XMLs under $dir"
+    read -r tests failures errors <<<"$counts"
+    echo "tests=$tests failures=$failures errors=$errors"
+    (( tests > 0 )) || fail "no instrumented tests ran (no results under $dir)"
+    (( failures == 0 && errors == 0 )) || fail "instrumented tests reported $failures failure(s), $errors error(s)"
+}
+
+if [[ "${1:-}" == "--check-results" ]]; then
+    [[ -n "${2:-}" ]] || fail "usage: $0 --check-results DIR"
+    check_results "$2"
+    exit 0
+fi
+
+for tool in "$EMULATOR" "$ADB" "$AAPT2"; do
     [[ -x "$tool" ]] || fail "required tool not found: $tool (install with: sdkmanager emulator platform-tools)"
 done
 
@@ -105,8 +141,26 @@ if [[ "$booted" != "1" ]]; then
 fi
 echo "==> Booted in $(( $(date +%s) - START ))s"
 
+echo "==> ./gradlew assembleDebug assembleDebugAndroidTest"
+./gradlew --console=plain assembleDebug assembleDebugAndroidTest || fail "building the debug APKs failed"
+for apk_dir in app/build/outputs/apk/debug app/build/outputs/apk/androidTest/debug; do
+    shopt -s nullglob
+    apks=("$apk_dir"/*.apk)
+    shopt -u nullglob
+    (( ${#apks[@]} > 0 )) || fail "no APK in $apk_dir"
+    for apk in "${apks[@]}"; do
+        pkg="$("$AAPT2" dump packagename "$apk")" && [[ -n "$pkg" ]] || fail "aapt2 dump packagename failed for $apk"
+        echo "==> Uninstalling any installed $pkg"
+        out="$("$ADB" -s "$SERIAL" uninstall "$pkg" 2>&1 | tr -d '\r' || true)"
+        echo "    ${out:-<no output>}"
+    done
+done
+
+rm -rf "$RESULTS_DIR"
+
 echo "==> ./gradlew connectedDebugAndroidTest"
 ANDROID_SERIAL="$SERIAL" ./gradlew --console=plain connectedDebugAndroidTest \
     || fail "instrumented tests failed (report: app/build/reports/androidTests/connected/debug/index.html)"
 
+check_results "$RESULTS_DIR"
 echo "SMOKE OK"

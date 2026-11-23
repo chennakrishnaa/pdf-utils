@@ -31,6 +31,7 @@ ADB="$ANDROID_HOME/platform-tools/adb"
 AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
 LOG="$(mktemp -t pdfutils-release-emulator.XXXXXX.log)"
 EMU_PID=""
+INSTALLED=""
 
 fail() {
     echo "RELEASE SMOKE FAIL: $*" >&2
@@ -40,6 +41,14 @@ fail() {
 cleanup() {
     local status=$?
     if [[ -n "$EMU_PID" ]]; then
+        # Do not leave the release-signed copy behind: emulator-smoke.sh's debug install would clash.
+        if [[ -n "$INSTALLED" ]]; then
+            if timeout 60 "$ADB" -s "$SERIAL" uninstall "$APP_ID" >/dev/null 2>&1; then
+                echo "==> Uninstalled $APP_ID"
+            else
+                echo "==> Could not uninstall $APP_ID (may not be installed)" >&2
+            fi
+        fi
         "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
         for _ in $(seq 1 20); do
             kill -0 "$EMU_PID" 2>/dev/null || break
@@ -124,6 +133,7 @@ adb_s() { "$ADB" -s "$SERIAL" "$@"; }
 echo "==> Uninstalling any installed $APP_ID"
 adb_s uninstall "$APP_ID" >/dev/null 2>&1 || true
 echo "==> Installing ${RELEASE_APK##*/}"
+INSTALLED=1
 adb_s install "$RELEASE_APK" || fail "adb install failed"
 
 abi="$(adb_s shell dumpsys package "$APP_ID" | tr -d '\r' | sed -n 's/^ *primaryCpuAbi=//p' | head -n1)"
