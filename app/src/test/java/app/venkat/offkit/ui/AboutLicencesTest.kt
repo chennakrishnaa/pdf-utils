@@ -56,7 +56,7 @@ class AboutLicencesTest {
         rule.onNodeWithTag("action_about").performClick()
         rule.waitForIdle()
         rule.onNodeWithTag(tag).performScrollTo().performClick()
-        CoreTestSupport.idleUntil(message = "licence text loaded") {
+        CoreTestSupport.idleUntil(rule, message = "licence text loaded") {
             rule.onAllNodesWithTag(TAG_LICENCE_TEXT).fetchSemanticsNodes().isNotEmpty()
         }
     }
