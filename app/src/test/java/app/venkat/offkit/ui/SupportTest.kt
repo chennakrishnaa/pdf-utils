@@ -94,7 +94,7 @@ class SupportTest {
     private fun textExists(text: String) =
         rule.onAllNodesWithText(text, substring = true, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
 
-    private fun waitFor(tag: String) = CoreTestSupport.idleUntil(message = tag) { exists(tag) }
+    private fun waitFor(tag: String) = CoreTestSupport.idleUntil(rule, message = tag) { exists(tag) }
 
     /** Unclipped top of [tag] in the root (boundsInRoot is clipped to the scroll viewport). */
     private fun top(tag: String) = rule.onNodeWithTag(tag).fetchSemanticsNode().positionInRoot.y
@@ -116,7 +116,7 @@ class SupportTest {
         drainStarted()
         rule.onNodeWithTag(tag).performScrollTo().performClick()
         var started: Intent? = null
-        CoreTestSupport.idleUntil(message = "intent from $tag") {
+        CoreTestSupport.idleUntil(rule, message = "intent from $tag") {
             started = shadowOf(rule.activity).nextStartedActivity
             started != null
         }
@@ -155,7 +155,7 @@ class SupportTest {
     fun hidingCardPersistsAndAboutStillOpensSupport() {
         waitFor(TAG_SUPPORT_CARD)
         rule.onNodeWithTag(TAG_SUPPORT_CARD_HIDE).performScrollTo().performClick()
-        CoreTestSupport.idleUntil(message = "card gone") { !exists(TAG_SUPPORT_CARD) }
+        CoreTestSupport.idleUntil(rule, message = "card gone") { !exists(TAG_SUPPORT_CARD) }
         assertTrue(SupportStore(rule.activity).cardHidden)
 
         rule.activityRule.scenario.recreate()

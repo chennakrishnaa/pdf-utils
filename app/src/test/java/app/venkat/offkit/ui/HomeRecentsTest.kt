@@ -35,7 +35,10 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -72,9 +75,9 @@ class HomeRecentsTest {
 
     private fun exists(tag: String) = rule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
 
-    private fun waitFor(tag: String) = CoreTestSupport.idleUntil(message = tag) { exists(tag) }
+    private fun waitFor(tag: String) = CoreTestSupport.idleUntil(rule, message = tag) { exists(tag) }
 
-    private fun waitGone(tag: String) = CoreTestSupport.idleUntil(message = "$tag gone") { !exists(tag) }
+    private fun waitGone(tag: String) = CoreTestSupport.idleUntil(rule, message = "$tag gone") { !exists(tag) }
 
     private fun addTwo(): Pair<RecentFile, RecentFile> {
         val older = RecentFile(fileUri("older.pdf"), "older.pdf", 2048, System.currentTimeMillis() - 5 * 60_000, "merge")
@@ -130,7 +133,7 @@ class HomeRecentsTest {
         val (older, _) = addTwo()
         waitFor("recent_row_1")
         rule.onNodeWithTag("recent_row_0_remove").performScrollTo().performClick()
-        CoreTestSupport.idleUntil { store.recents.value.size == 1 }
+        CoreTestSupport.idleUntil(rule) { store.recents.value.size == 1 }
         waitGone("recent_row_1")
         assertEquals(listOf(older.uri), store.recents.value.map { it.uri })
         rule.onNodeWithTag("recent_row_0").assertTextContains("older.pdf")
@@ -151,7 +154,7 @@ class HomeRecentsTest {
 
         rule.onNodeWithTag("recent_clear").performScrollTo().performClick()
         rule.onNodeWithTag("recent_clear_confirm").performClick()
-        CoreTestSupport.idleUntil { store.recents.value.isEmpty() }
+        CoreTestSupport.idleUntil(rule) { store.recents.value.isEmpty() }
         waitFor("recent_empty")
         rule.onNodeWithTag("recent_row_0").assertDoesNotExist()
     }
@@ -170,7 +173,7 @@ class HomeRecentsTest {
         while (shadow.nextStartedActivity != null) Unit // drain
         rule.onNodeWithTag("recent_row_0").performScrollTo().performClick()
         var started: Intent? = null
-        CoreTestSupport.idleUntil(message = "view intent") {
+        CoreTestSupport.idleUntil(rule, message = "view intent") {
             started = shadow.nextStartedActivity
             started != null
         }
@@ -180,6 +183,39 @@ class HomeRecentsTest {
         assertEquals("application/pdf", intent.type)
         assertTrue(intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
         assertEquals(1, store.recents.value.size)
+    }
+
+    /**
+     * Pins the cause of the old flake: the availability check runs on `Dispatchers.IO` and the
+     * tap handler resumes on the composition scope. When the check finishes after
+     * `performClick` returns (a loaded machine), only a wait that drives the Compose test clock
+     * sees the intent; a looper-only wait timed out however long it was.
+     */
+    @Test
+    fun viewIntentStartsWhenAvailabilityCheckFinishesAfterTheTap() {
+        waitFor("recent_empty")
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val gate = CountDownLatch(1)
+        val uri = Uri.parse("content://app.venkat.offkit.test/${System.nanoTime()}/slow.pdf")
+        shadowOf(app.contentResolver).registerInputStreamSupplier(uri) {
+            gate.await(30, TimeUnit.SECONDS)
+            ByteArrayInputStream("%PDF-1.4".toByteArray())
+        }
+        store.add(RecentFile(uri, "slow.pdf", 8, System.currentTimeMillis(), "merge"))
+        waitFor("recent_row_0")
+        val shadow = shadowOf(rule.activity)
+        while (shadow.nextStartedActivity != null) Unit
+        try {
+            rule.onNodeWithTag("recent_row_0").performScrollTo().performClick()
+        } finally {
+            gate.countDown()
+        }
+        var started: Intent? = null
+        CoreTestSupport.idleUntil(rule, message = "view intent after slow check") {
+            started = shadow.nextStartedActivity
+            started != null
+        }
+        assertEquals(uri, started!!.data)
     }
 
     @Test
@@ -192,10 +228,10 @@ class HomeRecentsTest {
         while (shadow.nextStartedActivity != null) Unit
         rule.onNodeWithTag("recent_row_0").performScrollTo().performClick()
         val message = rule.activity.getString(R.string.recent_unavailable)
-        CoreTestSupport.idleUntil(message = "snackbar") {
+        CoreTestSupport.idleUntil(rule, message = "snackbar") {
             rule.onAllNodesWithText(message).fetchSemanticsNodes().isNotEmpty()
         }
-        CoreTestSupport.idleUntil { store.recents.value.isEmpty() }
+        CoreTestSupport.idleUntil(rule) { store.recents.value.isEmpty() }
         waitFor("recent_empty")
         assertNull(shadow.nextStartedActivity)
     }
@@ -209,7 +245,7 @@ class HomeRecentsTest {
         while (shadow.nextStartedActivity != null) Unit
         rule.onNodeWithTag("recent_row_0_share").performScrollTo().performClick()
         var started: Intent? = null
-        CoreTestSupport.idleUntil(message = "share intent") {
+        CoreTestSupport.idleUntil(rule, message = "share intent") {
             started = shadow.nextStartedActivity
             started != null
         }
