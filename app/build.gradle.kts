@@ -1,6 +1,43 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+// Release signing: read from <repo>/keystore.properties (storeFile, storePassword, keyAlias,
+// keyPassword) or, if that file is absent, from the PDFUTILS_* environment variables.
+// With neither, the release build stays unsigned (app-release-unsigned.apk), as before.
+// Values are never printed. See RELEASING.md.
+val releaseSigning: Map<String, String>? = run {
+    val keys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    val propsFile = rootProject.file("keystore.properties")
+    val source: String
+    val values: Map<String, String?>
+    if (propsFile.isFile) {
+        val props = Properties().apply { propsFile.inputStream().use { load(it) } }
+        source = "keystore.properties"
+        values = keys.associateWith { props.getProperty(it)?.trim()?.takeIf(String::isNotEmpty) }
+    } else {
+        val env = mapOf(
+            "storeFile" to "PDFUTILS_STORE_FILE",
+            "storePassword" to "PDFUTILS_STORE_PASSWORD",
+            "keyAlias" to "PDFUTILS_KEY_ALIAS",
+            "keyPassword" to "PDFUTILS_KEY_PASSWORD",
+        )
+        source = "environment (PDFUTILS_*)"
+        values = keys.associateWith { k ->
+            providers.environmentVariable(env.getValue(k)).orNull?.takeIf(String::isNotEmpty)
+        }
+    }
+    val missing = values.filterValues { it == null }.keys
+    when {
+        missing.size == keys.size -> null
+        missing.isNotEmpty() -> throw GradleException(
+            "Incomplete release signing config from $source: missing $missing (see RELEASING.md)",
+        )
+        else -> values.mapValues { it.value!! }
+    }
 }
 
 android {
@@ -21,8 +58,24 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseSigning != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseSigning.getValue("storeFile"))
+                storePassword = releaseSigning.getValue("storePassword")
+                keyAlias = releaseSigning.getValue("keyAlias")
+                keyPassword = releaseSigning.getValue("keyPassword")
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigning != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

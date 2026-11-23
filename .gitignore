@@ -9,5 +9,9 @@ captures/
 *.aab
 *.jks
 *.keystore
+*.p12
+# Release signing secrets and release binaries (see RELEASING.md)
+keystore.properties
+dist/release/
 .claude/worktrees/
 .claude/settings.local.json
