@@ -24,7 +24,9 @@ internal object PdfInputs {
      * - [PdfError.Corrupt] when it cannot be parsed, is not a PDF, or has no pages;
      * - [PdfError.Io] when the file cannot be opened (missing, unreadable);
      * - [PdfError.OutOfMemory] when it is larger than [ImageLimits.MAX_INPUT_PDF_BYTES] (checked
-     *   before MuPDF opens it; the user is told "Not enough memory. Try fewer or smaller files.").
+     *   before MuPDF opens it; the user is told "Not enough memory. Try fewer or smaller files.")
+     *   or has more than [ObjectGraph.MAX_OBJECTS] objects;
+     * - [PdfError.Corrupt] also when its objects nest deeper than [ObjectGraph.MAX_DEPTH] (SA-11).
      * On failure nothing opened is left alive.
      *
      * MuPDF picks the document handler by file name extension. A file whose name does not end in
@@ -48,6 +50,14 @@ internal object PdfInputs {
                 throw PdfInputException(PdfError.Corrupt, e)
             }
             if (pages <= 0) throw PdfInputException(PdfError.Corrupt)
+            // SA-11: refuse object graphs deep enough to overflow MuPDF's recursive save/graft.
+            try {
+                ObjectGraph.check(pdf)
+            } catch (e: PdfInputException) {
+                throw e
+            } catch (e: RuntimeException) {
+                throw PdfInputException(PdfError.Corrupt, e)
+            }
             return pdf
         } catch (t: Throwable) {
             doc.destroy()
