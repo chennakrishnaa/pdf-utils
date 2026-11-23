@@ -1,6 +1,7 @@
 package app.venkat.offkit.ui
 
 import android.app.Application
+import android.provider.Settings
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
@@ -9,6 +10,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -30,6 +32,7 @@ import app.venkat.offkit.ui.onboarding.TAG_ONBOARDING_NEXT
 import app.venkat.offkit.ui.onboarding.TAG_ONBOARDING_ROOT
 import app.venkat.offkit.ui.onboarding.TAG_ONBOARDING_SKIP
 import app.venkat.offkit.ui.onboarding.onboardingPageTag
+import app.venkat.offkit.ui.onboarding.onboardingReducedMotion
 import app.venkat.offkit.ui.onboarding.onboardingTitleTag
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -117,6 +120,21 @@ class OnboardingTest {
         assertOnPage(2)
     }
 
+    /** Page 2 shows the four tools as a grid; every tool name is on screen (scrolling the sheet if needed). */
+    @Test
+    fun toolGridShowsAllFourToolNames() {
+        next()
+        assertOnPage(2)
+        for (name in listOf(
+            R.string.tool_images_to_pdf_title,
+            R.string.tool_compress_title,
+            R.string.tool_merge_title,
+            R.string.tool_add_images_title,
+        )) {
+            rule.onNodeWithText(rule.activity.getString(name)).performScrollTo().assertIsDisplayed()
+        }
+    }
+
     @Test
     fun skipFromFirstPageOpensHomeAndSetsFlag() {
         rule.onNodeWithTag(TAG_ONBOARDING_SKIP).performClick()
@@ -187,6 +205,64 @@ class OnboardingTest {
     }
 }
 
+/** Animations turned off in system settings: static illustrations, plain paging, same behaviour. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class OnboardingReducedMotionTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val firstRun = OnboardingSeenRule(seen = false)
+
+    @get:Rule(order = 0)
+    val noAnimations = object : ExternalResource() {
+        private val resolver get() = ApplicationProvider.getApplicationContext<Application>().contentResolver
+
+        override fun before() {
+            Settings.Global.putFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
+        }
+
+        override fun after() {
+            Settings.Global.putFloat(resolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+        }
+    }
+
+    @get:Rule(order = 1)
+    val rule = createAndroidComposeRule<MainActivity>()
+
+    private fun assertOnPage(number: Int) {
+        rule.onNodeWithTag(onboardingPageTag(number)).assertIsDisplayed()
+        rule.onNodeWithTag(onboardingTitleTag(number)).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_ONBOARDING_INDICATOR)
+            .assertContentDescriptionEquals(rule.activity.getString(R.string.onboarding_page_of, number, ONBOARDING_PAGE_COUNT))
+    }
+
+    private fun next() {
+        rule.onNodeWithTag(TAG_ONBOARDING_NEXT).performClick()
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun rendersAndPagesWithAnimationsOff() {
+        assertTrue("reduced motion detected", onboardingReducedMotion(rule.activity))
+        assertOnPage(1)
+        rule.onNodeWithTag(onboardingPageTag(1)).performTouchInput { swipeLeft() }
+        rule.waitForIdle()
+        assertOnPage(2)
+        next()
+        assertOnPage(3)
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+        assertOnPage(2)
+        next()
+        next()
+        assertOnPage(4)
+        assertFalse(rule.onAllNodesWithTag(TAG_ONBOARDING_SKIP).fetchSemanticsNodes().isNotEmpty())
+        rule.onNodeWithTag(TAG_ONBOARDING_DONE).assertIsDisplayed().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("tool_images_to_pdf").performScrollTo().assertIsDisplayed()
+        assertTrue(OnboardingStore(ApplicationProvider.getApplicationContext()).seen)
+    }
+}
+
 /** Large text on a small phone: every page's title and the primary button stay reachable. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], qualifiers = "w360dp-h640dp")
@@ -211,6 +287,12 @@ class OnboardingLargeFontTest {
             rule.onNodeWithTag(onboardingTitleTag(page)).performScrollTo().assertIsDisplayed()
             val button = if (page < ONBOARDING_PAGE_COUNT) TAG_ONBOARDING_NEXT else TAG_ONBOARDING_DONE
             rule.onNodeWithTag(button).assertIsDisplayed()
+            rule.onNodeWithTag(TAG_ONBOARDING_INDICATOR).assertIsDisplayed()
+            if (page == 2) {
+                for (name in listOf(R.string.tool_images_to_pdf_title, R.string.tool_add_images_title)) {
+                    rule.onNodeWithText(rule.activity.getString(name)).performScrollTo().assertIsDisplayed()
+                }
+            }
             if (page < ONBOARDING_PAGE_COUNT) {
                 rule.onNodeWithTag(TAG_ONBOARDING_SKIP).assertIsDisplayed()
                 rule.onNodeWithTag(button).performClick()
