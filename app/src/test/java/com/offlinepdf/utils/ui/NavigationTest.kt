@@ -1,6 +1,8 @@
 package com.offlinepdf.utils.ui
 
 import android.app.Application
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -12,11 +14,13 @@ import com.offlinepdf.utils.FakePdfEngine
 import com.offlinepdf.utils.MainActivity
 import com.offlinepdf.utils.PdfUtilApp
 import com.offlinepdf.utils.R
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -80,11 +84,24 @@ class NavigationTest {
         rule.onNodeWithTag("about_mupdf").performScrollTo()
             .assertTextEquals(a.getString(R.string.about_mupdf))
         rule.onNodeWithTag("about_source_url").performScrollTo()
-            .assertTextEquals("https://example.invalid/pdf-utils-source")
+            .assertTextEquals("https://github.com/chennakrishnaa/pdf-utils")
         rule.onNodeWithTag("about_version").performScrollTo()
             .assertTextEquals(a.getString(R.string.about_version, "0.1.0"))
         rule.onNodeWithTag("action_back").performClick()
         rule.waitForIdle()
         rule.onNodeWithTag("tool_images_to_pdf").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun tappingSourceUrlOpensItWithActionView() {
+        rule.onNodeWithTag("action_about").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("about_source_url").performScrollTo().performClick()
+        rule.waitForIdle()
+        val started = shadowOf(rule.activity).nextStartedActivity
+        assertEquals(Intent.ACTION_VIEW, started.action)
+        assertEquals(Uri.parse("https://github.com/chennakrishnaa/pdf-utils"), started.data)
+        // Still on About: nothing crashed or navigated.
+        rule.onNodeWithTag("about_source_url").assertIsDisplayed()
     }
 }

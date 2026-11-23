@@ -49,6 +49,7 @@
     <string name="about_license_notice">This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. You may redistribute and modify it under the terms of the GNU Affero General Public License, version 3. If you distribute this app or a modified version of it, you must make the corresponding source code available under the same licence.</string>
     <string name="about_mupdf">PDF processing by MuPDF, © Artifex Software, Inc., licensed under AGPL v3</string>
     <string name="about_source_header">Source code</string>
+    <string name="about_no_browser">No app on this device can open web links.</string>
     <!-- TODO(owner): replace with the real public source URL before distribution -->
-    <string name="source_code_url" translatable="false">https://example.invalid/pdf-utils-source</string>
+    <string name="source_code_url" translatable="false">https://github.com/chennakrishnaa/pdf-utils</string>
 </resources>

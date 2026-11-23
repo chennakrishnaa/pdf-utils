@@ -1,6 +1,11 @@
 package com.offlinepdf.utils.ui.about
 
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.compose.foundation.clickable
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.compose.foundation.layout.Arrangement
@@ -8,7 +13,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -18,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.offlinepdf.utils.R
 import com.offlinepdf.utils.ui.components.SectionHeader
@@ -71,15 +76,31 @@ fun AboutScreen(onBack: () -> Unit) {
             )
 
             SectionHeader(stringResource(R.string.about_source_header))
-            SelectionContainer {
-                Text(
-                    text = stringResource(R.string.source_code_url),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.testTag(TAG_ABOUT_SOURCE_URL),
-                )
-            }
+            val sourceUrl = stringResource(R.string.source_code_url)
+            Text(
+                text = sourceUrl,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .testTag(TAG_ABOUT_SOURCE_URL)
+                    .clickable(role = Role.Button) { openLink(context, sourceUrl) },
+            )
         }
+    }
+}
+
+/**
+ * Opens [url] in whatever app handles it (a plain `ACTION_VIEW`; the app itself never goes
+ * online). Shows a short message instead of crashing when no app can open links.
+ */
+internal fun openLink(context: Context, url: String) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, R.string.about_no_browser, Toast.LENGTH_SHORT).show()
+    } catch (_: SecurityException) {
+        Toast.makeText(context, R.string.about_no_browser, Toast.LENGTH_SHORT).show()
     }
 }
 
