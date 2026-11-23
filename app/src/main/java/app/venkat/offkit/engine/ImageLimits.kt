@@ -33,7 +33,10 @@ class ImageTooLargeException(val file: File) : RuntimeException("image too large
  * Peak resident memory (host x86_64, MuPDF 1.28.5, -Xmx512m, flat-colour images right at the cap,
  * worst of `estimate` and `imagesToPdf` at every level): 50 MP progressive JPEG 238 MB, 250 MP
  * baseline JPEG 159 MB; 8-bit RGB PNG: 12 MP 213 MB, 30 MP 466 MB, 50 MP 690 MB (hence the PNG
- * limits, which keep every PNG sample format at the cap under ~400 MB).
+ * limits). PNGs right at the PNG limits, peak RSS of `estimate` / `imagesToPdf` Original / HIGH
+ * (`estimate` is the worst, 1.2-1.9 s): 20 MP 8-bit RGB 339/192/260 MB, 20 MP interlaced 8-bit
+ * RGB 338/191/261 MB, 20 MP 8-bit palette 307/191/298 MB, 15 MP 8-bit RGBA 327/191/242 MB,
+ * 10 MP 16-bit RGB 234/161/168 MB, 7.5 MP 16-bit RGBA 251/163/175 MB: all under ~400 MB.
  */
 internal object ImageLimits {
     /** Largest accepted width or height, in pixels. */
