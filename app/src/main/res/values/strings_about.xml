@@ -5,4 +5,10 @@
     <string name="about_notices_row">Open-source licences</string>
     <string name="about_notices_detail">Libraries, fonts and icons used in this app</string>
     <string name="about_notices_title">Open-source licences</string>
+    <string name="about_no_data">No data collected. Works offline.</string>
+    <string name="about_privacy_header">Privacy</string>
+    <string name="about_privacy_row">Privacy policy</string>
+    <string name="about_privacy_detail">Read it here, without going online</string>
+    <string name="about_privacy_title">Privacy policy</string>
+    <string name="privacy_policy_url" translatable="false">https://github.com/chennakrishnaa/pdf-utils/blob/main/PRIVACY.md</string>
 </resources>

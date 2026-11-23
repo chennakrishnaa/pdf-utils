@@ -34,7 +34,7 @@ If you open or share a file from the list, Android hands it to the app you pick.
 5. PHOTO METADATA
 -----------------
 
-When the app places images into a PDF, it removes photo metadata such as location and camera details. Unusual or damaged image files may still keep some embedded metadata. PDFs you give to Merge or Compress are not changed in this respect.
+When the app places images into a PDF, it removes photo metadata such as location and camera details. Unusual or damaged image files may still keep some embedded metadata. Metadata already inside a PDF you give the app (to Merge, Compress or Add images) may remain in the result.
 
 6. LINKS
 --------

@@ -32,9 +32,17 @@ import app.venkat.filetools.ui.components.TAG_LEAVE_STAY
 import app.venkat.filetools.ui.components.ToolScaffold
 import app.venkat.filetools.ui.components.hasUnsavedWork
 import app.venkat.filetools.ui.components.formatBytes
+import app.venkat.filetools.ui.components.launchOrExplain
+import app.venkat.filetools.ui.components.rememberPdfPicker
+import android.content.ActivityNotFoundException
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowToast
 import app.venkat.filetools.ui.components.pdfErrorMessage
 import app.venkat.filetools.ui.theme.PdfUtilsTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -314,6 +322,33 @@ class ComponentsTest {
         assertEquals("999 B", formatBytes(999))
         assertEquals("1.5 KB", formatBytes(1536))
         assertEquals("5.0 MB", formatBytes(5L * 1024 * 1024))
+    }
+
+    @Test
+    fun launchOrExplainShowsMessageInsteadOfCrashingWhenNoPickerExists() {
+        val msg = rule.activity.getString(R.string.core_no_picker)
+        assertEquals("No app on this device can open the file picker.", msg)
+        var ran = false
+        rule.runOnUiThread {
+            assertTrue(launchOrExplain(rule.activity) { ran = true })
+            assertTrue(ran)
+            assertFalse(launchOrExplain(rule.activity) { throw ActivityNotFoundException("no DocumentsUI") })
+        }
+        assertEquals(msg, ShadowToast.getTextOfLatestToast())
+    }
+
+    @Test
+    fun pdfPickerWithoutHandlerDoesNotCrash() {
+        // Make Robolectric throw ActivityNotFoundException for intents nobody handles (OPEN_DOCUMENT).
+        shadowOf(rule.activity.application).checkActivities(true)
+        show {
+            val pick = rememberPdfPicker(multiple = true) { }
+            Button(onClick = pick, modifier = Modifier.testTag("pick")) { Text("Pick") }
+        }
+        rule.onNodeWithTag("pick").performClick()
+        rule.waitForIdle()
+        assertEquals(rule.activity.getString(R.string.core_no_picker), ShadowToast.getTextOfLatestToast())
+        rule.onNodeWithTag("pick").assertIsDisplayed()
     }
 }
 

@@ -1,6 +1,9 @@
 package app.venkat.filetools.ui.components
 
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -8,6 +11,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalContext
+import app.venkat.filetools.R
 
 /** MIME type of PDF documents. */
 const val MIME_PDF = "application/pdf"
@@ -16,7 +21,21 @@ const val MIME_PDF = "application/pdf"
  * All helpers use the Storage Access Framework / photo picker with transient grants only:
  * the returned Uris are readable for as long as the activity lives, and nothing persists them.
  * If the user cancels a picker, onPicked is NOT called (a pick never yields an empty list).
+ * If the device has no app to handle a picker, a short message is shown instead of crashing.
  */
+
+/**
+ * Runs [launch] (an `ActivityResultLauncher.launch` call). If no activity can handle the
+ * request ([ActivityNotFoundException]), shows a short "no file picker" Toast instead of
+ * crashing. Returns true if [launch] completed normally.
+ */
+internal fun launchOrExplain(context: Context, launch: () -> Unit): Boolean = try {
+    launch()
+    true
+} catch (_: ActivityNotFoundException) {
+    Toast.makeText(context, R.string.core_no_picker, Toast.LENGTH_SHORT).show()
+    false
+}
 
 /**
  * Returns a function that opens the system document picker for PDFs
@@ -32,9 +51,12 @@ fun rememberPdfPicker(multiple: Boolean, onPicked: (List<Uri>) -> Unit): () -> U
     val many = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) callback(uris)
     }
-    return remember(multiple, single, many) {
+    val context = LocalContext.current
+    return remember(multiple, single, many, context) {
         {
-            if (multiple) many.launch(arrayOf(MIME_PDF)) else single.launch(arrayOf(MIME_PDF))
+            launchOrExplain(context) {
+                if (multiple) many.launch(arrayOf(MIME_PDF)) else single.launch(arrayOf(MIME_PDF))
+            }
         }
     }
 }
@@ -50,9 +72,12 @@ fun rememberImagePicker(onPicked: (List<Uri>) -> Unit): () -> Unit {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
         if (uris.isNotEmpty()) callback(uris)
     }
-    return remember(launcher) {
+    val context = LocalContext.current
+    return remember(launcher, context) {
         {
-            launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            launchOrExplain(context) {
+                launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
         }
     }
 }
@@ -69,7 +94,8 @@ fun rememberPdfSaver(onChosen: (Uri?) -> Unit): (suggestedName: String) -> Unit 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(MIME_PDF)) { uri ->
         callback(uri)
     }
-    return remember(launcher) {
-        { suggestedName: String -> launcher.launch(suggestedName) }
+    val context = LocalContext.current
+    return remember(launcher, context) {
+        { suggestedName: String -> launchOrExplain(context) { launcher.launch(suggestedName) } }
     }
 }
