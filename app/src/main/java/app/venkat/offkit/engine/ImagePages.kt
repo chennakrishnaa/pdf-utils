@@ -71,6 +71,7 @@ internal object ImagePages {
         val length: Long
         val end: Long
         var layout: JpegLayout? = null
+        var png: PngLayout? = null
         var declaredW = -1L
         var declaredH = -1L
         try {
@@ -78,7 +79,7 @@ internal object ImagePages {
             length = file.length()
             end = when (format) {
                 Format.JPEG -> jpegScan(file)?.also { layout = it }?.end
-                Format.PNG -> pngScan(file)?.also { declaredW = it.width; declaredH = it.height }?.end
+                Format.PNG -> pngScan(file)?.also { png = it; declaredW = it.width; declaredH = it.height }?.end
                 Format.OTHER -> length
             } ?: throw UnsupportedImageFileException(file, null)
         } catch (e: IOException) {
@@ -90,7 +91,7 @@ internal object ImagePages {
                 l.frame?.let { declaredW = it.width.toLong(); declaredH = it.height.toLong() }
                 ImageLimits.jpeg(l.frame, l.frameCount, l.firstScanComponents)
             }
-            Format.PNG -> ImageLimits.png(declaredW, declaredH)
+            Format.PNG -> png!!.let { ImageLimits.png(it.width, it.height, it.bitDepth, it.colorType) }
             Format.OTHER -> ImageLimits.Verdict.OK // already re-encoded at <= 4096 px by ImageNormalizer
         }
         when (verdict) {
@@ -409,9 +410,10 @@ internal object ImagePages {
 
     /**
      * Result of [pngScan]: [end] as for [pngEnd]; [width]/[height] from the IHDR chunk as unsigned
-     * values, or -1 when the first chunk is not a 13-byte IHDR (such a file is rejected).
+     * values and its [bitDepth] / [colorType] bytes, all -1 when the first chunk is not a 13-byte
+     * IHDR (such a file is rejected).
      */
-    internal class PngLayout(val end: Long, val width: Long, val height: Long)
+    internal class PngLayout(val end: Long, val width: Long, val height: Long, val bitDepth: Int, val colorType: Int)
 
     /** The walk of [pngEnd], also reading the declared size from the first chunk (IHDR). */
     internal fun pngScan(file: File): PngLayout? {
@@ -420,6 +422,8 @@ internal object ImagePages {
             var pos = 8L
             var width = -1L
             var height = -1L
+            var bitDepth = -1
+            var colorType = -1
             while (pos + 12 <= fileLen) {
                 raf.seek(pos)
                 val len = raf.readInt().toLong() and 0xFFFFFFFFL
@@ -429,8 +433,10 @@ internal object ImagePages {
                 if (pos == 8L && type == IHDR && len == 13L) {
                     width = raf.readInt().toLong() and 0xFFFFFFFFL
                     height = raf.readInt().toLong() and 0xFFFFFFFFL
+                    bitDepth = raf.readUnsignedByte()
+                    colorType = raf.readUnsignedByte()
                 }
-                if (type == IEND) return PngLayout(next, width, height)
+                if (type == IEND) return PngLayout(next, width, height, bitDepth, colorType)
                 pos = next
             }
             return null

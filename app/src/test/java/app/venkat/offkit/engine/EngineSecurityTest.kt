@@ -143,9 +143,64 @@ class EngineSecurityTest {
         assertEquals(bad, ImageLimits.jpeg(frame(0xC0, 10, 10, nc = 2), 1, 2))
         assertEquals(bad, ImageLimits.jpeg(frame(0xC0, 10, 10), 2, 3))
         assertEquals(bad, ImageLimits.jpeg(null, 0, -1))
-        assertEquals(ok, ImageLimits.png(8000, 5000))
-        assertEquals(big, ImageLimits.png(8000, 5001))
-        assertEquals(bad, ImageLimits.png(0xFFFFFFFFL, 1))
+    }
+
+    @Test
+    fun limits_pngVerdicts() {
+        val ok = ImageLimits.Verdict.OK
+        val big = ImageLimits.Verdict.TOO_LARGE
+        val bad = ImageLimits.Verdict.UNSUPPORTED
+        fun png(w: Long, h: Long, depth: Int, type: Int) = ImageLimits.png(w, h, depth, type)
+        // 8-bit RGB and palette (expanded to RGB): 20 MP.
+        for (type in listOf(2, 3)) {
+            assertEquals(ok, png(5000, 4000, 8, type))
+            assertEquals(big, png(5000, 4001, 8, type))
+        }
+        // Gray / 8-bit gray+alpha: still 20 MP by pixels, however few bytes they need.
+        assertEquals(ok, png(5000, 4000, 16, 0))
+        assertEquals(big, png(5000, 4001, 1, 0))
+        assertEquals(ok, png(5000, 4000, 8, 4))
+        assertEquals(big, png(5000, 4001, 8, 4))
+        // 16-bit gray+alpha: 4 B/px, 15 MP.
+        assertEquals(ok, png(5000, 3000, 16, 4))
+        assertEquals(big, png(5000, 3001, 16, 4))
+        // Byte budget (60 MB of samples): 8-bit RGBA 15 MP, 16-bit RGB 10 MP, 16-bit RGBA 7.5 MP.
+        assertEquals(ok, png(5000, 3000, 8, 6))
+        assertEquals(big, png(5000, 3001, 8, 6))
+        assertEquals(ok, png(5000, 2000, 16, 2))
+        assertEquals(big, png(5000, 2001, 16, 2))
+        assertEquals(ok, png(3000, 2500, 16, 6))
+        assertEquals(big, png(3000, 2501, 16, 6))
+        // Edges, zero size, out-of-range values, invalid colour type / bit depth.
+        assertEquals(big, png(65501, 1, 8, 2))
+        assertEquals(bad, png(0, 10, 8, 2))
+        assertEquals(bad, png(0xFFFFFFFFL, 1, 8, 2))
+        for ((depth, type) in listOf(4 to 2, 16 to 3, 1 to 6, 8 to 1, 8 to 5, 8 to 7, -1 to -1)) {
+            assertEquals("$depth/$type", bad, png(10, 10, depth, type))
+        }
+    }
+
+    @Test
+    fun png21Mp_isTooLarge_fast() {
+        val f = write("21mp.png", Fixtures.pngDeclaring(7000, 3000))
+        assertEquals(PdfEstimate.Err(PdfError.ImageTooLarge), fast("21 MP estimate") { engine.estimateImage(f) })
+        for (level in listOf<CompressionLevel?>(null, CompressionLevel.HIGH)) {
+            val o = out("21mp-$level.pdf")
+            val r = fast("21 MP imagesToPdf $level") { engine.imagesToPdf(listOf(f), PageSize.A4, o, compression = level) }
+            assertEquals(PdfResult.Err(PdfError.ImageTooLarge), r)
+            assertFalse(o.exists())
+        }
+        // 16-bit RGBA over the byte budget (8 MP × 8 B), though well under 20 MP.
+        val deep = write("8mp-rgba16.png", Fixtures.pngDeclaring(4000, 2000, bitDepth = 16, colorType = 6))
+        assertEquals(PdfEstimate.Err(PdfError.ImageTooLarge), fast("16-bit RGBA estimate") { engine.estimateImage(deep) })
+    }
+
+    @Test
+    fun png19Mp_passesTheGate() {
+        // Tiny IDAT: the gate lets it through; the decode may then fail, but never as too large.
+        val f = write("19mp.png", Fixtures.pngDeclaring(5000, 3800))
+        val est = engine.estimateImage(f)
+        assertTrue("$est", est is PdfEstimate.Ok || est == PdfEstimate.Err(PdfError.UnsupportedImage))
     }
 
     /* ------------------------------------------------------------------ compress (SA-6) */
