@@ -78,10 +78,52 @@ class UriIoTest {
         val bare = Uri.parse("content://unknown.authority")
         assertEquals(UriIo.FALLBACK_NAME, UriIo.describe(context, bare).name)
 
+        // A file: Uri is never touched on disk: name from the Uri only, size unknown.
         val file = tmp.newFile("local.pdf").apply { writeBytes(ByteArray(7)) }
         val fromFile = UriIo.describe(context, Uri.fromFile(file))
         assertEquals("local.pdf", fromFile.name)
-        assertEquals(7L, fromFile.sizeBytes)
+        assertNull(fromFile.sizeBytes)
+    }
+
+    @Test
+    fun describeSanitisesHostileProviderNames() {
+        Robolectric.setupContentProvider(HostileProvider::class.java, "hostile.test")
+        val spoof = UriIo.describe(context, Uri.parse("content://hostile.test/doc/spoof"))
+        assertEquals("invoicefdp.exe", spoof.name)
+        val long = UriIo.describe(context, Uri.parse("content://hostile.test/doc/long"))
+        assertEquals(MAX_DISPLAY_NAME_LENGTH, long.name.length)
+        assertTrue(long.name.endsWith(".pdf"))
+        val path = UriIo.describe(context, Uri.parse("content://hostile.test/doc/path"))
+        assertEquals(".._.._etc_passwd", path.name)
+        // Only control characters: falls back to the (sanitised) last path segment.
+        val blank = UriIo.describe(context, Uri.parse("content://hostile.test/doc/blank"))
+        assertEquals("blank", blank.name)
+    }
+
+    @Test
+    fun onlyContentUrisAreAccepted() {
+        assertTrue(UriIo.isContentUri(Uri.parse("content://x/1")))
+        assertFalse(UriIo.isContentUri(Uri.fromFile(tmp.root)))
+        assertFalse(UriIo.isContentUri(Uri.parse("android.resource://app.venkat.offkit/raw/x")))
+        assertFalse(UriIo.isContentUri(Uri.parse("relative/path.pdf")))
+        assertFalse(UriIo.isContentUri(null))
+    }
+
+    class HostileProvider : ContentProvider() {
+        override fun onCreate() = true
+        override fun query(uri: Uri, projection: Array<out String>?, s: String?, a: Array<out String>?, o: String?): Cursor {
+            val name = when (uri.lastPathSegment) {
+                "spoof" -> "invoice\u202Efdp.exe"
+                "long" -> "L".repeat(10_000) + ".pdf"
+                "path" -> "../../etc/passwd"
+                else -> "\u0000\n\u202E"
+            }
+            return MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME)).apply { addRow(arrayOf<Any?>(name)) }
+        }
+        override fun getType(uri: Uri): String? = null
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+        override fun delete(uri: Uri, s: String?, a: Array<out String>?) = 0
+        override fun update(uri: Uri, v: ContentValues?, s: String?, a: Array<out String>?) = 0
     }
 
     @Test

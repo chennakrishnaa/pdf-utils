@@ -8,6 +8,7 @@ import app.venkat.offkit.core.JobInput
 import app.venkat.offkit.core.JobViewModel
 import app.venkat.offkit.core.PdfJobs
 import app.venkat.offkit.core.PickedFile
+import app.venkat.offkit.core.UriIo
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.PDF_DOCUMENT_OVERHEAD_BYTES
 import app.venkat.offkit.engine.PDF_PAGE_OVERHEAD_BYTES
@@ -126,7 +127,8 @@ class ImagesToPdfViewModel(
     }
 
     /** Appends [uris] (in order) to the list once they are described. Ignored while locked. */
-    fun add(uris: List<Uri>) {
+    fun add(picked: List<Uri>) {
+        val uris = picked.filter(UriIo::isContentUri) // only content Uris from the pickers (SB-14)
         if (uris.isEmpty() || locked) return
         viewModelScope.launch {
             val picked = describe(uris)

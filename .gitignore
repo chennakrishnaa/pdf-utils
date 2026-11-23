@@ -15,3 +15,5 @@ keystore.properties
 dist/release/
 .claude/worktrees/
 .claude/settings.local.json
+# Debug and release binaries are never tracked (dist/icon/ stays).
+dist/*.apk

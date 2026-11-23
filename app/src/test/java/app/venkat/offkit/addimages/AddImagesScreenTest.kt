@@ -22,6 +22,7 @@ import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.R
 import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.core.RecentFilesStore
+import app.venkat.offkit.core.UriIoTest
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.feature.addimages.AddImagesScreen
@@ -60,6 +61,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
@@ -221,17 +223,17 @@ class AddImagesScreenTest {
         rule.onNodeWithTag(TAG_ADDIMAGES_PDF_NAME).performScrollTo().assertTextEquals(app.getString(R.string.addimages_no_pdf))
         rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
 
-        // Only a PDF (a file:// Uri, so that its size is known).
-        val firstFile = File(app.filesDir, "first.pdf").apply { writeText("%PDF-1.7 first") }
-        choosePdf(Uri.fromFile(firstFile), "first.pdf")
+        // Only a PDF (from a provider that reports its size; only content Uris are accepted).
+        Robolectric.setupContentProvider(UriIoTest.NamedProvider::class.java, "named.test")
+        choosePdf(Uri.parse("content://named.test/doc/42"), "Holiday photo.jpg")
         rule.onNodeWithTag(TAG_ADDIMAGES_PDF_NAME).performScrollTo()
-            .assertTextEquals("first.pdf", formatBytes("%PDF-1.7 first".length.toLong()))
+            .assertTextEquals("Holiday photo.jpg", formatBytes(12345L))
         rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
 
         // Choosing again replaces it.
         choosePdf(pdf("second.pdf", "second, longer"), "second.pdf")
         rule.onNodeWithTag(TAG_ADDIMAGES_PDF_NAME).performScrollTo().assertTextEquals("second.pdf")
-        rule.onNodeWithText("first.pdf").assertDoesNotExist()
+        rule.onNodeWithText("Holiday photo.jpg").assertDoesNotExist()
         rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
 
         // Both.

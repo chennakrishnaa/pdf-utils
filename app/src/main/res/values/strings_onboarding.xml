@@ -17,7 +17,7 @@
     <string name="onboarding_tools_add">Pictures as new pages</string>
 
     <string name="onboarding_private_title">Private by design</string>
-    <string name="onboarding_private_text">Your files never leave your device.</string>
+    <string name="onboarding_private_text">Offkit never sends your files anywhere.</string>
     <!-- Badges drawn in the illustration of the privacy page. -->
     <string name="onboarding_private_badge_internet">No internet</string>
     <string name="onboarding_private_badge_permissions">No permissions</string>
@@ -28,5 +28,5 @@
     <string name="onboarding_control_title">You\'re in control</string>
     <string name="onboarding_control_choose">You choose the files, and where results are saved.</string>
     <string name="onboarding_control_recent">Recently saved files appear on the home screen</string>
-    <string name="onboarding_control_nothing">Nothing is uploaded or backed up</string>
+    <string name="onboarding_control_nothing">Offkit uploads nothing. Results go only where you save or share them.</string>
 </resources>

@@ -131,6 +131,61 @@ class RecentFilesStoreTest {
     }
 
     @Test
+    fun garbageStoredDataNeverCrashesAndDropsBadEntries() {
+        val prefs = context.getSharedPreferences("recent_files", Context.MODE_PRIVATE)
+        fun load(json: String): List<RecentFile> {
+            prefs.edit().putString("entries", json).commit()
+            RecentFilesStore.resetForTesting()
+            return RecentFilesStore.get(context).recents.value
+        }
+        val good = """{"uri":"content://a/1","name":"a.pdf","size":5,"at":7,"tool":"merge"}"""
+        // Wrong types: uri as number/object, at as string, size as string, name as array, tool as object.
+        val wrongTypes = listOf(
+            """{"uri":12,"name":"x","at":1}""",
+            """{"uri":{"a":1},"name":"x","at":1}""",
+            """{"uri":"content://a/2","name":"x","at":"yesterday"}""",
+            """{"uri":"content://a/3","name":"x","at":1,"tool":{"t":1}}""",
+            """{"uri":"","name":"x","at":1}""",
+            """{"uri":"content://a/${"u".repeat(5000)}","name":"x","at":1}""",
+            """{"uri":"content://a/4","name":"x","at":1,"tool":"${"t".repeat(100)}"}""",
+            "null", "true", "[]", "\"str\"",
+        ).joinToString(",")
+        val loaded = load("[$good,$wrongTypes]")
+        // A wrongly typed tool id is tolerated (blank); every other bad entry is dropped.
+        assertEquals(listOf(Uri.parse("content://a/1"), Uri.parse("content://a/3")), loaded.map { it.uri })
+        assertEquals("", loaded[1].tool)
+
+        // Wrong-typed name and size are tolerated: fallback name, unknown size.
+        val odd = load("""[{"uri":"content://a/5","name":["x"],"size":"big","at":9}]""").single()
+        assertEquals(RecentFile(Uri.parse("content://a/5"), UriIo.FALLBACK_NAME, null, 9, ""), odd)
+
+        // Hostile and absurdly long names are sanitised on load.
+        val hostile = load("""[{"uri":"content://a/6","name":"x\u202efdp.exe\n${"n".repeat(10_000)}.pdf","at":1}]""").single()
+        assertTrue(hostile.name.length <= MAX_DISPLAY_NAME_LENGTH)
+        assertFalse(hostile.name.contains('\u202E') || hostile.name.contains('\n'))
+        assertTrue(hostile.name.endsWith(".pdf"))
+
+        // More than 20 entries and duplicate Uris: at most 20, one per Uri, first wins.
+        val many = (0 until 50).joinToString(",") { """{"uri":"content://a/${it % 30}","name":"n$it","at":$it}""" }
+        val list = load("[$many]")
+        assertEquals(RecentFilesStore.MAX_ENTRIES, list.size)
+        assertEquals(list.map { it.uri }.distinct(), list.map { it.uri })
+        assertEquals("n0", list.first().name)
+
+        // Not an array, truncated, enormous.
+        assertTrue(load("""{"uri":"content://a/1"}""").isEmpty())
+        assertTrue(load("[$good").isEmpty())
+        assertTrue(load("[" + List(20_000) { good }.joinToString(",") + "]").isEmpty())
+        assertTrue(load("[".repeat(100_000)).isEmpty())
+    }
+
+    @Test
+    fun addSanitisesTheName() {
+        store.add(RecentFile(uri(1), "evil\u202Efdp.exe\u0000", 1, 1, "merge"))
+        assertEquals("evilfdp.exe", store.recents.value.single().name)
+    }
+
+    @Test
     fun viewIntentContents() {
         val intent = store.viewIntent(file(1))
         assertEquals(Intent.ACTION_VIEW, intent.action)

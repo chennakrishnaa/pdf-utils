@@ -27,7 +27,7 @@ PRIVATE BY DESIGN
 • No internet. The app has no network access at all. Your documents are processed on the device and Offkit sends them nowhere.
 • No ads, no accounts, no analytics.
 • Location and camera details are removed from photos you put into a PDF.
-• Results are saved only where you choose.
+• Results are saved only where you choose. Offkit uploads nothing.
 
 GOOD TO KNOW
 
