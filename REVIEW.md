@@ -1,3 +1,76 @@
+# Release review — PaperPixel 1.0.0 (FQ)
+
+Reviewed main at `2481a84` ("Merge FO"). Artifacts under test: `dist/release/app.venkat.paperpixel-1.0.0.apk` (31,884,298 B) and `.aab` (20,584,254 B), built from main. The AAB's `version-control-info.textproto` records revision `2481a84`. Nothing was rebuilt and `scripts/release.sh` was not run.
+
+**Verdict: ready to upload: yes, with caveats.** The signed release APK ran real MuPDF work on an Android 14 emulator. Merge and Images to PDF both produced valid PDFs, checked on the host. There were no crashes during the session, and the static release checks all pass. Caveats: Compress and Add images were not run on the release build; the open findings below remain (none blocks upload); and an uncaught `ActivityNotFoundException` crashes the app on a device with no document picker (R1).
+
+### On-device results (release APK, signed)
+The ATD image `pdfutils-smoke` (Android 12) booted and launched the app, but it has no DocumentsUI. Tapping "Add PDFs" there crashed the app (R1, `scratchpad/fq/atd_picker_crash.log`). So all steps below were run on **`pdfutils-shots` (Android 14, google_apis, x86_64)**, booted headless the way `release-smoke.sh` does (`sg kvm`, port 5584, same flags). Screenshots are in the session scratchpad `fq/`. The emulator was shut down afterwards, and no qemu process remained.
+
+| Step | Result | Evidence |
+|---|---|---|
+| Install signed APK | OK, `primaryCpuAbi=x86_64`, versionName 1.0.0, `pkgFlags=[HAS_CODE ALLOW_CLEAR_USER_DATA]` (no DEBUGGABLE) | `adb install`, `dumpsys package` |
+| Test inputs | Host-generated `alpha_2p.pdf` (2 pages), `beta_3p.pdf` (3 pages), `photo_one.jpg` and `photo_two.png` (1600×1200), pushed to `/sdcard/Download/` and media-scanned | `content query` listed all four |
+| (a) Merge alpha + beta → Save as `merged.pdf` | **Pass.** UI showed "5 pages · 1.2 KB", then "Saved". The pulled file is `%PDF-1.7`, 1,233 B, `/Count 5`, five page objects, page texts in order Alpha 1–2 then Beta 1–3 | `03_merge_done.png`, `05_merge_saved.png`, host check of the inflated streams |
+| MuPDF loaded in the release process | **Pass.** `/proc/<pid>/maps` has an `r-xp` mapping of `base.apk` at offset `0x12fc000`, which is exactly where zipalign puts `lib/x86_64/libmupdf_java.so`. The library is loaded straight from the APK (`extractNativeLibs=false`), so the maps line names `base.apk`, not the `.so` | `adb root` and maps; `zipalign -c -P 16 -v` offsets |
+| logcat after all steps | **Clean**: 0 matches for `FATAL`/`Fatal signal`/`UnsatisfiedLinkError`; crash buffer empty | `fq/shots_session.log` |
+| (b) Images to PDF, photo_one.jpg, **High** compression → Save | **Pass.** "1 page · 160.3 KB", then "Saved" as `images (1).pdf` (an `images.pdf` from an earlier session already existed on the AVD). Pulled: valid PDF, `/Count 1`, one image of `/Width 1000 /Height 750` (downscaled from 1600×1200 as promised) | `07b_high_selected.png`, host check |
+| (c) Compress, (d) Add images | **Not run** (turn budget) | — |
+| Recent files on home | **Pass.** Lists `images (1).pdf` (Images to PDF · 160.3 KB · Just now) and `merged.pdf` (Merge PDFs · 1.2 KB · 2 min ago) | `08_home_recents.png` |
+| About | **Pass.** "PaperPixel", "Version 1.0.0", AGPL text, MuPDF credit, source `https://github.com/chennakrishnaa/pdf-utils` | `09_about.png`, uiautomator dump |
+| AGPL licence screen | Opens and scrolls (reached "1. Source Code.") | `10_agpl_scrolled.png` |
+| Open-source licences screen | Opens (header names PaperPixel), scrolls (reached the hyphenation-pattern licences) | `11_notices_scrolled.png` |
+| Requested permissions | **None**: `dumpsys package … \| grep -A3 "requested permissions"` prints nothing | — |
+| `run-as app.venkat.paperpixel` | **Fails** as expected: `package not debuggable` | — |
+
+### Static release checks
+| Check | Result |
+|---|---|
+| Badging | `app.venkat.paperpixel`, versionCode 1, versionName 1.0.0, label `PaperPixel`, minSdk 26, **targetSdk 36**, compileSdk 37, launcher `MainActivity` |
+| Permissions (`aapt2 dump permissions`) | none |
+| Manifest (`apkanalyzer manifest print`) | no `debuggable`, no `testOnly`, `allowBackup=false` (plus `fullBackupContent`/`dataExtractionRules`), `usesCleartextTraffic=false`. Only `MainActivity` is exported; the androidx-startup provider has `exported=false`. No services or receivers |
+| Signature (`apksigner verify --print-certs`) | Verifies; v2 **true**, v3 **true**, v1 false (fine at minSdk 26). One signer, `CN=PaperPixel, O=venkat.app`, RSA 4096, SHA-256 `f940420d…f13f895`, **matches** |
+| AAB signature (`jarsigner -verify`, `keytool -printcert -jarfile`) | "jar verified", the same certificate SHA-256 (this is the upload key) |
+| Native libs | `arm64-v8a` and `x86_64` only (no 32-bit); `libmupdf_java.so` and `libandroidx.graphics.path.so`; stored uncompressed |
+| 16 KB pages | `zipalign -c -P 16` passes; every ELF `LOAD` segment is aligned to `0x4000` |
+| AAB `base/manifest` | Read with `strings` on the proto (bundletool not used): the same package, version 1.0.0, components and `allowBackup` |
+| AAB stray files | None: only dex/res/lib, `assets/LICENSE` and `THIRD_PARTY_NOTICES.md`, AndroidX/Kotlin metadata, baseline profile, `version-control-info.textproto` (a commit SHA only). No keystore, no `.properties` beyond AGP's `app-metadata.properties`, no fixtures |
+| Secrets in git | `git ls-files`: no `.jks`/`.keystore`/`.p12`/`keystore.properties`; the only tracked `.properties` files are `gradle.properties` and the wrapper's. `.gitignore` covers `keystore.properties`, `*.jks`, `*.keystore`, `*.p12` and `dist/release/` (confirmed with `git check-ignore -v`) |
+| Signing values logged? | `app/build.gradle.kts` only reads them into `signingConfigs`. The one message (`GradleException`) lists the *names* of missing keys, never values. No `println`/logger |
+| Old identity | `git grep` finds no `com.offlinepdf`, `PDF Utils`, `example.invalid` or `0.1.0` (outside REVIEW.md). APK `aapt2 dump strings`/`resources` and the dex: 0 hits |
+| Notices | `THIRD_PARTY_NOTICES.md` is byte-identical to its asset copy, inside the APK and inside the AAB. `assets/LICENSE` is identical to the repo `LICENSE`. The notice text names PaperPixel and `https://github.com/chennakrishnaa/pdf-utils`; the APK string table holds the same URL |
+| Play facts | targetSdk 36. AAB 20.6 MB (the universal APK is 31.9 MB; R8 is off). Play App Signing will re-sign with Google's app-signing key, so the delivered certificate will **not** be `f940420d…`; keep this upload key safe. Nothing in the manifest needs a Play declaration: no permissions, no foreground services, no `QUERY_ALL_PACKAGES`, no accessibility, no ads ID |
+
+### Status of earlier findings for a public release
+- **B1: Fixed, verified.** The About screen and the string table show `https://github.com/chennakrishnaa/pdf-utils`; `example.invalid` appears nowhere.
+- **M6: Fixed, verified.** An Open-source licences screen shows `THIRD_PARTY_NOTICES.md`; the asset copies are identical; it opens and scrolls on the device. The completeness of the notice content was not re-audited in this round (FO's work).
+- **N3** (save cleanup on cloud providers; overwrite-then-fail loses the old file): stands; not exercised on a real provider. Worth a release note, not a blocker.
+- **N4** (serial, all-or-nothing estimates): stands. One 1600×1200 JPEG estimated instantly; 50 photos not tried.
+- **N5** (large PNG raw stream on the Java heap): stands; an OOM risk on big PNGs, not measured on a device.
+- **N6–N10** (JPEG walker and metadata residuals for non-conforming files): stand, Low; only odd or damaged files are affected.
+- **M3** (inputs and options lost on process death): stands; mild UX loss.
+- **M5** (normalizer pass-through skips the size cap): stands; overlaps N5.
+- **L11–L19**: stand, cosmetic or robustness only. L17 (dead icons) and L18 (border contrast) are polish.
+
+### New findings (most severe first)
+| # | Sev | Where | What is wrong | Failure scenario | Confidence |
+|---|---|---|---|---|---|
+| R1 | Low | `ui/components/Pickers.kt:37` (`many.launch`/`single.launch`); likewise `:73` (CreateDocument) | Launching `OPEN_DOCUMENT` / `CREATE_DOCUMENT` is not guarded. With no handler, `ActivityNotFoundException` is thrown on the main thread and the app dies. `HomeScreen`/`AboutScreen` catch it for their own intents; the pickers do not. | **This is an app robustness bug that the emulator image exposed.** `pdfutils-smoke` is an ATD image without DocumentsUI (`com.android.fakesystemapp` home). Tapping Add PDFs gave `FATAL EXCEPTION … No Activity found to handle Intent { act=android.intent.action.OPEN_DOCUMENT }` (`atd_picker_crash.log`). On a normal Play phone DocumentsUI is always present, so users are unlikely to hit this. It can happen where DocumentsUI is disabled or missing (some kiosk/managed devices, TV/Wear-like builds). Fix: catch it and show "No file picker available". | Confirmed by running (ATD image) |
+| R2 | Low (cosmetic) | Images to PDF / Add images item names | With the Android 14 photo picker, the image row shows the media id (`1000000026.jpg`) instead of `photo_one.jpg`. The picker's provider exposes that display name. | The user cannot tell picked photos apart by name in the list. | Confirmed by running |
+| R3 | Info | `app/build.gradle.kts` `isMinifyEnabled = false` | R8 shrinking is off, so the universal APK is 31.9 MB and the AAB 20.6 MB (the native MuPDF libs dominate; dex is unshrunk). | Bigger download only. Enabling R8 needs keep rules for the MuPDF JNI classes and a re-test, so not for 1.0.0. | Confirmed by reading |
+| R4 | Info | AAB `META-INF/version-control-info.textproto` | AGP embeds the commit SHA (`2481a84`). `local_root_path` is the `$PROJECT_DIR` placeholder, so no host path leaks. | None, since the source is public. | Confirmed by reading |
+
+### Not proven
+- Compress PDF and Add images on the **release** build (only Merge and Images to PDF ran). MuPDF native code is proven loaded and working, but those two code paths were not exercised under release.
+- Medium/Low compression output. For this 1600 px JPEG the estimate at Low and Medium equalled Original (332.9 KB); I ran High instead. I did not check whether Medium re-encodes or keeps the original bytes.
+- Real arm64 hardware: only the x86_64 library ran. The arm64 library was checked statically only (present, 16 KB aligned).
+- Android 12 behaviour of the release build beyond launch: the ATD image could not drive pickers (R1).
+- AAB → device install via bundletool / Play: not done (no network, no bundletool run). AAB manifest checked through proto strings only.
+- Real cloud providers (N3), large inputs (N4/N5), process death (M3).
+- Note: the `pdfutils-shots` AVD also has an old "PDF Utils" app installed from earlier sessions. It is a different package, not in this APK, and does not affect the result.
+
+---
+
 # Independent review, round 2 (FH)
 
 Reviewed commit `1f242ad` (main), compared with `7c23a9c` (the build the owner tested). Follow-up: the N1 fix and the new on-device tests were re-checked at `26ec5db`. Second follow-up (FK): the N2b fix (metadata stripping) was re-checked at `9f50538` ("Merge FJ"), diff `e9cd787..9f50538`.
