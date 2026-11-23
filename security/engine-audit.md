@@ -1,0 +1,37 @@
+# Offkit engine security audit: untrusted-input path (SA)
+
+Status: IN PROGRESS. This file is committed in stages because the session can be interrupted.
+
+## Summary
+Pending the end of the fuzz campaign. So far no native crash (no `hs_err_pid*.log`) has been observed. The main
+problems found so far are decompression bombs: a picked image of a few KB can force decode work of
+hundreds of MB to GB, and nothing caps the pixel count on the image path.
+
+## Method (so far)
+- Read the code as an attacker: `engine/ImagePages.kt`, `engine/PdfInputs.kt`, `engine/MuPdfEngine.kt`,
+  `engine/ops/{ImagesToPdfOp,CompressOp,MergeOp,AppendImagesOp}.kt`, `core/{ImageNormalizer,PdfJobs,UriIo}.kt`.
+  Also read the MuPDF 1.28.5 JNI (`platform/java/jni/pdfobject.c` readRawStream/readStream, `wrap.c`) and
+  the MuPDF limits (`fitz/pixmap.c` FZ_MAX_SAMPLES, `fitz/load-png.c`, `pdf/pdf-xref.c` PDF_MAX_OBJECT_NUMBER).
+- Fuzz harness: a throwaway `probe/Fuzz.kt` (not committed). Each target runs in a separate child JVM
+  (`-Xmx256m -Xss1m`, `-XX:ErrorFile=…/hs_err_%p.log`, `timeout`) with the real host MuPDF
+  (`~/mupdf-host/libmupdf_java64.so`), so a native abort shows up as a JVM death with an hs_err file.
+  Before every call the child writes the input to `current-<target>.bin`.
+  Oracle: `Ok` → reopen the output, check the page count, load every page; `Err` → `out` must be absent, and
+  the cause of `Err(Io)` must be a plain MuPDF `RuntimeException` (any other class is a finding). No stray
+  files may be left in the work dir. A single call taking more than 10 s is recorded.
+- Targets: `jpeg` and `png` (each iteration: `estimateImage`, `imagesToPdf` at a random level of null/LOW/HIGH,
+  `appendImages`); `merge`, `compress` and `append` over mutated PDFs.
+
+## Findings (to date)
+
+| ID | Sev | Where | Description | Trigger | Impact on a phone | How confirmed | Fix |
+|---|---|---|---|---|---|---|---|
+| SA-1 | Medium | `engine/ImagePages.kt:340-360` (`encodeJpeg`), `:419-436` (`estimate`), `:442-457`; `core/ImageNormalizer.kt:201-219` (JPEG/PNG passed through without a size cap) | Image decompression bomb. JPEG and PNG files go to MuPDF unchanged; `open` only checks `width > 0 && height > 0`, and nothing caps the declared pixel count. `estimate` (which runs automatically for every picked image) and every compressed job decode the full image via `fillImage`. | `sec-engine/case-jpeg-0.bin` (3,515 bytes): a progressive JPEG whose SOF2 declares 65500×10955×3, followed by almost no scan data. The walker accepts it (EOI present), and MuPDF decodes 717 M pixels of filler. One fuzz iteration (`estimateImage` + `imagesToPdf` + `appendImages`) took **19.2 s** on the host. The child JVM reached a VmHWM of 980 MB in a short smoke run (256 MB Java heap, so roughly 700 MB native). | CPU stays busy for tens of seconds per image on the single engine thread; every other job and estimate waits. Large native allocations can get the process killed by the low-memory killer (crash with no error message). | Ran (fuzz) | In `open`, read the declared dimensions (JPEG SOFn / PNG IHDR, already walked) and reject `w*h` above a cap, for example 50 MP, as `UnsupportedImage` before any decode. |
+
+## Confirmed safe (to date)
+- `readRawStream`/`readStream` JNI: `(jsize)len` for a buffer of 2 GiB or more gives a negative size, so `NewByteArray` throws, or it wraps to a smaller positive size, so `SetByteArrayRegion` copies a prefix. Both are memory safe; the second gives wrong data (read).
+- MuPDF pixmap allocation is capped by `FZ_MAX_SAMPLES` ("Overly large image" seen in the PNG fuzz as a clean `RuntimeException`) (ran).
+- Smoke fuzz (seed 1, ~8 s each): jpeg 4,460 iterations, png ~1,000, merge 191. No crash, no escaped exception type, no out file left behind after an `Err`.
+
+## Not covered (to date)
+To be completed.
