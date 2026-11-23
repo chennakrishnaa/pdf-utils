@@ -28,7 +28,20 @@ class DisplayNamesTest {
             "\u0000\n\t\u202E\u200B\uFEFF" to fb, // only control characters
             "   " to fb,
             "" to fb,
-            "Urlaub \uD83C\uDFD6\uFE0F.jpg" to "Urlaub \uD83C\uDFD6\uFE0F.jpg", // emoji kept
+            "Urlaub \uD83C\uDFD6\uFE0F.jpg" to "Urlaub \uD83C\uDFD6.jpg", // emoji kept, variation selector dropped (SR-6)
+            // SR-6: invisible/default-ignorable characters and Zalgo.
+            "\u3164" to fb, // Hangul filler alone: looks empty
+            "\u115F\u1160\uFFA0 \u3164.pdf" to ".pdf",
+            "soft\u00ADhy\u034Fphen.pdf" to "softhyphen.pdf",
+            "a\u2061\u2062\u2063\u2064b\u206A\u206Fc\uFFF9\uFFFA\uFFFBd.pdf" to "abcd.pdf",
+            "tag\uDB40\uDC41\uDB40\uDC7Fs.pdf" to "tags.pdf", // U+E0041, U+E007F
+            "vs\uFE00\uDB40\uDD00.pdf" to "vs.pdf", // U+FE00, U+E0100
+            "mongol\u180E.pdf" to "mongol.pdf",
+            "pua\uE000\uDB80\uDC00.pdf" to "pua.pdf", // U+E000, U+F0000
+            "unassigned\u0378.pdf" to "unassigned.pdf",
+            "Z\u0301\u0302\u0303\u0304\u0305\u0306a.pdf" to "Z\u0301\u0302\u0303a.pdf", // max 3 marks
+            "\u0301\u0302 \u20DD" to fb, // only marks and spaces
+            "e\u0301te\u0301.pdf" to "e\u0301te\u0301.pdf", // ordinary accents kept
             "\u6587\u4EF6 \u0645\u0644\u0641 \u0444\u0430\u0439\u043B.pdf" to "\u6587\u4EF6 \u0645\u0644\u0641 \u0444\u0430\u0439\u043B.pdf",
             "\u0939\u093F\u0928\u094D\u0926\u0940.pdf" to "\u0939\u093F\u0928\u094D\u0926\u0940.pdf", // Devanagari (virama kept)
         )
