@@ -260,7 +260,29 @@ Re-checker: SR2, independent of the fix authors. Code at `main` `eda2751` (merge
 - SA-11 (deep-object guard): pending
 
 ### A. Compress filter gate attempts
-pending
+Inputs from `scratchpad/sr2/gena.py` (one page, image XObject 4 drawn by the page; "kill" = the 1,667-byte SOF2 65500² stream `case-jpeg-kill.bin` under an 8×8 DeviceRGB dictionary). Op `compress(HIGH)`, capped child JVM as in B.
+
+| Input (`scratchpad/sr2/c/`) | Result | Time | Peak RSS |
+|---|---|---|---|
+| `/#46ilter/DCT` (hex-escaped key) | Ok, image skipped (the parser decodes the key; SOF check refuses) | 0.27 s | 74 MB |
+| `/Filter/DCT#44ecode`, `/Filter/#44CT` | Ok, skipped | 0.27 s | 73-74 MB |
+| Duplicate keys `/Filter/FlateDecode/Filter/DCT` and reverse | Ok, skipped / Ok (the parser keeps only the last occurrence, so the binding and the decoder see the same dictionary) | 0.27-0.29 s | 73 MB |
+| `/Filter 6 0 R` → `/DCT`; `/Filter[6 0 R]`; `/Filter 6 0 R` → `[7 0 R]` → `/DCT` | Ok, skipped (indirect names and arrays are resolved before the decision) | 0.27 s | 73-74 MB |
+| `/Filter null` over the kill stream | Ok (raw 8×8 decode, 192 bytes) | 0.26 s | 75 MB |
+| Incremental update redefining object 4 from a harmless Flate image to the `/DCT` lie | Ok, skipped (gate and decoder both see the newest definition) | 0.28 s | 73 MB |
+| Object 4 defined twice, no xref (forced repair; the `/DCT` definition last) | Ok, skipped | 0.26 s | 73 MB |
+| Flate image 100×100 whose data inflates to 1 GB | Ok (MuPDF reads only `w*h*c` bytes) | 0.25 s | 73 MB |
+| Flate 3000×3000 with a matching Predictor 15 `/DecodeParms` over the same 1 GB data | Ok | 0.44 s | 87 MB |
+| Progressive DCT, dictionary and SOF both 6324² (40 MP), 3 components, tiny data | Ok | 0.68 s | 316 MB |
+| Progressive DCT 5477² (30 MP), 4 components, under a `/DeviceRGB` dictionary | Ok | 0.64 s | 314 MB |
+| **8×8 raw RGB image with `/ColorSpace[/ICCBased 6 0 R]`, profile stream = 1 GB of zeros in a 1 MB Flate stream** (`a-icc-bomb.pdf`) | **Err(Io: `realloc (1371016084 bytes) failed`)** after reading the whole profile | 2.5 s | **963 MB** at the 3 GB cap (SR2-1) |
+| Same via `/Alternate[/ICCBased 7 0 R]` of a small profile (`a-icc-bomb-alt.pdf`) | same | 2.6 s | **963 MB** |
+| Same profile Flate-compressed twice (`/Filter[/FlateDecode/FlateDecode]`, 2.7 KB file) | Ok | 0.56 s | 189 MB |
+| `a-icc-bomb` merge / page render (render is not an app operation) | Ok / - | 0.24 / 2.5 s | 72 / 961 MB |
+
+By reading: Compress enumerates images by object number over the whole xref (`scanImages`: 1 until `countObjects()`), so images reached only through Forms, Patterns, Type3, `/Thumb`, `/Alternates`, `/OPI`, soft-mask groups or annotation appearances are gated the same way, and an object stream entry is reached through the same `newIndirect`. The `/Subtype /Image` check is on the decoded name, so `/#49mage` is the same; a stream without `/Subtype /Image` is never decoded by Compress. Inline images are never decoded. `pdf-write.c` only deflates unfiltered streams (`is_image_filter` keeps DCT/JPX/JBIG2/CCITT as they are; there is no `decompress`/`compress-images` in `SAVE_OPTIONS`), and the merged ICC bomb above saved at 72 MB, so the save decodes nothing. Output validation (`loadPage`) does not load images (SR measured this; the 963 MB above is from `loadImage` in `recompress`, not from the save).
+
+**Result: the filter gate itself holds** against every key/value spelling, indirection and xref trick I tried. But default-deny stops at the filter chain: `classify` accepts `ICCBased` from `/N` alone, and `loadImage` then reads the whole ICC profile stream into memory without any bound (SR2-1). This is the same impact as SR-1 by another route.
 
 ### B. Deep-object guard attempts
 Harness: `scratchpad/sr2/src/SR.java` (copy of SR's, plus `rawop` = the internal op class run directly on a thread of a given stack size with no `EngineStack`, and `resave`), one child JVM per run, `-Xmx256m`, `ulimit -v 3000000`, classes compiled from this worktree. Generators: `scratchpad/sr2/gen2.py`; inputs in `scratchpad/sr2/c/`. Peak RSS is `/usr/bin/time %M`.
