@@ -1,7 +1,7 @@
 THIRD-PARTY NOTICES
 ===================
 
-PaperPixel is free software, licensed under the GNU Affero General Public License, version 3 (see the LICENSE file; the app shows the full text under About). Its source code is at https://github.com/chennakrishnaa/pdf-utils.
+Offkit is free software, licensed under the GNU Affero General Public License, version 3 (see the LICENSE file; the app shows the full text under About). Its source code is at https://github.com/chennakrishnaa/pdf-utils.
 
 The app contains the third-party components listed below. Each is distributed under its own licence; the full licence texts follow at the end of this file. This list was derived from the MuPDF 1.28.5 build files (platform/java/Android.mk, Makelists), the strings and symbols of the libmupdf_java.so that ships in the app, and the Gradle releaseRuntimeClasspath.
 
