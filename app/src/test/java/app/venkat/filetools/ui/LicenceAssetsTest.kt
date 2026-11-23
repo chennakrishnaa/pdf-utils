@@ -28,4 +28,19 @@ class LicenceAssetsTest {
             asset("THIRD_PARTY_NOTICES.md").readBytes(),
         )
     }
+
+    @Test
+    fun shippedPrivacyPolicyEqualsRepoPolicy() {
+        assertArrayEquals(repoFile("PRIVACY.md").readBytes(), asset("PRIVACY.md").readBytes())
+    }
+
+    /** Shown as plain text in the app: no markdown tables, code fences or `#` headings. */
+    @Test
+    fun privacyPolicyReadsAsPlainText() {
+        val lines = repoFile("PRIVACY.md").readLines()
+        lines.forEach { line ->
+            check(!line.startsWith("#") && !line.contains("|") && !line.startsWith("```")) { "markdown syntax: $line" }
+        }
+        check(lines.any { "chennakrishnaa@yahoo.com" in it })
+    }
 }

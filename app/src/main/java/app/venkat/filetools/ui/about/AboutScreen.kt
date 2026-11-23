@@ -52,6 +52,9 @@ const val TAG_ABOUT_MUPDF = "about_mupdf"
 const val TAG_ABOUT_SOURCE_URL = "about_source_url"
 const val TAG_ABOUT_AGPL_TEXT = "about_agpl_text"
 const val TAG_ABOUT_NOTICES = "about_notices"
+const val TAG_ABOUT_PRIVACY = "about_privacy"
+const val TAG_ABOUT_PRIVACY_URL = "about_privacy_url"
+const val TAG_ABOUT_NO_DATA = "about_no_data"
 
 /** Asset holding a verbatim copy of the repository's `LICENSE` (GNU AGPL v3). */
 const val ASSET_LICENSE = "LICENSE"
@@ -59,9 +62,13 @@ const val ASSET_LICENSE = "LICENSE"
 /** Asset holding a verbatim copy of the repository's `THIRD_PARTY_NOTICES.md`. */
 const val ASSET_NOTICES = "THIRD_PARTY_NOTICES.md"
 
+/** Asset holding a verbatim copy of the repository's `PRIVACY.md`. */
+const val ASSET_PRIVACY = "PRIVACY.md"
+
 /**
  * About screen: app name and version, offline statement, licence, MuPDF credit, the full AGPL
- * text and third-party notices (both shown offline from bundled assets), and the source code URL.
+ * text, third-party notices and privacy policy (shown offline from bundled assets), the source
+ * code URL and the online privacy policy URL.
  */
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
@@ -71,7 +78,13 @@ fun AboutScreen(onBack: () -> Unit) {
     if (open != null) {
         BackHandler { document = null }
         LicenceTextScreen(
-            title = stringResource(if (open == ASSET_LICENSE) R.string.about_agpl_title else R.string.about_notices_title),
+            title = stringResource(
+                when (open) {
+                    ASSET_LICENSE -> R.string.about_agpl_title
+                    ASSET_PRIVACY -> R.string.about_privacy_title
+                    else -> R.string.about_notices_title
+                },
+            ),
             asset = open,
             onBack = { document = null },
         )
@@ -91,6 +104,11 @@ fun AboutScreen(onBack: () -> Unit) {
         ) {
             AppHeader(version)
             InfoNote(stringResource(R.string.about_offline))
+            Text(
+                text = stringResource(R.string.about_no_data),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.testTag(TAG_ABOUT_NO_DATA),
+            )
 
             SectionHeader(stringResource(R.string.about_license_header))
             Surface(
@@ -138,6 +156,23 @@ fun AboutScreen(onBack: () -> Unit) {
                 text = sourceUrl,
                 testTag = TAG_ABOUT_SOURCE_URL,
                 onClick = { openLink(context, sourceUrl) },
+                linkStyle = true,
+            )
+
+            SectionHeader(stringResource(R.string.about_privacy_header))
+            LinkRow(
+                icon = AppIcons.info,
+                text = stringResource(R.string.about_privacy_row),
+                detail = stringResource(R.string.about_privacy_detail),
+                testTag = TAG_ABOUT_PRIVACY,
+                onClick = { document = ASSET_PRIVACY },
+            )
+            val privacyUrl = stringResource(R.string.privacy_policy_url)
+            LinkRow(
+                icon = AppIcons.open,
+                text = privacyUrl,
+                testTag = TAG_ABOUT_PRIVACY_URL,
+                onClick = { openLink(context, privacyUrl) },
                 linkStyle = true,
             )
         }

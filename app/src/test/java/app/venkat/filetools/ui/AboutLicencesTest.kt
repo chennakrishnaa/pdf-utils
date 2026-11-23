@@ -18,6 +18,15 @@ import app.venkat.filetools.MainActivity
 import app.venkat.filetools.PdfUtilApp
 import app.venkat.filetools.ui.about.ASSET_LICENSE
 import app.venkat.filetools.ui.about.ASSET_NOTICES
+import app.venkat.filetools.ui.about.ASSET_PRIVACY
+import app.venkat.filetools.ui.about.TAG_ABOUT_NO_DATA
+import app.venkat.filetools.ui.about.TAG_ABOUT_PRIVACY
+import app.venkat.filetools.ui.about.TAG_ABOUT_PRIVACY_URL
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.test.assertTextEquals
+import org.junit.Assert.assertEquals
+import org.robolectric.Shadows.shadowOf
 import app.venkat.filetools.ui.about.TAG_ABOUT_AGPL_TEXT
 import app.venkat.filetools.ui.about.TAG_ABOUT_NOTICES
 import app.venkat.filetools.ui.about.TAG_LICENCE_TEXT
@@ -81,8 +90,43 @@ class AboutLicencesTest {
     @Test
     fun bundledAssetsAreReadable() {
         val assets = rule.activity.assets
-        listOf(ASSET_LICENSE, ASSET_NOTICES).forEach { name ->
+        listOf(ASSET_LICENSE, ASSET_NOTICES, ASSET_PRIVACY).forEach { name ->
             assets.open(name).use { check(it.readBytes().isNotEmpty()) { name } }
         }
+    }
+
+    @Test
+    fun privacyPolicyIsReadableOffline() {
+        openAboutRow(TAG_ABOUT_PRIVACY)
+        // Titled as the policy (not "Open-source licences").
+        rule.onAllNodesWithText("Privacy policy").onFirst().assertIsDisplayed()
+        scrollToText("OFFKIT PRIVACY POLICY")
+        scrollToText("collects no personal data")
+        scrollToText("requests no Android permissions and makes no network connections")
+        scrollToText("chennakrishnaa@yahoo.com")
+        rule.onNodeWithTag("action_back").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ABOUT_PRIVACY).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun aboutSaysNoDataCollected() {
+        rule.onNodeWithTag("action_about").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ABOUT_NO_DATA).performScrollTo().assertTextEquals("No data collected. Works offline.")
+    }
+
+    @Test
+    fun privacyPolicyLinkOpensWithActionView() {
+        val url = "https://github.com/chennakrishnaa/pdf-utils/blob/main/PRIVACY.md"
+        rule.onNodeWithTag("action_about").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ABOUT_PRIVACY_URL).performScrollTo().assertTextEquals(url).performClick()
+        rule.waitForIdle()
+        val started = shadowOf(rule.activity).nextStartedActivity
+        assertEquals(Intent.ACTION_VIEW, started.action)
+        assertEquals(Uri.parse(url), started.data)
+        assertEquals(true, started.hasCategory(Intent.CATEGORY_BROWSABLE))
+        rule.onNodeWithTag(TAG_ABOUT_PRIVACY_URL).assertIsDisplayed()
     }
 }
