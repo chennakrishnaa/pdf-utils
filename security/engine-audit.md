@@ -204,8 +204,36 @@ Merge time grows superlinearly with the number of distinct images (SR-3):
 | SR-4 | Low (defence in depth) | `engine/ImagePages.kt` `open`: `Format.OTHER -> Verdict.OK` | **Anything that is not `FF D8 FF` / `\x89PNG` gets no gate**, but MuPDF recognises a JPEG from `FF D8` alone. `FF D8 00` + a progressive bomb is decoded unbounded through the engine API. In the app this is not reachable: `ImageNormalizer.sniff` also requires `FF D8 FF`, so such a file goes to Android's `ImageDecoder` instead (platform decoder, not tested here). GIF/BMP/TIFF/PSD bombs are rejected by MuPDF. | `scratchpad/sr/c/j-ffd8-nonff.jpg` via `estimateImage`/`imagesToPdf` directly | None today. The engine's safety depends on its caller's normaliser (the code comment says so). | Ran: 1,079 MB, tracking the cap | Reject `Format.OTHER` in the engine (`UnsupportedImageFileException`), since the app never sends it anything else. |
 | SR-5 | Low | MuPDF predictor filter, reached from `CompressOp` (decode of a Flate image under 40 MP) | **`/DecodeParms /Columns` inflates the predictor's row buffers** independently of `/Width`: about 268 MB per buffer. | `scratchpad/sr/c/c-predictor.pdf` (759 B) | About 330 MB native per such image during Compress; bounded by MuPDF's column check. | Ran: 332 MB | Skip images whose `DecodeParms` `Columns`/`Colors`/`BitsPerComponent` disagree with `Width`/colour space/BPC. |
 
-### Short re-fuzz, regression of legitimate inputs
-Running at the time of this commit (seed 4242, 170 s per target, capped); results follow in a later commit if the session allows. Otherwise: not checked.
+### Regression of legitimate inputs (capped JVM; est + i2p HIGH + i2p Original + append, all `Ok`)
+
+| Input | Peak RSS | Time (all four calls) |
+|---|---|---|
+| 12 MP baseline JPEG (4000×3000) | 130 MB | 0.7 s |
+| 48 MP baseline JPEG (8000×6000) | 134 MB | 0.7 s |
+| 12 MP progressive JPEG | 154 MB | 0.8 s |
+| 2000×1500 gray JPEG | 82 MB | 0.2 s |
+| 800×600 CMYK JPEG | 78 MB | 0.2 s |
+| 800×600 JPEG + ICC + EXIF | 78 MB | 0.2 s |
+| 12 MP RGB PNG | 209 MB | 2.0 s |
+| 10 MP 16-bit RGB PNG | 241 MB | 2.4 s |
+| 15 MP RGBA PNG | 323 MB | 4.0 s |
+
+- **Colour checks.** These compare page-0 renders of `imagesToPdf(null)` outputs.
+  - JPEG+ICC+EXIF (EXIF stripped through the `readKept` path) against the same JPEG+ICC without EXIF: **max diff 0**.
+  - CMYK: max diff 0, but the result is **inconclusive**. MuPDF's JPEG writer emitted no Adobe APP14, so the generated file never exercised the Adobe rewrite. The ICC profile used (MuPDF `rgb.icc`, effectively sRGB) also renders the same as no profile.
+  - So "ICC kept, colours unchanged" holds for the strip path. The Adobe-rewrite colour equivalence is **not checked** with a real Adobe-marked CMYK file.
+- **30-page mixed PDF.** The PDF had text on every page, an image on every 3rd page and a URI link on page 1.
+  - compress → 30 pages, "Page 17 marker" text, link kept.
+  - merge(f,f) → 60 pages, text and link kept.
+  - append → 31 pages, text and link kept.
+
+### Short re-fuzz
+Seed 4242 (the audit used 1, 7 and 20261123), 170 s per target, one capped child JVM per target (`ulimit -v 3000000`, `-Xmx256m`), audit oracle plus "no call > 10 s".
+
+| Target | Iterations | Ok | Violations | Child peak RSS |
+|---|---|---|---|---|
+| jpeg | 2,195 | 914 | 0 (1,280 UnsupportedImage, 1 ImageTooLarge) | 326 MB |
+| png, compress, merge, append | see the next commit (running) | | | |
 
 ### Updated verdict (engine)
 **Not yet acceptable for public release: one Medium remains.** The image gate holds against every structural trick I tried on picked JPEG/PNG files (SA-1/2/3 fixed), and output validation fixes SA-5 without itself becoming a bomb. But the Compress DCT gate (SA-6) is bypassed by the `/DCT` filter abbreviation (SR-1), so a 2 KB PDF still drives a Compress job to an unbounded allocation. This is a one-line class of fix; with SR-1 fixed and tested, I would rate the engine acceptable, with SR-2 to SR-5 as Low follow-ups.
