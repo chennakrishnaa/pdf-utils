@@ -98,13 +98,15 @@ internal object ImagePages {
             ImageLimits.Verdict.UNSUPPORTED -> throw UnsupportedImageFileException(file, null)
             ImageLimits.Verdict.TOO_LARGE -> throw ImageTooLargeException(file)
         }
-        val strip = layout?.metadata.orEmpty()
+        // Edits: metadata segments are dropped, kept JFIF/Adobe segments rewritten bare (ascending, disjoint).
+        val edits = (layout?.metadata.orEmpty().map { Rewrite(it, ByteArray(0)) } + layout?.rewrites.orEmpty())
+            .sortedBy { it.span.start }
         var orientation = -1
         val img = try {
             when {
-                strip.isNotEmpty() -> {
+                edits.isNotEmpty() -> {
                     orientation = jpegOrientation(file, layout!!)
-                    Image(readKept(file, end, strip))
+                    Image(readKept(file, end, edits))
                 }
                 end >= length -> Image(file.absolutePath)
                 else -> Image(readPrefix(file, end))
@@ -121,7 +123,7 @@ internal object ImagePages {
                 throw UnsupportedImageFileException(file, null)
             }
             if (orientation < 0) orientation = img.orientation
-            return Opened(img, format, end - strip.sumOf { it.end - it.start }, orientation)
+            return Opened(img, format, end + edits.sumOf { it.bytes.size - (it.span.end - it.span.start) }, orientation)
         } catch (t: Throwable) {
             img.destroy()
             throw t
@@ -133,20 +135,25 @@ internal object ImagePages {
         return ByteArray(n.toInt()).also { b -> RandomAccessFile(file, "r").use { it.readFully(b) } }
     }
 
-    /** Bytes `[0, end)` of [file] without the [drop] spans (ascending, disjoint), in one array. */
-    private fun readKept(file: File, end: Long, drop: List<Span>): ByteArray {
-        val n = end - drop.sumOf { it.end - it.start }
+    /**
+     * Bytes `[0, end)` of [file] with each edit's span (ascending, disjoint) replaced by its bytes
+     * (empty = dropped), in one array.
+     */
+    private fun readKept(file: File, end: Long, edits: List<Rewrite>): ByteArray {
+        val n = end + edits.sumOf { it.bytes.size - (it.span.end - it.span.start) }
         if (n > Int.MAX_VALUE - 16) throw IOException("image too large")
         val out = ByteArray(n.toInt())
         RandomAccessFile(file, "r").use { raf ->
             var pos = 0L
             var o = 0
-            for (s in drop + Span(end, end)) {
-                val k = (s.start - pos).toInt()
+            for (e in edits + Rewrite(Span(end, end), ByteArray(0))) {
+                val k = (e.span.start - pos).toInt()
                 raf.seek(pos)
                 raf.readFully(out, o, k)
                 o += k
-                pos = s.end
+                e.bytes.copyInto(out, o)
+                o += e.bytes.size
+                pos = e.span.end
             }
         }
         return out
@@ -262,7 +269,12 @@ internal object ImagePages {
         val frameCount: Int = 0,
         /** Component count of the first start-of-scan header; -1 if there is none. */
         val firstScanComponents: Int = -1,
+        /** Kept segments to replace by their bare defined header (see [isJpegMetadata]); ascending. */
+        val rewrites: List<Rewrite> = emptyList(),
     )
+
+    /** Replace bytes [span] of the file by [bytes]. */
+    internal class Rewrite(val span: Span, val bytes: ByteArray)
 
     /** A JPEG frame header: SOF [marker] (`0xC0`..`0xCF`), declared size and component count. */
     internal class JpegFrame(val marker: Int, val width: Int, val height: Int, val components: Int)
@@ -292,6 +304,7 @@ internal object ImagePages {
         var frame: JpegFrame? = null
         var frameCount = 0
         var scanComponents = -1
+        val rewrites = ArrayList<Rewrite>()
         while (true) {
             var b = r.read()
             if (b < 0) return null
@@ -300,7 +313,7 @@ internal object ImagePages {
             do b = r.read() while (b == 0xFF)
             when {
                 b < 0 -> return null
-                b == 0xD9 -> return JpegLayout(r.pos, scanStart, metadata, frame, frameCount, scanComponents)
+                b == 0xD9 -> return JpegLayout(r.pos, scanStart, metadata, frame, frameCount, scanComponents, rewrites)
                 b == 0x00 -> continue // stuffed byte (or stray FF 00 outside a scan)
                 b in 0xD0..0xD7 -> continue // restart marker
                 b == 0x01 || b == 0xD8 -> continue // standalone markers
@@ -315,7 +328,14 @@ internal object ImagePages {
                         val k = r.read(head, minOf(payload, META_PEEK.toLong()).toInt())
                         if (k < minOf(payload, META_PEEK.toLong())) return null
                         payload -= k
-                        if (isJpegMetadata(b, head, k)) metadata.add(Span(markerStart, r.pos + payload))
+                        if (isJpegMetadata(b, head, k)) {
+                            metadata.add(Span(markerStart, r.pos + payload))
+                        } else if (k == META_PEEK && payload > 0 && (b == 0xE0 || b == 0xEE)) {
+                            // Kept JFIF / Adobe segment with bytes beyond its defined header: rewrite it bare.
+                            val tail = if (b == 0xE0) byteArrayOf(0, 0) else ByteArray(0) // JFIF: thumbnail 0x0
+                            val seg = byteArrayOf(0xFF.toByte(), b.toByte(), 0, (2 + k + tail.size).toByte()) + head + tail
+                            rewrites.add(Rewrite(Span(markerStart, r.pos + payload), seg))
+                        }
                     }
                     if (isSof(b)) {
                         frameCount++
@@ -359,6 +379,13 @@ internal object ImagePages {
      * and taken from the original header instead, see [jpegOrientation]). So everything else is
      * dropped: APP0 other than JFIF (JFXX thumbnails), APP1 (EXIF incl. GPS, thumbnail; XMP), APP2
      * other than ICC (MPF), APP3-APP13, APP14 other than Adobe, APP15 and COM.
+     *
+     * Kept segments are cleaned by [jpegScan] (security audit SA-7): a JFIF APP0 is rewritten to its
+     * bare 16-byte header (version, units, densities, thumbnail 0×0, so an embedded JFIF thumbnail
+     * and any trailing bytes are dropped); an Adobe APP14 is cut to its 12 defined payload bytes
+     * (version, flags, colour transform, so the transform is still honoured). ICC_PROFILE APP2 chunks
+     * are kept unchanged because the colours depend on them: text tags inside the profile (its
+     * description, copyright, device model) therefore survive.
      */
     private fun isJpegMetadata(marker: Int, head: ByteArray, n: Int): Boolean = when (marker) {
         0xE0 -> !startsWith(head, n, JFIF)

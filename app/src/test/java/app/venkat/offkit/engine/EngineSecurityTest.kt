@@ -143,8 +143,8 @@ class EngineSecurityTest {
         assertEquals(bad, ImageLimits.jpeg(frame(0xC0, 10, 10, nc = 2), 1, 2))
         assertEquals(bad, ImageLimits.jpeg(frame(0xC0, 10, 10), 2, 3))
         assertEquals(bad, ImageLimits.jpeg(null, 0, -1))
-        assertEquals(ok, ImageLimits.png(10000, 5000))
-        assertEquals(big, ImageLimits.png(10000, 5001))
+        assertEquals(ok, ImageLimits.png(8000, 5000))
+        assertEquals(big, ImageLimits.png(8000, 5001))
         assertEquals(bad, ImageLimits.png(0xFFFFFFFFL, 1))
     }
 
@@ -269,6 +269,89 @@ class EngineSecurityTest {
         assertEquals(null, PdfInputs.validateOutput(good, 2, JobControl.None))
         assertEquals(PdfResult.Err(PdfError.Corrupt), PdfInputs.validateOutput(good, 3, JobControl.None))
         assertFalse(good.exists())
+    }
+
+    /* ------------------------------------------------------------------ kept-segment hygiene (SA-7) */
+
+    private val secret = "ZQXSECRET".toByteArray(Charsets.ISO_8859_1)
+
+    /** Segments of [jpeg] before SOS as (marker, start, end) and the SOS offset. */
+    private fun withoutApp(jpeg: ByteArray, marker: Int): ByteArray {
+        val (segs, _) = Fixtures.jpegHeaderSegments(jpeg)
+        val s = segs.firstOrNull { it.first == marker } ?: return jpeg
+        return jpeg.copyOfRange(0, s.second) + jpeg.copyOfRange(s.third, jpeg.size)
+    }
+
+    private fun sosToEnd(jpeg: ByteArray): ByteArray = jpeg.copyOfRange(Fixtures.jpegHeaderSegments(jpeg).second, jpeg.size)
+
+    /** SOI + [segments] + the rest of [base] after its SOI (its own APP0/APP14 removed). */
+    private fun assemble(base: ByteArray, vararg segments: ByteArray): ByteArray {
+        val rest = withoutApp(withoutApp(base, 0xE0), 0xEE)
+        return rest.copyOfRange(0, 2) + segments.fold(ByteArray(0)) { a, b -> a + b } + rest.copyOfRange(2, rest.size)
+    }
+
+    private fun jfif(thumbW: Int, thumbH: Int, extra: ByteArray) = Fixtures.jpegSegment(
+        0xE0,
+        "JFIF\u0000".toByteArray(Charsets.ISO_8859_1) + byteArrayOf(1, 2, 1, 0, 72, 0, 72, thumbW.toByte(), thumbH.toByte()) +
+            ByteArray(thumbW * thumbH * 3) { 0x5A } + extra,
+    )
+
+    private fun adobe(transform: Int, extra: ByteArray) = Fixtures.jpegSegment(
+        0xEE, "Adobe".toByteArray(Charsets.ISO_8859_1) + byteArrayOf(0, 100, 0, 0, 0, 0, transform.toByte()) + extra,
+    )
+
+    @Test
+    fun keptJfifAndAdobeSegments_areRewrittenBare_pixelsUnchanged() {
+        val base = Fixtures.jpeg(dir, "sa7-base.jpg", 320, 240).readBytes()
+        val planted = write("sa7.jpg", assemble(base, jfif(2, 1, secret), adobe(1, secret)))
+        val clean = write("sa7-clean.jpg", assemble(base, jfif(0, 0, ByteArray(0)), adobe(1, ByteArray(0))))
+        assertTrue(Fixtures.indexOf(planted.readBytes(), secret) >= 0)
+
+        val orig = out("sa7-orig.pdf")
+        assertTrue(engine.imagesToPdf(listOf(planted), PageSize.FIT_IMAGE, orig) is PdfResult.Ok)
+        val appended = out("sa7-append.pdf")
+        assertTrue(engine.appendImages(Fixtures.textPdf(dir, "sa7-doc.pdf", listOf("x")), listOf(planted), appended) is PdfResult.Ok)
+        val cleanPdf = out("sa7-cleanref.pdf")
+        assertTrue(engine.imagesToPdf(listOf(clean), PageSize.FIT_IMAGE, cleanPdf) is PdfResult.Ok)
+
+        for (pdf in listOf(orig, appended)) {
+            assertFalse("${pdf.name} carries planted bytes", Fixtures.pdfContains(pdf, secret))
+            val embedded = Fixtures.rawImageStreams(pdf).single()
+            assertTrue(sosToEnd(embedded).contentEquals(sosToEnd(planted.readBytes()))) // pixels bit-identical
+            val (segs, _) = Fixtures.jpegHeaderSegments(embedded)
+            val app0 = segs.single { it.first == 0xE0 }
+            assertEquals(16 + 2, app0.third - app0.second) // FF E0 + 16-byte segment
+            val app14 = segs.single { it.first == 0xEE }
+            assertEquals(14 + 2, app14.third - app14.second)
+        }
+        // Same pixels as the image with bare segments written by hand.
+        assertTrue(Fixtures.rawImageStreams(orig).single().contentEquals(Fixtures.rawImageStreams(cleanPdf).single()))
+        assertEquals(Fixtures.render(cleanPdf, 0).rgb.toList(), Fixtures.render(orig, 0).rgb.toList())
+    }
+
+    @Test
+    fun cmykAdobeTransformStillHonoured_afterTruncation() {
+        val pix = com.artifex.mupdf.fitz.Pixmap(com.artifex.mupdf.fitz.ColorSpace.DeviceCMYK, 64, 48, false)
+        val cmyk = try {
+            pix.clear(0)
+            val buf = pix.asJPEG(90, false)
+            try { buf.asByteArray() } finally { buf.destroy() }
+        } finally {
+            pix.destroy()
+        }
+        val (segs, _) = Fixtures.jpegHeaderSegments(cmyk)
+        val a = segs.firstOrNull { it.first == 0xEE }
+        val withAdobe = if (a == null) assemble(cmyk, adobe(0, ByteArray(0))) else cmyk
+        val seg = Fixtures.jpegHeaderSegments(withAdobe).first.single { it.first == 0xEE }
+        val payload = withAdobe.copyOfRange(seg.second + 4, seg.third)
+        val tailed = withAdobe.copyOfRange(0, seg.second) + Fixtures.jpegSegment(0xEE, payload + secret) +
+            withAdobe.copyOfRange(seg.third, withAdobe.size)
+        val before = out("cmyk-before.pdf")
+        val after = out("cmyk-after.pdf")
+        assertTrue(engine.imagesToPdf(listOf(write("cmyk.jpg", withAdobe)), PageSize.FIT_IMAGE, before) is PdfResult.Ok)
+        assertTrue(engine.imagesToPdf(listOf(write("cmyk-tail.jpg", tailed)), PageSize.FIT_IMAGE, after) is PdfResult.Ok)
+        assertFalse(Fixtures.pdfContains(after, secret))
+        assertEquals(Fixtures.render(before, 0).rgb.toList(), Fixtures.render(after, 0).rgb.toList())
     }
 
     /* ------------------------------------------------------------------ job limits (SA-9) */

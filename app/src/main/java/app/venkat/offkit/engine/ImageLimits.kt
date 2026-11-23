@@ -16,7 +16,8 @@ class ImageTooLargeException(val file: File) : RuntimeException("image too large
  * Reasoning for the numbers (a phone gives an app a few hundred MB of native memory at best):
  * - A decoded RGB pixel is 3 bytes: 50 MP ≈ 150 MB raw, the largest single buffer we accept.
  * - A PNG is always decoded to a full pixmap (plus MuPDF's inflated sample buffer, which can be
- *   twice that for 16-bit samples), so PNG is capped at [MAX_PNG_PIXELS].
+ *   twice that for 16-bit samples, plus a Java-heap copy for the size estimate), so PNG is capped
+ *   lower, at [MAX_PNG_PIXELS].
  * - A progressive or multi-scan JPEG (SOF2/6/10/14, lossless/hierarchical/arithmetic types, or a
  *   sequential frame whose first scan does not carry every component) makes libjpeg buffer the
  *   WHOLE image as DCT coefficients, about 2 bytes per sample ≈ 6 B/px: 50 MP ≈ 300 MB. Capped at
@@ -25,15 +26,20 @@ class ImageTooLargeException(val file: File) : RuntimeException("image too large
  *   a few rows at a time, and MuPDF decodes it with DCT scaling (down to 1/8) when it only needs a
  *   smaller pixmap, so it may be larger: [MAX_SEQUENTIAL_JPEG_PIXELS].
  * - No edge may exceed [MAX_EDGE] (and none may be 0).
- * Peak resident memory of `estimate` + `imagesToPdf` at each cap was measured on the host (see the
- * SF1 report): every case stayed below about 700 MB.
+ * Peak resident memory (host x86_64, MuPDF 1.28.5, -Xmx512m, flat-colour images right at the cap,
+ * worst of `estimate` and `imagesToPdf` at every level): 50 MP progressive JPEG 238 MB, 250 MP
+ * baseline JPEG 159 MB, 50 MP PNG 690 MB (hence the PNG cap of 40 MP).
  */
 internal object ImageLimits {
     /** Largest accepted width or height, in pixels. */
     const val MAX_EDGE = 65_500
 
-    /** Largest accepted PNG, in pixels (width × height). */
-    const val MAX_PNG_PIXELS = 50_000_000L
+    /**
+     * Largest accepted PNG, in pixels (width × height). Lowered from 50 MP after measuring: a flat
+     * 50 MP RGB PNG peaked at 690 MB RSS in `estimate` (pixmap + raw stream + its Java-heap copy for
+     * the deflate estimate), 30 MP at 466 MB; 40 MP ≈ 580 MB.
+     */
+    const val MAX_PNG_PIXELS = 40_000_000L
 
     /** Largest accepted progressive / multi-scan / non-sequential JPEG, in pixels. */
     const val MAX_BUFFERED_JPEG_PIXELS = 50_000_000L
