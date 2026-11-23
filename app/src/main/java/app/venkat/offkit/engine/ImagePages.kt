@@ -91,7 +91,7 @@ internal object ImagePages {
                 l.frame?.let { declaredW = it.width.toLong(); declaredH = it.height.toLong() }
                 ImageLimits.jpeg(l.frame, l.frameCount, l.firstScanComponents)
             }
-            Format.PNG -> png!!.let { ImageLimits.png(it.width, it.height, it.bitDepth, it.colorType) }
+            Format.PNG -> png!!.let { ImageLimits.png(it.width, it.height, it.bitDepth, it.colorType, it.transparency) }
             Format.OTHER -> ImageLimits.Verdict.OK // already re-encoded at <= 4096 px by ImageNormalizer
         }
         when (verdict) {
@@ -411,9 +411,17 @@ internal object ImagePages {
     /**
      * Result of [pngScan]: [end] as for [pngEnd]; [width]/[height] from the IHDR chunk as unsigned
      * values and its [bitDepth] / [colorType] bytes, all -1 when the first chunk is not a 13-byte
-     * IHDR (such a file is rejected).
+     * IHDR (such a file is rejected); [transparency] if the file has a `tRNS` chunk (which makes
+     * MuPDF decode an alpha channel).
      */
-    internal class PngLayout(val end: Long, val width: Long, val height: Long, val bitDepth: Int, val colorType: Int)
+    internal class PngLayout(
+        val end: Long,
+        val width: Long,
+        val height: Long,
+        val bitDepth: Int,
+        val colorType: Int,
+        val transparency: Boolean,
+    )
 
     /** The walk of [pngEnd], also reading the declared size from the first chunk (IHDR). */
     internal fun pngScan(file: File): PngLayout? {
@@ -424,6 +432,7 @@ internal object ImagePages {
             var height = -1L
             var bitDepth = -1
             var colorType = -1
+            var transparency = false
             while (pos + 12 <= fileLen) {
                 raf.seek(pos)
                 val len = raf.readInt().toLong() and 0xFFFFFFFFL
@@ -436,7 +445,8 @@ internal object ImagePages {
                     bitDepth = raf.readUnsignedByte()
                     colorType = raf.readUnsignedByte()
                 }
-                if (type == IEND) return PngLayout(next, width, height, bitDepth, colorType)
+                if (type == TRNS) transparency = true
+                if (type == IEND) return PngLayout(next, width, height, bitDepth, colorType, transparency)
                 pos = next
             }
             return null
@@ -445,6 +455,7 @@ internal object ImagePages {
 
     private const val IEND = 0x49454E44 // "IEND"
     private const val IHDR = 0x49484452 // "IHDR"
+    private const val TRNS = 0x74524E53 // "tRNS"
 
     /**
      * Downscales [img] so that its long edge is at most [level]'s `maxLongEdgePx` (never upscales)

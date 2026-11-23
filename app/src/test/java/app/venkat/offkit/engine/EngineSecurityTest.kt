@@ -21,7 +21,8 @@ import javax.imageio.ImageWriteParam
  * Safe by construction: every bomb below is rejected from its header BEFORE any decode, so each
  * call returns in milliseconds and allocates nothing large. If the gate ever regressed these
  * inputs would exhaust memory, so they are only ever generated here (never stored) and each call
- * is also asserted to take < 2 s.
+ * is also asserted to take < 2 s. (One exception: [png19Mp_passesTheGate] decodes a 19 MP PNG,
+ * about 60 MB, to show the gate lets it through.)
  */
 class EngineSecurityTest {
     private val engine = MuPdfEngine()
@@ -171,6 +172,13 @@ class EngineSecurityTest {
         assertEquals(big, png(5000, 2001, 16, 2))
         assertEquals(ok, png(3000, 2500, 16, 6))
         assertEquals(big, png(3000, 2501, 16, 6))
+        // A tRNS chunk adds an alpha channel: 8-bit RGB / palette 15 MP, 16-bit gray 15 MP.
+        for (type in listOf(2, 3)) {
+            assertEquals(ok, ImageLimits.png(5000, 3000, 8, type, transparency = true))
+            assertEquals(big, ImageLimits.png(5000, 3001, 8, type, transparency = true))
+        }
+        assertEquals(ok, ImageLimits.png(5000, 3000, 16, 0, transparency = true))
+        assertEquals(big, ImageLimits.png(5000, 3001, 16, 0, transparency = true))
         // Edges, zero size, out-of-range values, invalid colour type / bit depth.
         assertEquals(big, png(65501, 1, 8, 2))
         assertEquals(bad, png(0, 10, 8, 2))
@@ -193,6 +201,18 @@ class EngineSecurityTest {
         // 16-bit RGBA over the byte budget (8 MP × 8 B), though well under 20 MP.
         val deep = write("8mp-rgba16.png", Fixtures.pngDeclaring(4000, 2000, bitDepth = 16, colorType = 6))
         assertEquals(PdfEstimate.Err(PdfError.ImageTooLarge), fast("16-bit RGBA estimate") { engine.estimateImage(deep) })
+        // 8-bit RGB with a tRNS chunk (decoded with alpha) over the byte budget at 18 MP.
+        val ihdrEnd = 8 + 25
+        val rgb = Fixtures.pngDeclaring(6000, 3000)
+        val trns = rgb.copyOfRange(0, ihdrEnd) + pngChunk("tRNS", ByteArray(6)) + rgb.copyOfRange(ihdrEnd, rgb.size)
+        val f2 = write("18mp-trns.png", trns)
+        assertEquals(PdfEstimate.Err(PdfError.ImageTooLarge), fast("tRNS estimate") { engine.estimateImage(f2) })
+    }
+
+    private fun pngChunk(type: String, data: ByteArray): ByteArray {
+        val t = type.toByteArray(Charsets.ISO_8859_1)
+        val crc = java.util.zip.CRC32().apply { update(t); update(data) }.value
+        return java.nio.ByteBuffer.allocate(12 + data.size).putInt(data.size).put(t).put(data).putInt(crc.toInt()).array()
     }
 
     @Test
