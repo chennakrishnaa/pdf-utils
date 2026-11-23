@@ -99,6 +99,13 @@ check_apk() {
 }
 
 check_apk debug "$ROOT/app/build/outputs/apk/debug/app-debug.apk"
-check_apk release "$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"
+# The release APK is app-release-unsigned.apk without a signing key and app-release.apk with one
+# (see RELEASING.md); take the name of the one just built from AGP's output metadata.
+RELEASE_DIR="$ROOT/app/build/outputs/apk/release"
+RELEASE_APK_NAME="$(python3 -I -c '
+import json, sys
+print(json.load(open(sys.argv[1]))["elements"][0]["outputFile"])
+' "$RELEASE_DIR/output-metadata.json")" || fail "cannot read $RELEASE_DIR/output-metadata.json"
+check_apk release "$RELEASE_DIR/$RELEASE_APK_NAME"
 
 echo "VERIFY OK"
