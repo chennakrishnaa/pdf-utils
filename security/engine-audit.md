@@ -110,3 +110,109 @@ About 77,000 recorded fuzz executions plus crafted inputs found no memory-safety
 - **True CMYK (Adobe transform 0/2) JPEG** as an independent seed, and **exhaustive per-byte header truncation** (truncation was random, inside the first 800 bytes).
 - **Android decoders** used by `ImageNormalizer` (HEIC/WebP/GIF via `ImageDecoder`/`BitmapFactory`) are platform code and were not fuzzed.
 - **500 MB PDF / 200-image jobs** were reasoned from code (SA-9), not measured.
+
+## Re-check after fixes (SR)
+
+Re-checker: SR, independent of the fix authors. Code at `main` `ca22d9a` (merged ff-only), compiled in this worktree (`:app:compileDebugKotlin`). The tests used a throwaway standalone probe (`scratchpad/sr/src/SR.java`, not committed), with one JVM per case, `-Xmx256m -XX:+UseSerialGC`, address space capped by `ulimit -v 3000000` and host MuPDF 1.28.5. Peak RSS comes from `/usr/bin/time %M`.
+
+- Each image case runs `estimateImage`, then `imagesToPdf(HIGH)`, then `imagesToPdf(null)`, then `appendImages`.
+- Each PDF case runs `compress(HIGH)`, `merge([f,f])` and `appendImages(f,[small png])`, with the audit's oracle: an `Ok` output must reopen with every page loading, and an `Err` must leave no output.
+- Crafted inputs come from `scratchpad/sr/gen.py` and are saved in `scratchpad/sr/c/`.
+- Timing caveat: an orphaned `gen2.py` from an earlier session was using about 1 CPU core throughout, and I was not permitted to kill it.
+
+### Status of the original findings
+
+| ID | Status | Evidence (what I ran) |
+|---|---|---|
+| SA-2 | **Fixed** for picked images (residual: SR-2) | `case-jpeg-kill.bin`: all four calls return `Err(ImageTooLarge)` in 0-30 ms, peak RSS 72 MB (the audit measured 1,050-3,911 MB). |
+| SA-1 | **Fixed** | `case-jpeg-0.bin`: `ImageTooLarge`, 72 MB. Gate bypass attempts (table below): every hostile header is rejected or bounded, except for the engine-direct non-JPEG/PNG route (SR-4). |
+| SA-3 | **Fixed** | `case-png-0..4.bin`: all `ImageTooLarge`, 71-72 MB, under 60 ms (the audit measured 12-20 s and up to 888 MB). |
+| SA-6 | **Not fixed: bypassable** (SR-1) | `dct-lie.pdf` and `dct-big.pdf` compress: `Ok`, 73 MB (image skipped). The same stream with `/Filter /DCT` (MuPDF's abbreviation) instead of `/DCTDecode` gets past the gate and peaks at **1,048 MB** at the 3 GB cap. |
+| SA-5 | **Fixed** | `case-compress-0.bin` compress, `cycle.pdf` compress, merge and append, `case-append-0.bin` append: all now `Err(Corrupt)`, with no output left. |
+| SA-4 | Fixed for the cases I saw | The `ImageTooLarge`/`UnsupportedImage`/`Corrupt` mapping is correct in every run above. OOM mapping: read only (`isOutOfMemoryFailure`). |
+| SA-7 | Fixed by reading; colour regression check queued (see Regression) | `jpegScan` now rewrites JFIF to its bare 16 bytes and Adobe to its 12 bytes. ICC is kept, and PRIVACY.md now says so. |
+| SA-8 | Accepted risk (documented in PRIVACY.md) | Not re-run. |
+| SA-9 | Partly fixed | Limits exist: 500 images and 1 GiB per input PDF, and Compress takes the stream length from `/Length` instead of `readRawStream`. CPU is not bounded: see SR-3. |
+
+### Image-gate bypass attempts (each in its own capped JVM)
+
+| Input (scratchpad/sr/c/) | Result | Peak RSS | Time |
+|---|---|---|---|
+| SOS before the SOF (`j-early-sos`) | UnsupportedImage | 72 MB | <0.1 s |
+| SOF0 inside an APP1 payload, real SOF2 65500² (`j-sof-in-app-small`) | ImageTooLarge (the walker skips APPn payloads) | 72 MB | <0.1 s |
+| EXIF APP1 carrying a whole progressive bomb as thumbnail | Ok, thumbnail never decoded | 76 MB | 0.1 s |
+| Bomb appended after EOI (MPF-style second image) | Ok, never handed to MuPDF | 76 MB | 0.1 s |
+| Two SOFs (small then huge, and huge then small) | UnsupportedImage (frameCount ≠ 1) | 72 MB | <0.1 s |
+| SOF after the first scan | UnsupportedImage | 72 MB | <0.1 s |
+| DNL (height 0 in the SOF) | UnsupportedImage | 71 MB | <0.1 s |
+| Progressive 7000×7000, 3 components, tiny data | Ok (under the 50 MP cap) | **409 MB** | 1.9 s |
+| Progressive 7000×7000, **4 components** (with or without Adobe) | Ok | **520 MB** (SR-2) | 2.5 s |
+| Progressive 4 components with 4×4 sampling on component 1 | Ok | 250 MB | 1.0 s |
+| Baseline 16000×15560 (249 MP), interleaved, tiny data | Ok (streamed) | 150 MB | 1.1 s |
+| Same, non-interleaved first scan | ImageTooLarge (counted as buffered) | 72 MB | <0.1 s |
+| Same, 4 components (CMYK) | Ok | 200 MB | 1.4 s |
+| Same, SOS spectral selection 1..5 | Ok | 149 MB | 1.1 s |
+| Same, two interleaved scans | Ok | 149 MB | 1.1 s |
+| SOF1 249 MP | Ok | 148 MB | 1.1 s |
+| SOF9 (arithmetic) 49 MP / 51.8 MP | Ok / ImageTooLarge | 140 / 72 MB | 0.8 s |
+| SOF3 (lossless) 49 MP | UnsupportedImage (MuPDF) | 73 MB | <0.1 s |
+| `FF D8 00` + the kill JPEG (`j-ffd8-nonff`, engine direct) | **Ok after decoding the bomb**: routed as `Format.OTHER`, which has no gate | **1,079 MB** (tracks the cap) | 3.0 s (SR-4) |
+| GIF / BMP / TIFF / PSD headers declaring 30000²-65535² with a .jpg/.png name, engine direct | UnsupportedImage (MuPDF rejects them) | 71-75 MB | <0.1 s |
+| APNG: IHDR 100², fcTL 60000² | Ok, MuPDF ignores the APNG chunks | 76 MB | 0.1 s |
+| Two IHDRs (100² then 60000²) | Ok at 100² | 76 MB | 0.1 s |
+| Two IHDRs (8-bit gray, then 16-bit RGBA, same size) | UnsupportedImage | 90 MB | 0.2 s |
+| IHDR not first; CgBI | UnsupportedImage | 71 MB | <0.1 s |
+| Adam7 4472² RGB (at the cap), all-zero data | Ok | 340 MB | 4.5 s (all four calls) |
+| 4472² RGB, maximal-ratio zlib | Ok | 340 MB | 3.7 s |
+| 64² PNG with an iCCP zlib bomb of 1 GB / 8 GB | Ok; MuPDF bails out early (time does not scale) | 204 / 226 MB | 2.6 / 2.8 s |
+
+### Compress / Merge / Add images on bomb PDFs
+
+| Input | compress | merge | append |
+|---|---|---|---|
+| `/Filter /DCT` lie (`c-dct-abbrev`) | Ok, **1,048 MB** (decoded; at a 2 GB cap the first malloc fails and it ends at 73 MB, so the request exceeds about 2 GB) | Ok 71 MB | Ok 74 MB |
+| `/Filter [/DCT]` | Ok, **1,049 MB** | Ok 71 MB | Ok 74 MB |
+| `/DCT` image inside a Form XObject | Ok, **1,048 MB** | 70 MB | 75 MB |
+| `/DCT` lie used as an SMask | Ok, 73 MB (masks are skipped) | 71 MB | 75 MB |
+| Inline image `BI … /F /DCT ID <bomb> EI` | Ok 72 MB (never decoded) | 73 MB | 73 MB |
+| Flate 100×100 RGB with `/DecodeParms` Predictor 15, Colors 32, BPC 16, Columns 4,194,000 | Ok, **332 MB** from 759 bytes (SR-5) | 72 MB | 73 MB |
+| JPX declaring 60000² | Ok 74 MB (skipped) | 70 MB | 75 MB |
+| One image drawn 10,000 times | Ok 74 MB | 74 MB | 75 MB |
+| 5,000 distinct 32×32 images (16 MB) | Ok, 1.6 s, 107 MB | Ok **9.9 s**, 106 MB | Ok 2.0 s, 78 MB |
+| Content stream that is a 200 MB Flate bomb | Ok 72 MB | 74 MB | 75 MB |
+| 1,000,000 nested `q` | Ok 74 MB | 77 MB | 75 MB |
+| `dct-lie.pdf` merged with itself 50 times | Ok (50 pages), 72 MB, 61 ms | | |
+| `loadPage` alone on the 200 MB content bomb / nested-q page | 71 / 72 MB, 28 ms | | |
+
+Output validation (`loadPage` of every page) decodes no images and runs no content streams, so it cannot be turned into the bomb.
+
+Merge time grows superlinearly with the number of distinct images (SR-3):
+
+| Distinct images | Merge time | Peak RSS |
+|---|---|---|
+| 5,000 | 2.3 s | |
+| 10,000 | 9.9 s | |
+| 20,000 (65 MB file) | **57.5 s** | 149 MB |
+
+### New findings
+
+| ID | Sev | Where | Description | Trigger | Impact on a phone | How confirmed | Fix |
+|---|---|---|---|---|---|---|---|
+| SR-1 | **Medium** | `engine/ops/CompressOp.kt` `recompress`: `if ("DCTDecode" in filters)` | **The SA-6 gate is bypassed by the standard abbreviation `/DCT`.** MuPDF treats `/DCT` as DCTDecode for image streams. `filtersOf` returns `["DCT"]`, so the SOF check is skipped. The "last line of defence" `img.width != w` compares against the dictionary, which is exactly what MuPDF reports for a PDF image, so it never fires. libjpeg then sizes its buffers from the stream's SOF2 65500², as in SA-6. Works with `[/DCT]` and inside Form XObjects. | `scratchpad/sr/c/c-dct-abbrev.pdf` (2,298 B: `dct-lie.pdf` with `/DCTDecode` → `/DCT      `) | Compressing a 2 KB PDF gets the app killed by the low-memory killer (same as SA-6). Merge and Add images are unaffected. | Ran: 1,048 MB at the 3 GB cap; at a 2 GB cap the allocation fails up front | Normalise the filter names (`DCT`→`DCTDecode`, and also `Fl`, `AHx`, `A85`, `LZW`, `RL`, `CCF`), or simply decide by "is any filter DCT-like". Better: also run the SOF check whenever MuPDF's `Image` reports a JPEG, whatever the dictionary says. Add a test with `/DCT`. |
+| SR-2 | Low | `engine/ImageLimits.kt` `MAX_BUFFERED_JPEG_PIXELS` (50 MP, whatever the component count) | **The progressive cap is about 1.7× more generous than its KDoc says.** A 1.2 KB hostile progressive header just under 50 MP peaks at 409 MB with 3 components and **520 MB with 4 components** (CMYK/YCCK), against the documented "50 MP progressive 238 MB" and "under ~400 MB". The cap counts pixels, not samples. | `scratchpad/sr/c/j-prog4-49mp.jpg` | Picking one file (the estimate runs automatically) costs about 0.5 GB native: survivable on most phones, but can trigger the LMK on 2-3 GB devices. | Ran | Budget samples rather than pixels (for example 150 M samples: a 4-component image capped at 37.5 MP), or lower the buffered cap. Re-measure with hostile tiny-data headers, not only real images. |
+| SR-3 | Low | `PdfInputs.SAVE_OPTIONS` `garbage=deduplicate` (Merge; Compress and Add images save the same way) | **Save time grows superlinearly with the number of distinct small streams.** The save is a single native call, so it cannot be cancelled. | `c-5000-imgs.pdf` merged ×4 (20,000 images, 65 MB): 57.5 s. A single hostile PDF with more images scales worse. | The engine thread is blocked for minutes and other jobs wait; no memory growth. | Ran (2.3 / 9.9 / 57.5 s at 5k / 10k / 20k) | Accept and document, or use `garbage=compact` for Merge, or cap the object count per input. |
+| SR-4 | Low (defence in depth) | `engine/ImagePages.kt` `open`: `Format.OTHER -> Verdict.OK` | **Anything that is not `FF D8 FF` / `\x89PNG` gets no gate**, but MuPDF recognises a JPEG from `FF D8` alone. `FF D8 00` + a progressive bomb is decoded unbounded through the engine API. In the app this is not reachable: `ImageNormalizer.sniff` also requires `FF D8 FF`, so such a file goes to Android's `ImageDecoder` instead (platform decoder, not tested here). GIF/BMP/TIFF/PSD bombs are rejected by MuPDF. | `scratchpad/sr/c/j-ffd8-nonff.jpg` via `estimateImage`/`imagesToPdf` directly | None today. The engine's safety depends on its caller's normaliser (the code comment says so). | Ran: 1,079 MB, tracking the cap | Reject `Format.OTHER` in the engine (`UnsupportedImageFileException`), since the app never sends it anything else. |
+| SR-5 | Low | MuPDF predictor filter, reached from `CompressOp` (decode of a Flate image under 40 MP) | **`/DecodeParms /Columns` inflates the predictor's row buffers** independently of `/Width`: about 268 MB per buffer. | `scratchpad/sr/c/c-predictor.pdf` (759 B) | About 330 MB native per such image during Compress; bounded by MuPDF's column check. | Ran: 332 MB | Skip images whose `DecodeParms` `Columns`/`Colors`/`BitsPerComponent` disagree with `Width`/colour space/BPC. |
+
+### Short re-fuzz, regression of legitimate inputs
+Running at the time of this commit (seed 4242, 170 s per target, capped); results follow in a later commit if the session allows. Otherwise: not checked.
+
+### Updated verdict (engine)
+**Not yet acceptable for public release: one Medium remains.** The image gate holds against every structural trick I tried on picked JPEG/PNG files (SA-1/2/3 fixed), and output validation fixes SA-5 without itself becoming a bomb. But the Compress DCT gate (SA-6) is bypassed by the `/DCT` filter abbreviation (SR-1), so a 2 KB PDF still drives a Compress job to an unbounded allocation. This is a one-line class of fix; with SR-1 fixed and tested, I would rate the engine acceptable, with SR-2 to SR-5 as Low follow-ups.
+
+### Not checked (SR)
+- No device or arm64 run.
+- Android `ImageDecoder` on bombs that start `FF D8` without a following `FF` (the SR-4 route).
+- Type3-glyph images: covered by reading only (Compress enumerates every image object by number, as the Form-XObject case shows).
+- `/Length` lying low, indirect or absent: read only.
+- JBIG2 bombs: not built (skipped by filter name; `JBIG2Decode` has no abbreviation).
