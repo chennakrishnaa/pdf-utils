@@ -7,12 +7,16 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /** Launches the real Activity on a device and checks the installed app requests no permissions. */
 @RunWith(AndroidJUnit4::class)
 class AppLaunchOnDeviceTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
     private val target = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test

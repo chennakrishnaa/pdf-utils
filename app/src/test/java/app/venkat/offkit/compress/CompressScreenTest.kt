@@ -19,6 +19,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import app.venkat.offkit.FakePdfEngine
 import app.venkat.offkit.MainActivity
+import app.venkat.offkit.OnboardingSeenRule
 import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.R
 import app.venkat.offkit.core.CoreTestSupport
@@ -76,6 +77,9 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class CompressScreenTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 

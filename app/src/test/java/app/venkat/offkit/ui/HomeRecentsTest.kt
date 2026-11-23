@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import app.venkat.offkit.FakePdfEngine
 import app.venkat.offkit.MainActivity
+import app.venkat.offkit.OnboardingSeenRule
 import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.R
 import app.venkat.offkit.core.CoreTestSupport
@@ -39,6 +40,9 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class HomeRecentsTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
     /** Runs before the activity starts: a fresh store with empty preferences, and the fake engine. */
     @get:Rule(order = 0)
     val freshStore = object : ExternalResource() {

@@ -12,6 +12,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
+import app.venkat.offkit.OnboardingSeenRule
 import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.FakePdfEngine
 import app.venkat.offkit.MainActivity
@@ -40,6 +41,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class AboutLicencesTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 
