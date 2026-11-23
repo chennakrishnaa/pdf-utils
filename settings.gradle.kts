@@ -17,5 +17,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PaperPixel"
+rootProject.name = "Offkit"
 include(":app")
