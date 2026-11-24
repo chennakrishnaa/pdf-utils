@@ -1,0 +1,99 @@
+package app.venkat.offkit.engine.remote
+
+import android.system.Os
+import android.system.OsConstants
+import java.io.File
+
+/**
+ * Watchdog limits for one call of [RemoteEngine]. A call that breaks one gets the engine process
+ * killed: [stallMs] / [totalMs] / [imageTotalMs] give `PdfError.TimedOut`, [memoryBytes] gives
+ * `PdfError.OutOfMemory`.
+ *
+ * MuPDF calls cannot be interrupted from inside (see `security/engine-audit.md`, SR3: hostile PDFs
+ * that spend minutes in one call or allocate 900 MB+), so the only reliable stop is killing the
+ * process from outside. The defaults are the production values; tests inject smaller ones.
+ *
+ * @param stallMs longest time a PDF operation may go without a progress event or a result. The
+ *   clock starts when the request is sent and restarts on every progress event.
+ * @param totalMs longest time a PDF operation may take in all, progress or not.
+ * @param imageTotalMs longest time an `estimateImage` or image-normalisation request may take.
+ * @param memoryBytes largest resident set (RSS) the engine process may have while a call waits;
+ *   [Long.MAX_VALUE] disables the check.
+ * @param memorySampleMs how often the engine's RSS is sampled while waiting.
+ */
+data class EngineLimits(
+    val stallMs: Long = STALL_MS,
+    val totalMs: Long = TOTAL_MS,
+    val imageTotalMs: Long = IMAGE_TOTAL_MS,
+    val memoryBytes: Long = Long.MAX_VALUE,
+    val memorySampleMs: Long = MEMORY_SAMPLE_MS,
+) {
+    companion object {
+        /**
+         * 90 s without progress. Ordinary operations report progress at least once per page or
+         * image, and one legitimate step (one large photo page recompressed) takes seconds, so
+         * 90 s leaves well over an order of magnitude of headroom for slow phones, while a hostile
+         * file stuck in one MuPDF call (SR3-2/3/4) is stopped in minutes rather than never.
+         */
+        const val STALL_MS = 90_000L
+
+        /**
+         * 15 minutes per PDF operation in all. The largest legitimate jobs (500 images, a 1 GiB
+         * PDF) still make progress, so the stall limit does not stop them; this bounds a hostile
+         * file that keeps reporting progress while doing quadratic work (SR3-3: link copying in
+         * merge) and the battery it can burn.
+         */
+        const val TOTAL_MS = 15 * 60_000L
+
+        /**
+         * 30 s for one image estimate or normalisation. These handle one image, already size-capped
+         * by `ImageLimits` from its header, and report no progress; a decode that takes longer than
+         * this is a hostile or broken file.
+         */
+        const val IMAGE_TOTAL_MS = 30_000L
+
+        /** RSS sampled about once a second: `/proc/<pid>/statm` is one small read. */
+        const val MEMORY_SAMPLE_MS = 1_000L
+
+        /**
+         * Hard ceiling of the memory limit: 1536 MiB. Legitimate jobs stream page by page and stay
+         * far below this; SR3-1 shows hostile PDFs reaching 900 MB+ and growing. A 64-bit engine
+         * could otherwise grow until the low-memory killer kills the foreground UI's neighbours (and
+         * the phone stutters) before it gets to the engine.
+         */
+        const val MEMORY_CEILING_BYTES = 1536L * 1024 * 1024
+
+        /**
+         * Share of the device's total RAM the engine may use: 40 %. On a 3 GiB phone that is
+         * about 1.2 GiB, leaving the rest for the system, the foreground UI and other apps.
+         */
+        const val MEMORY_RAM_PERCENT = 40
+
+        /** min([MEMORY_CEILING_BYTES], [MEMORY_RAM_PERCENT] % of [totalRamBytes]). */
+        fun memoryLimitFor(totalRamBytes: Long): Long =
+            if (totalRamBytes <= 0) MEMORY_CEILING_BYTES
+            else minOf(MEMORY_CEILING_BYTES, totalRamBytes / 100 * MEMORY_RAM_PERCENT)
+    }
+}
+
+/** Reads a process's resident set size from `/proc/<pid>/statm` (readable for the same UID). */
+object ProcRss {
+    private val pageSize: Long by lazy {
+        try {
+            Os.sysconf(OsConstants._SC_PAGESIZE).takeIf { it > 0 } ?: 4096L
+        } catch (e: Throwable) {
+            4096L
+        }
+    }
+
+    /** RSS of [pid] in bytes, or null if `/proc/<pid>/statm` cannot be read or parsed. */
+    fun bytes(pid: Int): Long? = try {
+        parseStatm(File("/proc/$pid/statm").readText(), pageSize)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** RSS in bytes from the text of a `statm` file (second field, in pages); null if malformed. */
+    fun parseStatm(text: String, pageSize: Long): Long? =
+        text.trim().split(' ').getOrNull(1)?.toLongOrNull()?.let { it * pageSize }
+}

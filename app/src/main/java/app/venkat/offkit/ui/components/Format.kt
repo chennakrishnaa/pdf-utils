@@ -16,6 +16,7 @@ fun pdfErrorMessage(error: PdfError): Int = when (error) {
     PdfError.Cancelled -> R.string.error_cancelled
     PdfError.NotImplemented -> R.string.error_not_implemented
     PdfError.EngineCrashed -> R.string.error_engine_crashed
+    PdfError.TimedOut -> R.string.error_timed_out
     is PdfError.Io -> R.string.error_generic
 }
 

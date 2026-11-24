@@ -168,6 +168,12 @@ sealed interface PdfError {
     data object EngineCrashed : PdfError
 
     /**
+     * The engine process stopped making progress, or the operation ran past its total time limit,
+     * so the engine was killed (see `RemoteEngine`'s watchdog); any partial output was deleted.
+     */
+    data object TimedOut : PdfError
+
+    /**
      * Any other failure, typically file I/O; [cause] is the original throwable. When the error
      * crossed the engine process boundary, [cause] is an `IOException("<class>: <message>")`.
      */

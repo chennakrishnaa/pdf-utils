@@ -1,8 +1,10 @@
 package app.venkat.offkit
 
+import android.app.ActivityManager
 import android.app.Application
 import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.remote.BoundServiceConnector
+import app.venkat.offkit.engine.remote.EngineLimits
 import app.venkat.offkit.engine.remote.EngineProcess
 import app.venkat.offkit.engine.remote.RemoteEngine
 
@@ -24,10 +26,17 @@ class PdfUtilApp : Application() {
         get() = engineOrNull ?: synchronized(this) {
             engineOrNull ?: run {
                 EngineProcess.checkNotEngineProcess("PdfUtilApp.engine")
-                RemoteEngine(BoundServiceConnector.forService(this))
+                RemoteEngine(BoundServiceConnector.forService(this), limits = engineLimits())
             }.also { engineOrNull = it }
         }
         set(value) {
             engineOrNull = value
         }
+
+    /** Production watchdog limits: default times, memory limit from this device's total RAM. */
+    fun engineLimits(): EngineLimits {
+        val info = ActivityManager.MemoryInfo()
+        getSystemService(ActivityManager::class.java)?.getMemoryInfo(info)
+        return EngineLimits(memoryBytes = EngineLimits.memoryLimitFor(info.totalMem))
+    }
 }

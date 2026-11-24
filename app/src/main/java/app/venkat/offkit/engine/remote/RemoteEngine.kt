@@ -2,6 +2,7 @@ package app.venkat.offkit.engine.remote
 
 import android.os.Bundle
 import android.os.RemoteException
+import android.util.Log
 import app.venkat.offkit.core.ImagePreparer
 import app.venkat.offkit.core.PreparedImage
 import app.venkat.offkit.engine.CompressionLevel
@@ -33,13 +34,32 @@ import java.util.concurrent.TimeUnit
  * process too. A death during it gives `PreparedImage.Err(EngineCrashed)`, a hard cancel
  * `PreparedImage.Err(Cancelled)`; the raw file is deleted in every case.
  *
+ * **Watchdog** ([limits]): MuPDF calls cannot be interrupted, so while waiting the client also
+ * kills the engine and returns `Err(TimedOut)` when a PDF operation goes [EngineLimits.stallMs]
+ * without a progress event or result, or runs past [EngineLimits.totalMs] (image estimate or
+ * normalisation: [EngineLimits.imageTotalMs]); and returns `Err(OutOfMemory)` when the engine's
+ * resident memory, sampled about every [EngineLimits.memorySampleMs] through [rssBytes], exceeds
+ * [EngineLimits.memoryBytes]. If [rssBytes] cannot read it, the memory check is skipped (logged
+ * once). A user cancel takes precedence over the watchdog and still returns `Cancelled`. After a
+ * watchdog kill, partial `out` is deleted and the next call binds a new engine, as for a hard cancel.
+ *
  * Calls are serialised (one request at a time). Do not call on the main thread.
+ *
+ * @param limits watchdog limits; the app passes the default times and a memory limit from
+ *   [EngineLimits.memoryLimitFor]. Tests pass small ones.
+ * @param rssBytes resident set size in bytes of an engine pid, or null if unknown.
+ * @param nanoTime monotonic clock for every deadline here (polling itself waits in real time).
+ * @param log where the one-time "cannot read the engine's memory" warning goes.
  */
 class RemoteEngine(
     private val connector: EngineConnector,
     private val pollMs: Long = 100,
     private val cancelGraceMs: Long = 2_000,
     private val deathWaitMs: Long = 1_000,
+    private val limits: EngineLimits = EngineLimits(),
+    private val rssBytes: (pid: Int) -> Long? = ProcRss::bytes,
+    private val nanoTime: () -> Long = System::nanoTime,
+    private val log: (String) -> Unit = { Log.w(TAG, it) },
 ) : PdfEngine, ImagePreparer {
     private sealed interface Event {
         data class Progress(val done: Int, val total: Int) : Event
@@ -62,9 +82,18 @@ class RemoteEngine(
 
     private sealed interface Reply {
         data class Done(val bundle: Bundle) : Reply
-        data object Crashed : Reply
-        data object Killed : Reply
+
+        /**
+         * No result: the engine died ([PdfError.EngineCrashed]) or was killed for a hard cancel
+         * ([PdfError.Cancelled]) or by the watchdog ([PdfError.TimedOut], [PdfError.OutOfMemory]).
+         */
+        data class Failed(val error: PdfError) : Reply
     }
+
+    private val crashed = Reply.Failed(PdfError.EngineCrashed)
+
+    @Volatile
+    private var rssUnreadableLogged = false
 
     private val lock = Any()
     private var session: Session? = null
@@ -81,8 +110,7 @@ class RemoteEngine(
     override fun estimateImage(image: File): PdfEstimate =
         when (val r = call(EngineRequest.Estimate(image.path), JobControl.None)) {
             is Reply.Done -> EngineWire.decodeEstimate(r.bundle)
-            Reply.Crashed -> PdfEstimate.Err(PdfError.EngineCrashed)
-            Reply.Killed -> PdfEstimate.Err(PdfError.Cancelled)
+            is Reply.Failed -> PdfEstimate.Err(r.error)
         }
 
     override fun compress(pdf: File, level: CompressionLevel, out: File, job: JobControl): PdfResult =
@@ -104,8 +132,7 @@ class RemoteEngine(
             is Reply.Done -> EngineWire.decodePrepared(r.bundle, destDir, index).also {
                 if (it is PreparedImage.Ok) lastImagePreparedByPid = EngineWire.preparedPid(r.bundle)
             }
-            Reply.Crashed -> PreparedImage.Err(PdfError.EngineCrashed)
-            Reply.Killed -> PreparedImage.Err(PdfError.Cancelled)
+            is Reply.Failed -> PreparedImage.Err(r.error)
         }
     } finally {
         raw.delete()
@@ -114,8 +141,7 @@ class RemoteEngine(
     private fun result(request: EngineRequest, out: File, job: JobControl): PdfResult =
         when (val r = call(request, job)) {
             is Reply.Done -> EngineWire.decodeResult(r.bundle).also { if (it is PdfResult.Err) out.delete() }
-            Reply.Crashed -> PdfResult.Err(PdfError.EngineCrashed).also { out.delete() }
-            Reply.Killed -> PdfResult.Err(PdfError.Cancelled).also { out.delete() }
+            is Reply.Failed -> PdfResult.Err(r.error).also { out.delete() }
         }
 
     /** The live session, binding a new one if needed; null if binding failed. */
@@ -154,12 +180,12 @@ class RemoteEngine(
      * freshly bound engine.
      */
     private fun call(request: EngineRequest, job: JobControl): Reply = synchronized(lock) {
-        attempt(request, job) ?: attempt(request, job) ?: Reply.Crashed
+        attempt(request, job) ?: attempt(request, job) ?: crashed
     }
 
     /** One send-and-wait; null if the request never reached the engine. Holds [lock]. */
     private fun attempt(request: EngineRequest, job: JobControl): Reply? {
-        val s = connected() ?: return Reply.Crashed
+        val s = connected() ?: return crashed
         val service = s.service!!
         val id = nextId++
         val events = LinkedBlockingQueue<Event>()
@@ -184,6 +210,11 @@ class RemoteEngine(
             return null
         }
 
+        val sentAt = nanoTime()
+        val totalNs = TimeUnit.MILLISECONDS.toNanos(if (request.isImageRequest()) limits.imageTotalMs else limits.totalMs)
+        val stallNs = TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
+        var lastActivity = sentAt
+        var nextRssSample = sentAt
         var cancelDeadline = 0L
         var interrupted = false
         try {
@@ -195,28 +226,47 @@ class RemoteEngine(
                     null
                 }
                 when (event) {
-                    is Event.Progress -> job.progress(event.done, event.total)
+                    is Event.Progress -> {
+                        lastActivity = nanoTime()
+                        job.progress(event.done, event.total)
+                    }
                     is Event.Result -> {
                         s.events = null
                         return Reply.Done(event.bundle)
                     }
                     Event.Lost -> {
                         drop(s)
-                        return Reply.Crashed
+                        return crashed
                     }
                     null -> Unit
                 }
                 if (cancelDeadline == 0L && (interrupted || job.isCancelled())) {
-                    cancelDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(cancelGraceMs)
+                    cancelDeadline = nanoTime() + TimeUnit.MILLISECONDS.toNanos(cancelGraceMs)
                     try {
                         service.cancel(id)
                     } catch (e: RemoteException) {
                         // Death is reported through the session.
                     }
                 }
-                if (cancelDeadline != 0L && System.nanoTime() - cancelDeadline >= 0) {
+                if (cancelDeadline != 0L) {
+                    // A user cancel wins over the watchdog: it ends as Cancelled either way.
+                    if (nanoTime() - cancelDeadline >= 0) {
+                        killAndWait(s)
+                        return Reply.Failed(PdfError.Cancelled)
+                    }
+                    continue
+                }
+                val now = nanoTime()
+                if (now - lastActivity >= stallNs || now - sentAt >= totalNs) {
                     killAndWait(s)
-                    return Reply.Killed
+                    return Reply.Failed(PdfError.TimedOut)
+                }
+                if (limits.memoryBytes != Long.MAX_VALUE && s.pid > 0 && now - nextRssSample >= 0) {
+                    nextRssSample = now + TimeUnit.MILLISECONDS.toNanos(limits.memorySampleMs)
+                    if (rssOverLimit(s.pid)) {
+                        killAndWait(s)
+                        return Reply.Failed(PdfError.OutOfMemory)
+                    }
                 }
             }
             @Suppress("UNREACHABLE_CODE")
@@ -226,14 +276,34 @@ class RemoteEngine(
         }
     }
 
+    /** True if [pid]'s resident memory exceeds the limit. Unreadable: false (fail open), logged once. */
+    private fun rssOverLimit(pid: Int): Boolean {
+        val rss = try {
+            rssBytes(pid)
+        } catch (e: RuntimeException) {
+            null
+        }
+        if (rss == null) {
+            if (!rssUnreadableLogged) {
+                rssUnreadableLogged = true
+                log("Cannot read the memory use of engine pid $pid; the engine memory limit is not enforced")
+            }
+            return false
+        }
+        return rss > limits.memoryBytes
+    }
+
+    private fun EngineRequest.isImageRequest() =
+        this is EngineRequest.Estimate || this is EngineRequest.NormalizeImage
+
     /**
      * Kills the stuck engine and waits up to [deathWaitMs] for its death notification, so the next
      * call binds a new process instead of the dying one.
      */
     private fun killAndWait(s: Session) {
         connector.kill(s.pid)
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deathWaitMs)
-        while (!s.lost && System.nanoTime() - deadline < 0) {
+        val deadline = nanoTime() + TimeUnit.MILLISECONDS.toNanos(deathWaitMs)
+        while (!s.lost && nanoTime() - deadline < 0) {
             try {
                 Thread.sleep(10)
             } catch (e: InterruptedException) {
@@ -243,5 +313,9 @@ class RemoteEngine(
         }
         s.lost = true
         drop(s)
+    }
+
+    private companion object {
+        const val TAG = "OffkitEngine"
     }
 }

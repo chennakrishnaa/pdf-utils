@@ -38,6 +38,7 @@
     <string name="error_out_of_memory">Not enough memory. Try fewer or smaller files.</string>
     <string name="error_cancelled">The operation was cancelled.</string>
     <string name="error_engine_crashed">Offkit couldn\'t process this file. It may be damaged or too complex.</string>
+    <string name="error_timed_out">This file is taking too long to process. It may be damaged or too complex.</string>
     <string name="error_not_implemented">This operation is not available yet.</string>
     <string name="error_generic">Something went wrong while processing the file. Please try again.</string>
 
