@@ -14,18 +14,35 @@ import java.io.File
  * Not exported, no intent filter. Receives file paths only and accepts only paths inside this
  * app's `cacheDir/jobs/` ([EngineServer.checkPaths]). It never deletes job directories and never
  * binds to itself.
+ *
+ * One [EngineServer] (one worker thread, one MuPDF engine) per process: a service instance that
+ * is destroyed and recreated in the same, still cached process gets the same server, so two
+ * jobs can never run in MuPDF at once. When the service is unbound or destroyed while a request
+ * is still queued or running, its client is gone and the server kills this process
+ * ([EngineServer.onUnbound]).
  */
 class EngineService : Service() {
-    private lateinit var server: EngineServer
+    override fun onBind(intent: Intent?): IBinder = serverFor(this)
 
-    override fun onCreate() {
-        super.onCreate()
-        server = EngineServer({ MuPdfEngine() }, File(cacheDir, JOBS_DIR))
+    override fun onUnbind(intent: Intent?): Boolean {
+        shared?.onUnbound()
+        return false
     }
 
-    override fun onBind(intent: Intent?): IBinder = server
+    override fun onDestroy() {
+        shared?.onUnbound()
+        super.onDestroy()
+    }
 
     companion object {
+        @Volatile
+        private var shared: EngineServer? = null
+
+        /** The process-wide server, created on first bind. */
+        @Synchronized
+        fun serverFor(service: Service): EngineServer =
+            shared ?: EngineServer({ MuPdfEngine() }, File(service.cacheDir, JOBS_DIR)).also { shared = it }
+
         /** Must match `PdfJobs`'s job root (`cacheDir/jobs`). */
         const val JOBS_DIR = "jobs"
 
