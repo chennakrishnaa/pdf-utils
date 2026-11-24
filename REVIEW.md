@@ -229,22 +229,47 @@ Sentences that are now inaccurate or incomplete:
 | `security/platform-audit.md`, Process isolation, "What runs where" | "It also decodes no untrusted image: `scripts/isolation-smoke.sh` checks that the UI process maps no `libmupdf` after launch." | The cited check proves only that the UI process maps no MuPDF. Image decoding uses platform codecs, which a `libmupdf` check cannot see. Cite the code path instead: the only decoder caller is `ImageNormalizer`, reached only from `EngineServer` through `InProcessImagePreparer`. |
 | `security/platform-audit.md`, "What it does not protect against" | (missing) | Add FR-1: the stall and total limits count time while the app is frozen in the background, so a good job can end as `TimedOut` (or `EngineCrashed` after an LMK kill) when the user leaves the app mid-job. Add FR-2: if the UI process dies, the engine continues the current call with no watchdog, and a newly started UI can share that process with the orphan job. |
 | `security/platform-audit.md`, "Low-memory ordering" | "the engine is killed first" (with the activity in front) | This is correct as measured with the activity in front, but the text should say that in the background both processes are cached, and either may be killed or frozen (FR-1). |
-| `security/platform-audit.md`, Watchdog | "(787 MiB on this 2 GB emulator)" | See Part C for the limit logged by my run. |
+| `security/platform-audit.md`, Watchdog | "(787 MiB on this 2 GB emulator)" | Correct: Part C logged `memoryBytes=825530760` (787 MiB). No change needed. |
 | `README.md`, `PRIVACY.md` | none | No inaccurate sentence found. PRIVACY's "Metadata inside the pages of PDFs you give to Merge may also remain" is still true. |
 
-### C. Hostile files through the real app path: NOT DONE
+### C. Hostile files through the real app path (FR retry, 2026-11-24)
 
-I wrote a throwaway instrumented test, `FrHostileOnDeviceTest`, and did not commit it. For each SR3 input it was to run Compress (HIGH) and Merge through `PdfJobs.run` with the app's production `RemoteEngine` and `engineLimits()`. It records the `JobOutcome`, wall time, engine `VmHWM`, the engine pids, whether the test process survives, and whether an ordinary follow-up job succeeds. The inputs were `annots-50k-1`, `bigarr-20m-1`, `bigarr-60m-1`, `wf-20k` and `bigdict-400k`, copied in through `uiAutomation.executeShellCommand("cat …")`.
+**Setup.**
+- Device: the `pdfutils-smoke` AVD, API 31, x86_64, 2 GB (`MemTotal` 2,015,456 kB). It was started the way the scripts start it (KVM; `sg kvm` fallback). `cached_apps_freezer`: `null` (not set).
+- Test: the throwaway instrumented `FrHostileOnDeviceTest`, not committed and removed after the run. Each method was run with `am instrument -e class …#method`.
+- Path: each file was copied in through `uiAutomation.executeShellCommand("cat …")`, then run through `PdfJobs.run` with the app's own engine. The log shows `engine=…remote.RemoteEngine` and `limits=EngineLimits(stallMs=90000, totalMs=900000, imageTotalMs=30000, memoryBytes=825530760, memorySampleMs=1000)`, which is 787 MiB and confirms the figure in `platform-audit.md`.
+- Compress used HIGH. Merge used the file plus a one-page text PDF.
 
-The run did not happen. My driver started the emulator without the `sg kvm` wrapper that the project scripts use, so the emulator could not use KVM and never booted (`booted=` empty after 300 s). After the gates I was at the turn limit, so I removed the test from the worktree and stopped. **I therefore have no evidence of my own for any SR3 item.** Every number in `engine-audit.md` "SF6 / PI status" comes from the fix author or the earlier audit. To repeat this: run the test with the emulator started as `isolation-smoke.sh` starts it (`sg kvm -c …`), and give `am instrument` about 25 minutes, because `bigdict-400k` may need 2 × 90 s.
+**Columns.**
+- "Peak RSS" is the highest engine `VmHWM`, sampled every 250 ms by the test process. A short spike just before a kill could be missed.
+- "UI survived": the test process (pid unchanged, test reported OK).
+- "Next job": an ordinary one-page Merge right after the hostile job, with its time and engine pid. In every row `cacheDir/jobs` was empty afterwards.
+
+| File (size) | Op | JobOutcome | Wall time | Peak RSS | UI survived | Next job |
+|---|---|---|---|---|---|---|
+| `bigarr-20m-1.pdf` (175 KB) | Compress | `Failed(OutOfMemory)` (refused before open; same engine pid) | 0.76 s | 125 MiB | yes | Ready, 61 ms, same engine |
+| `bigarr-20m-1.pdf` | Merge | `Failed(OutOfMemory)` | 0.03 s | 138 MiB | yes | Ready, 12 ms |
+| `annots-50k-1.pdf` (1.1 KB) | Compress | `Failed(OutOfMemory)` (page over 10,000 annotations refused) | 0.56 s | 137 MiB | yes | Ready, 26 ms |
+| `annots-50k-1.pdf` | Merge | `Failed(OutOfMemory)` | 0.03 s | 142 MiB | yes | Ready, 11 ms |
+| `wf-20k.pdf` (2.4 MB) | Compress | `Ready` | 3.8 s | 197 MiB | yes | Ready, 18 ms |
+| `wf-20k.pdf` | Merge (with a 1-page PDF, **not** with itself as in SR3-4) | `Ready` | 4.2 s | 212 MiB | yes | Ready, 8 ms |
+| `bigarr-60m-1.pdf` (525 KB) | Compress | `Failed(OutOfMemory)` (refused before open) | 0.45 s | 121 MiB | yes | Ready, 44 ms |
+| `bigarr-60m-1.pdf` | Merge | `Failed(OutOfMemory)` | 0.02 s | 138 MiB | yes | Ready, 12 ms |
+| `bigdict-400k.pdf` (945 KB) | Compress | **`Failed(TimedOut)`**: the stall watchdog killed `:engine` (pid 1800, "has died" in the ActivityManager log) | **90.5 s** | 162 MiB | yes | Ready, 427 ms, **new** engine (pid 1820) |
+| `bigdict-400k.pdf` | Merge | `Ready` (the unreferenced dictionary is never parsed) | 0.1 s | 138 MiB | yes | Ready, 10 ms |
+
+**Reading.**
+- SR3-1 (`bigarr-*`) and SR3-3 (`annots-50k`) are now refused in under 1 s, at about the idle RSS of the engine, without any watchdog action. They are refused by SF6's pre-checks, not by process isolation.
+- SR3-2 (`bigdict-400k`) is still uncapped inside the engine. The 90 s stall watchdog ended it exactly as designed, and the next job ran in a new engine.
+- The refusals surface as `OutOfMemory` ("Not enough memory. Try fewer or smaller files."). That wording is slightly misleading for a 1 KB file, but it fails safe.
+- I did not re-run SR3-4's worst case (`wf-20k` merged with itself, or `wf-50k`). The 4.2 s Merge above does not exercise the merged-save dedup the way SR3 did.
 
 ### Not verified
-- **Part C as a whole:** no SR3 file was run through the app on the emulator in this review (see above).
+- **Part C limits:** only five SR3 inputs and only Compress and Merge (not Add images), on x86_64 with 2 GB. SR3-4's worst case (`wf-20k` merged with itself, `wf-50k`) was not run. Peak RSS was sampled every 250 ms.
 - **FR-1 and FR-2:** reasoned from the code and platform behaviour. I did not reproduce the background freeze, the LMK kill or the orphan engine.
 - **FR-9:** reasoned only.
 - **Hardware and data:** no real phone, no ARM device, no Android version other than the API 31 emulator image used by the scripts, no real-world large PDFs or camera photos, no low-RAM (2-3 GB) phone under memory pressure.
 - **Freezer settings:** whether the cached-apps freezer is on in the scripts' emulator image or on target devices.
-- **Production limits:** the 787 MiB memory limit quoted in `platform-audit.md` was not re-logged by me.
 
 ### Verdict (FR)
-All three gates pass. The process-isolation design is sound for binder trust, paths, request ids and the resend, and I found no High defect in `engine/remote/**`. The build is fit for a Play **closed** test. Before a **public** release, fix FR-1 (the watchdog counts frozen background time, so a good job can end as "taking too long" when the user leaves the app) and FR-2 (an orphan engine job runs with no limit after the UI dies, and shares its process with the next one). Run Part C on the emulator and on at least one real ARM phone. Apply the doc corrections in Part D.
+All three gates pass. The process-isolation design is sound for binder trust, paths, request ids and the resend, and I found no High defect in `engine/remote/**`. The build is fit for a Play **closed** test. Before a **public** release, fix FR-1 (the watchdog counts frozen background time, so a good job can end as "taking too long" when the user leaves the app) and FR-2 (an orphan engine job runs with no limit after the UI dies, and shares its process with the next one). Part C on the emulator (done in the FR retry) found no new problem: every SR3 input either failed safely or completed, and in every case the UI survived and the next job succeeded. Repeat it on at least one real ARM phone. Apply the doc corrections in Part D.
