@@ -16,6 +16,9 @@ import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.remote.BoundServiceConnector
+import app.venkat.offkit.engine.remote.EngineLimits
+import app.venkat.offkit.engine.remote.ProcRss
 import app.venkat.offkit.engine.remote.RemoteEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -236,6 +239,103 @@ class EngineIsolationOnDeviceTest {
             Log.i(TAG, "oom_score_adj: UI pid $myPid = $ui, engine = $engine")
             assertTrue("engine oom_score_adj $engine < UI $ui: the engine would outlive the UI", engine >= ui)
         }
+    }
+
+    // ---------------------------------------------------------------- watchdog (PI3)
+
+    /**
+     * Compresses the big PDF with its own [RemoteEngine] (same `:engine` service as the app's)
+     * using [limits], in a job directory under `cacheDir/jobs` that is deleted afterwards.
+     * [onFirstProgress] runs at the first progress report. Returns the result.
+     */
+    private fun compressWith(limits: EngineLimits, onFirstProgress: () -> Unit = {}): PdfResult {
+        val jobDir = File(jobsRoot, "pi3-${System.nanoTime()}").apply { File(this, "in").mkdirs() }
+        try {
+            val input = bigPdf.copyTo(File(jobDir, "in/in_000.pdf"))
+            val out = File(jobDir, "output.pdf")
+            val engine = RemoteEngine(BoundServiceConnector.forService(context), limits = limits)
+            val r = engine.compress(input, CompressionLevel.HIGH, out, FirstProgress(JobControl.None, onFirstProgress))
+            if (r !is PdfResult.Ok) assertTrue("partial output left after $r", !out.exists())
+            return r
+        } finally {
+            jobDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun stoppedEngineWithoutCancel_timedOutByStallLimit_nextJobInNewEngine() {
+        ordinaryJobSucceeds()
+        val stoppedPid = AtomicInteger(0)
+        val stoppedAt = AtomicLong(0)
+        val r = compressWith(EngineLimits(stallMs = 3_000)) {
+            val pid = enginePid() ?: error("no :engine process mid-job")
+            stoppedPid.set(pid)
+            stoppedAt.set(SystemClock.elapsedRealtime())
+            Process.sendSignal(pid, 19) // SIGSTOP: no progress, no result, no death
+        }
+        val ms = SystemClock.elapsedRealtime() - stoppedAt.get()
+        Log.i(TAG, "stall watchdog: engine ${stoppedPid.get()} stopped -> $r after $ms ms")
+        assertTrue("the job never reported progress", stoppedAt.get() != 0L)
+        assertEquals(PdfResult.Err(PdfError.TimedOut), r)
+        assertTrue("TimedOut after $ms ms", ms in 2_900..5_000)
+        assertJobsEmpty()
+        val next = ordinaryJobSucceeds()
+        assertNotEquals("stopped engine still serving", stoppedPid.get(), next)
+        Log.i(TAG, "stall watchdog: next job ran in new engine pid $next")
+    }
+
+    @Test
+    fun memoryLimitBelowEngineRss_outOfMemory_nextJobWithNormalLimitSucceeds() {
+        val before = ordinaryJobSucceeds()
+        val rss = ProcRss.bytes(before)
+        Log.i(TAG, "memory watchdog: idle engine $before RSS ${rss?.div(1024 * 1024)} MiB")
+        assertTrue("cannot read /proc/$before/statm", rss != null && rss > 1024 * 1024)
+        val t0 = SystemClock.elapsedRealtime()
+        val r = compressWith(EngineLimits(memoryBytes = 1024 * 1024))
+        val ms = SystemClock.elapsedRealtime() - t0
+        Log.i(TAG, "memory watchdog: 1 MiB limit -> $r after $ms ms")
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), r)
+        assertJobsEmpty()
+        val appLimits = (context.applicationContext as PdfUtilApp).engineLimits()
+        Log.i(TAG, "memory watchdog: production limit ${appLimits.memoryBytes / (1024 * 1024)} MiB")
+        assertTrue(appLimits.memoryBytes in 64L * 1024 * 1024..EngineLimits.MEMORY_CEILING_BYTES)
+        val ok = compressWith(appLimits)
+        assertTrue("next job with the production limit: $ok", ok is PdfResult.Ok)
+        val after = enginePid() ?: fail("no :engine process") as Nothing
+        assertNotEquals("killed engine still serving", before, after)
+        assertJobsEmpty()
+    }
+
+    /** Not an assertion of a limit: logs the engine's real memory use for judging the default. */
+    @Test
+    fun engineRssDuringAnOrdinaryCompressIsLogged() {
+        ordinaryJobSucceeds()
+        val peakSampled = AtomicLong(0)
+        val enginePidSeen = AtomicInteger(0)
+        val outcome = runBlocking {
+            jobs.run(listOf(JobInput.Pdf(Uri.fromFile(bigPdf))), { _, _ -> }) { e, f, o, j ->
+                e.compress(f[0], CompressionLevel.HIGH, o, object : JobControl {
+                    override fun progress(done: Int, total: Int) {
+                        val pid = enginePid() ?: return
+                        enginePidSeen.set(pid)
+                        ProcRss.bytes(pid)?.let { if (it > peakSampled.get()) peakSampled.set(it) }
+                        j.progress(done, total)
+                    }
+                    override fun isCancelled() = j.isCancelled()
+                })
+            }
+        }
+        if (outcome is JobOutcome.Ready) jobs.discard(outcome.output) else fail("compress: $outcome")
+        val pid = enginePidSeen.get()
+        val end = ProcRss.bytes(pid)
+        val hwm = File("/proc/$pid/status").readLines().firstOrNull { it.startsWith("VmHWM:") }?.trim()
+        val mib = 1024 * 1024
+        Log.i(
+            TAG,
+            "engine RSS: ordinary HIGH compress of ${bigPdf.length() / 1024} KiB, 16 photo pages: " +
+                "end ${end?.div(mib)} MiB, peak sampled at progress ${peakSampled.get() / mib} MiB, $hwm",
+        )
+        assertTrue(end != null)
     }
 
     @Test
