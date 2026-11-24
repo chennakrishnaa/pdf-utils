@@ -1,5 +1,8 @@
 package app.venkat.offkit.addimages
 
+import app.venkat.offkit.core.isReadyToSave
+import app.venkat.offkit.core.isSaved
+import app.venkat.offkit.core.isSavingNow
 import android.app.Application
 import android.content.Context
 import android.net.Uri
@@ -143,7 +146,7 @@ class AddImagesScreenTest {
 
     private fun runToReady() {
         click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         rule.waitForIdle()
     }
 
@@ -244,7 +247,7 @@ class AddImagesScreenTest {
 
         recordInputs()
         click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         assertEquals(1, fake.callsFor(FakePdfEngine.Op.APPEND_IMAGES).size)
         assertEquals(listOf("%PDF-1.7 second, longer"), receivedPdf.toList())
     }
@@ -269,7 +272,7 @@ class AddImagesScreenTest {
         assertEquals(listOf("b.jpg", "d.jpg", "c.jpg"), vm.images.value.map { it.file.name })
 
         click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
 
         val calls = fake.callsFor(FakePdfEngine.Op.APPEND_IMAGES)
         assertEquals(1, calls.size)
@@ -299,7 +302,7 @@ class AddImagesScreenTest {
         rule.onNodeWithTag(TAG_ADDIMAGES_CHOOSE_PDF).performScrollTo().assertIsNotEnabled()
 
         release.countDown()
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         rule.waitForIdle()
         val summary = app.resources.getQuantityString(R.plurals.addimages_summary, 5, 5, formatBytes(1_258_291L))
         assertEquals("5 pages · 1.2 MB", summary)
@@ -311,7 +314,7 @@ class AddImagesScreenTest {
         val dest = Uri.parse("content://dest.test/${System.nanoTime()}/out.pdf")
         shadowOf(app.contentResolver).registerOutputStream(dest, sink)
         rule.runOnUiThread { vm.save(dest) }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
 
         assertArrayEquals(fake.outputContent, sink.toByteArray())
@@ -407,7 +410,7 @@ class AddImagesScreenTest {
             rule.runOnUiThread { vm.save(dest(sink)) }
             CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
             rule.waitForIdle()
-            assertTrue(state() is JobUiState.Saving)
+            assertTrue(state().isSavingNow)
             rule.onNodeWithTag(TAG_JOB_SAVING).performScrollTo().assertIsDisplayed()
             rule.onNodeWithTag(fileRowUpTag(1)).assertDoesNotExist()
             rule.onNodeWithTag(fileRowRemoveTag(0)).assertDoesNotExist()
@@ -423,11 +426,11 @@ class AddImagesScreenTest {
             rule.waitForIdle()
             assertEquals(listOf("a.jpg", "b.jpg"), vm.images.value.map { it.file.name })
             assertEquals("doc.pdf", vm.pdf.value?.name)
-            assertTrue(state() is JobUiState.Saving)
+            assertTrue(state().isSavingNow)
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
         rule.onNodeWithTag(TAG_ADDIMAGES_CHOOSE_PDF).performScrollTo().assertIsEnabled()
         rule.onNodeWithTag(TAG_ADDIMAGES_ADD_IMAGES).performScrollTo().assertIsEnabled()
@@ -445,7 +448,7 @@ class AddImagesScreenTest {
         rule.onNodeWithTag(TAG_LEAVE_STAY).assertIsDisplayed().performClick()
         rule.waitForIdle()
         assertEquals(1, backCalls)
-        assertTrue(state() is JobUiState.ReadyToSave)
+        assertTrue(state().isReadyToSave)
         rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
 
         rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
@@ -459,7 +462,7 @@ class AddImagesScreenTest {
     fun successfulSaveIsRecordedAsRecent() {
         ready()
         rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         val recents = RecentFilesStore.get(app).recents.value
         assertEquals(1, recents.size)
         assertEquals("add_images", recents.single().tool)
@@ -476,7 +479,7 @@ class AddImagesScreenTest {
         rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
         rule.waitForIdle()
         rule.onNodeWithTag(TAG_ADDIMAGES_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
-        assertTrue(state() is JobUiState.ReadyToSave)
+        assertTrue(state().isReadyToSave)
 
         // Discarding (the next action) clears it.
         click(TAG_JOB_RESET)
