@@ -1,6 +1,9 @@
 package app.venkat.offkit
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.Process
+import app.venkat.offkit.engine.remote.RemoteEngine
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
@@ -244,6 +247,19 @@ class EngineOnDeviceTest {
         assertTrue("not decreasing: $ok", low > medium && medium > high)
         for ((level, bytes) in ok.byLevel) assertTrue("$level $bytes > original ${ok.original}", bytes <= ok.original)
         assertJobsEmpty()
+    }
+
+    @Test
+    fun engineRunsInSeparateEngineProcess() {
+        val app = context.applicationContext as PdfUtilApp
+        assertTrue("engine is ${app.engine}", app.engine is RemoteEngine)
+        val good = Fixtures.textPdf(dir, "p.pdf", listOf("Process"))
+        val outcome = run(listOf(pdf(good))) { e, files, o, j -> e.merge(files, o, j) }
+        saveReady(outcome, expectedPages = 1)
+        val am = context.getSystemService(ActivityManager::class.java)
+        val engineProc = am.runningAppProcesses.orEmpty().firstOrNull { it.processName == "${context.packageName}:engine" }
+        if (engineProc == null) fail("no :engine process in ${am.runningAppProcesses?.map { it.processName }}")
+        assertTrue("engine pid ${engineProc!!.pid} vs ${Process.myPid()}", engineProc.pid != Process.myPid())
     }
 
     // ---------------------------------------------------------------- error paths
