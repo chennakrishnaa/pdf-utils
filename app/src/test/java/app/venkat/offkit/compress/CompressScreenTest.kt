@@ -5,8 +5,11 @@ import app.venkat.offkit.core.isSaved
 import app.venkat.offkit.core.isSavingNow
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.setContent
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -14,6 +17,7 @@ import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -36,7 +40,6 @@ import app.venkat.offkit.feature.compress.TAG_COMPRESS_CHOOSE
 import app.venkat.offkit.feature.compress.TAG_COMPRESS_NOTE
 import app.venkat.offkit.feature.compress.TAG_COMPRESS_FILE
 import app.venkat.offkit.feature.compress.TAG_COMPRESS_ROOT
-import app.venkat.offkit.feature.compress.TAG_COMPRESS_SAVE_ERROR
 import app.venkat.offkit.feature.compress.compressLevelTag
 import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.TAG_ACTION_BACK
@@ -50,13 +53,17 @@ import app.venkat.offkit.ui.components.TAG_JOB_SAVING
 import app.venkat.offkit.ui.components.TAG_JOB_SUMMARY
 import app.venkat.offkit.ui.components.TAG_LEAVE_CONFIRM
 import app.venkat.offkit.ui.components.TAG_LEAVE_STAY
-import app.venkat.offkit.ui.components.fileRowTag
+import app.venkat.offkit.ui.components.TAG_ACTION_CLOSE
+import app.venkat.offkit.ui.components.TAG_JOB_SHARE
+import app.venkat.offkit.ui.components.formatBytes
+import app.venkat.offkit.ui.components.pdfErrorBody
+import app.venkat.offkit.ui.components.pdfErrorTitle
 import app.venkat.offkit.ui.nav.AppNavHost
 import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -145,16 +152,54 @@ class CompressScreenTest {
         rule.waitForIdle()
     }
 
+    /** Clicks [tag], scrolling to it first when it is in the scrolling content (not the fixed bottom bar). */
     private fun click(tag: String) {
-        rule.onNodeWithTag(tag).performScrollTo().performClick()
+        val node = rule.onNodeWithTag(tag)
+        if (node.hasScrollableAncestor()) node.performScrollTo()
+        node.performClick()
         rule.waitForIdle()
+    }
+
+    private fun SemanticsNodeInteraction.hasScrollableAncestor(): Boolean {
+        var parent = fetchSemanticsNode().parent
+        while (parent != null) {
+            if (SemanticsActions.ScrollBy in parent.config) return true
+            parent = parent.parent
+        }
+        return false
     }
 
     private fun state() = vm.jobState.value
 
+    private fun str(id: Int, vararg args: Any): String = app.getString(id, *args)
+
     private fun runToReady() {
         click(TAG_JOB_RUN)
         CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
+        rule.waitForIdle()
+    }
+
+    /** Back to the options with the inputs kept (what the error screen's button does). */
+    private fun resetToOptions() {
+        rule.runOnUiThread { vm.reset() }
+        rule.waitForIdle()
+    }
+
+    private fun runToFailure(error: PdfError) {
+        fake.setResult(FakePdfEngine.Op.COMPRESS, PdfResult.Err(error))
+        click(TAG_JOB_RUN)
+        CoreTestSupport.idleUntil(message = "Failed") { state() is JobUiState.Failed }
+        rule.waitForIdle()
+    }
+
+    private fun saveTo(sink: OutputStream) {
+        rule.runOnUiThread { vm.save(dest(sink)) }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        rule.waitForIdle()
+    }
+
+    private fun systemBack() {
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
         rule.waitForIdle()
     }
 
@@ -168,31 +213,56 @@ class CompressScreenTest {
     }
 
     @Test
-    fun runDisabledUntilChosen_chooseAgainReplaces_defaultMedium() {
-        rule.onNodeWithTag(TAG_COMPRESS_NOTE).performScrollTo().assertTextEquals(app.getString(R.string.compress_note))
+    fun noFile_slotAndDisabledPrimary_optionsEditable_defaultMedium() {
+        rule.onNodeWithText(str(R.string.screen_compress)).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_COMPRESS_FILE).assertDoesNotExist()
         rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).performScrollTo().assertIsEnabled()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
+        rule.onNodeWithText(str(R.string.choose_pdf)).assertExists()
+        rule.onNodeWithText(str(R.string.choose_pdf_hint)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled().assertTextEquals(str(R.string.choose_pdf_first))
+        rule.onNodeWithTag(TAG_COMPRESS_NOTE).performScrollTo().assertTextEquals(str(R.string.compress_note))
+
         rule.onNodeWithTag(compressLevelTag(CompressionLevel.MEDIUM)).performScrollTo().assertIsSelected()
-        rule.onNodeWithTag(compressLevelTag(CompressionLevel.LOW)).assertIsNotSelected()
-        rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH)).assertIsNotSelected()
+        rule.onNodeWithTag(compressLevelTag(CompressionLevel.LOW))
+            .assertIsNotSelected().assertTextEquals(str(R.string.level_low), str(R.string.level_low_desc))
+        rule.onNodeWithTag(compressLevelTag(CompressionLevel.MEDIUM))
+            .assertTextEquals(str(R.string.level_medium), str(R.string.level_medium_desc))
+        rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH))
+            .assertIsNotSelected().assertTextEquals(str(R.string.level_high), str(R.string.level_high_desc))
         assertEquals(CompressionLevel.MEDIUM, vm.level.value)
 
-        rule.onNodeWithTag(TAG_COMPRESS_FILE).performScrollTo().assertTextEquals(app.getString(R.string.compress_empty))
-        rule.onNodeWithTag(compressLevelTag(CompressionLevel.LOW))
-            .assertTextEquals(app.getString(R.string.compress_level_low), "Up to 2000 px images, best quality")
-        rule.onNodeWithTag(compressLevelTag(CompressionLevel.MEDIUM))
-            .assertTextEquals(app.getString(R.string.compress_level_medium), "Up to 1500 px, good quality")
-        rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH))
-            .assertTextEquals(app.getString(R.string.compress_level_high), "Up to 1000 px, smallest file")
+        // Options stay editable without a file.
+        click(compressLevelTag(CompressionLevel.HIGH))
+        rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH)).assertIsSelected()
+        rule.onNodeWithTag(compressLevelTag(CompressionLevel.MEDIUM)).assertIsNotSelected()
+        assertEquals(CompressionLevel.HIGH, vm.level.value)
+    }
 
+    @Test
+    fun slotOpensPdfPicker() {
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_COMPRESS_CHOOSE)
+        val intent = shadowOf(rule.activity).nextStartedActivity
+        assertNotNull(intent)
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, intent.action)
+    }
+
+    @Test
+    fun pickShowsFileCard_changeReplaces() {
         choose(pdf("first.pdf"))
-        rule.onNodeWithText("first.pdf").performScrollTo().assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(TAG_COMPRESS_FILE).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("first.pdf").assertIsDisplayed()
+        rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).assertTextEquals(str(R.string.change)).assertIsEnabled()
+        rule.onNodeWithText(str(R.string.choose_pdf_hint)).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled().assertTextEquals(str(R.string.action_compress))
+
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_COMPRESS_CHOOSE)
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, shadowOf(rule.activity).nextStartedActivity?.action)
 
         choose(pdf("second.pdf"))
         rule.onNodeWithText("second.pdf").performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("first.pdf").assertDoesNotExist()
-        rule.onNodeWithTag(fileRowTag(1)).assertDoesNotExist()
         assertEquals("second-compressed.pdf", vm.suggestedFileName())
     }
 
@@ -200,11 +270,11 @@ class CompressScreenTest {
     fun eachSelectedLevelReachesEngine() {
         choose(pdf("a.pdf"))
         runToReady() // default: Medium
-        click(TAG_JOB_RESET) // "Discard" brings back the run button
+        resetToOptions()
         click(compressLevelTag(CompressionLevel.LOW))
         rule.onNodeWithTag(compressLevelTag(CompressionLevel.LOW)).assertIsSelected()
         runToReady()
-        click(TAG_JOB_RESET)
+        resetToOptions()
         click(compressLevelTag(CompressionLevel.HIGH))
         rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH)).assertIsSelected()
         rule.onNodeWithTag(compressLevelTag(CompressionLevel.MEDIUM)).assertIsNotSelected()
@@ -218,93 +288,105 @@ class CompressScreenTest {
     }
 
     @Test
-    fun progressSummarySaveAndSaved() {
+    fun runProcessingResultSaveAndSaved() {
         choose(pdf("report.pdf", size = 10_000))
         fake.setResult(FakePdfEngine.Op.COMPRESS, PdfResult.Ok(pages = 3, bytes = 1_000))
         fake.outputContent = "%PDF-1.7\ncompressed output\n".toByteArray()
-        val received = CountDownLatch(1)
         var inputSize = -1L
         val release = CountDownLatch(1)
         fake.beforeStep = { op, step ->
-            if (op == FakePdfEngine.Op.COMPRESS && step == 1) {
-                inputSize = fake.callsFor(op).last().pdf!!.length()
-                received.countDown()
-            }
+            if (op == FakePdfEngine.Op.COMPRESS && step == 1) inputSize = fake.callsFor(op).last().pdf!!.length()
             if (step == 2) release.await(10, TimeUnit.SECONDS)
         }
 
         click(TAG_JOB_RUN)
         CoreTestSupport.idleUntil(message = "Running(1, 3)") { state() == JobUiState.Running(1, 3) }
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_JOB_PROGRESS).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText(app.getString(R.string.job_progress, 1, 3)).assertIsDisplayed()
-        rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).performScrollTo().assertIsNotEnabled()
-        rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH)).performScrollTo().assertIsNotEnabled()
+        rule.onNodeWithTag(TAG_JOB_PROGRESS).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_CANCEL).assertIsDisplayed()
+        rule.onNodeWithText(str(R.string.processing_progress, 1, 3, "report.pdf")).assertExists()
+        // The options are gone while processing.
+        rule.onNodeWithTag(TAG_COMPRESS_ROOT).assertDoesNotExist()
+        rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH)).assertDoesNotExist()
 
         release.countDown()
         CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         rule.waitForIdle()
         assertEquals(10_000L, inputSize)
-        val summary = "9.8 KB → 1000 B (90% smaller)"
-        assertEquals(summary, app.getString(R.string.compress_summary, "9.8 KB", "1000 B", 90))
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo().assertTextEquals(summary)
-        rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo().assertTextEquals(str(R.string.result_smaller, 90))
+        rule.onNodeWithText(str(R.string.result_sizes, formatBytes(10_000), formatBytes(1_000))).assertExists()
+        rule.onNodeWithText("report-compressed.pdf").assertExists()
+        rule.onNodeWithText(str(R.string.result_not_saved)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_as)).assertIsEnabled()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_discard))
         assertEquals("report-compressed.pdf", vm.suggestedFileName())
 
         val sink = ByteArrayOutputStream()
-        val dest = Uri.parse("content://dest.test/${System.nanoTime()}/report-compressed.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(dest, sink)
-        rule.runOnUiThread { vm.save(dest) }
-        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
-        rule.waitForIdle()
-
+        saveTo(sink)
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        rule.onNodeWithText(app.getString(R.string.job_saved_title)).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo().assertTextEquals(summary)
+        val saved = state() as JobUiState.Done
+        rule.onNodeWithText(str(R.string.result_saved_as, saved.savedName ?: saved.suggestedName)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_copy))
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(str(R.string.result_smaller, 90))
     }
 
     @Test
-    fun notSmallerShowsAlreadySmallMessage_andCanStillSave() {
+    fun notSmallerShowsNoGainScreen_buttonReturnsToOptions() {
         choose(pdf("tiny.pdf", size = 5_000))
         fake.setResult(FakePdfEngine.Op.COMPRESS, PdfResult.Ok(pages = 1, bytes = 5_000))
         runToReady()
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo()
-            .assertTextEquals(app.getString(R.string.compress_summary_no_gain))
-        rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed().assertIsEnabled()
+        rule.onNodeWithText(str(R.string.error_no_gain_title)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_ERROR).assertTextEquals(str(R.string.error_no_gain_body))
+        rule.onNodeWithText("tiny.pdf").assertExists()
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertDoesNotExist()
+
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_choose_another)).performClick()
+        rule.waitForIdle()
+        assertEquals(JobUiState.Idle, state())
+        rule.onNodeWithTag(TAG_COMPRESS_FILE).assertExists()
+        assertEquals("tiny.pdf", vm.file.value?.name)
+        assertEquals(0, backCalls)
         assertEquals(1, fake.callsFor(FakePdfEngine.Op.COMPRESS).size)
     }
 
     @Test
-    fun unknownOriginalSizeShowsJustNewSize() {
-        // An empty input copy gives no usable original size.
-        choose(pdf("empty.pdf", size = 0))
-        fake.setResult(FakePdfEngine.Op.COMPRESS, PdfResult.Ok(pages = 1, bytes = 2_048))
-        runToReady()
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo()
-            .assertTextEquals(app.getString(R.string.compress_summary_size_only, "2.0 KB"))
-    }
-
-    @Test
-    fun encryptedAndCorruptShowMessages() {
+    fun engineErrorShowsErrorScreen_buttonReturnsToOptionsWithFile() {
         choose(pdf("a.pdf"))
-        fake.setResult(FakePdfEngine.Op.COMPRESS, PdfResult.Err(PdfError.Encrypted))
-        click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "Failed") { state() is JobUiState.Failed }
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_JOB_ERROR).performScrollTo().assertTextEquals(app.getString(R.string.error_encrypted))
+        runToFailure(PdfError.Corrupt)
+        rule.onNodeWithText(str(pdfErrorTitle(PdfError.Corrupt))).assertExists()
+        rule.onNodeWithTag(TAG_JOB_ERROR).assertTextEquals(str(pdfErrorBody(PdfError.Corrupt)))
+        rule.onNodeWithText("a.pdf").assertExists()
+        rule.onNodeWithTag(TAG_COMPRESS_ROOT).assertDoesNotExist()
 
-        rule.runOnUiThread { vm.reset() }
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_choose_another)).performClick()
         rule.waitForIdle()
-        fake.setResult(FakePdfEngine.Op.COMPRESS, PdfResult.Err(PdfError.Corrupt))
-        click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "Failed") { state() is JobUiState.Failed }
+        assertEquals(JobUiState.Idle, state())
+        rule.onNodeWithTag(TAG_COMPRESS_FILE).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled()
+        assertEquals(0, backCalls)
+
+        // Back on the error screen also returns to the options.
+        runToFailure(PdfError.Corrupt)
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_JOB_ERROR).performScrollTo().assertTextEquals(app.getString(R.string.error_corrupt))
+        assertEquals(JobUiState.Idle, state())
+        assertEquals(0, backCalls)
         assertEquals(2, fake.callsFor(FakePdfEngine.Op.COMPRESS).size)
     }
 
     @Test
-    fun cancelReturnsToIdle() {
+    fun encryptedShowsLockedStrings() {
+        choose(pdf("locked.pdf"))
+        runToFailure(PdfError.Encrypted)
+        rule.onNodeWithText(str(R.string.error_locked_title)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_ERROR).assertTextEquals(str(R.string.error_locked_body))
+        rule.onNodeWithText("locked.pdf").assertExists()
+    }
+
+    @Test
+    fun cancelReturnsToOptionsWithFileKept() {
         choose(pdf("a.pdf"))
         val release = CountDownLatch(1)
         fake.beforeStep = { _, step -> if (step == 2) release.await(10, TimeUnit.SECONDS) }
@@ -317,10 +399,12 @@ class CompressScreenTest {
         CoreTestSupport.idleUntil(message = "Idle") { state() == JobUiState.Idle && !vm.isRunning }
         rule.waitForIdle()
 
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsDisplayed().assertIsEnabled()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsDisplayed().assertIsEnabled()
         rule.onNodeWithTag(TAG_JOB_CANCEL).assertDoesNotExist()
-        rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(TAG_COMPRESS_FILE).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("a.pdf").assertIsDisplayed()
         assertEquals("a.pdf", vm.file.value?.name)
+        assertEquals(0, backCalls)
         assertTrue(CoreTestSupport.jobsEmpty(app))
         assertEquals(1, fake.callsFor(FakePdfEngine.Op.COMPRESS).size)
     }
@@ -340,35 +424,38 @@ class CompressScreenTest {
     }
 
     @Test
-    fun changingFileOrLevelDiscardsReadyResult() {
+    fun resultScreenOffersNoInputs_viewModelStillDropsStaleResult() {
         choose(pdf("a.pdf"))
         runToReady()
-        assertFalse(CoreTestSupport.jobsEmpty(app))
+        // The level and file cannot be changed from the result screen.
+        rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).assertDoesNotExist()
+        CompressionLevel.entries.forEach { rule.onNodeWithTag(compressLevelTag(it)).assertDoesNotExist() }
 
-        // Changing the level drops the result.
-        click(compressLevelTag(CompressionLevel.HIGH))
+        // ViewModel contract (e.g. a pick delivered late): a new level drops the result.
+        rule.runOnUiThread { vm.setLevel(CompressionLevel.HIGH) }
+        rule.waitForIdle()
         assertEquals(JobUiState.Idle, state())
         assertTrue(CoreTestSupport.jobsEmpty(app))
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsDisplayed().assertIsEnabled()
-        rule.onNodeWithTag(TAG_JOB_SAVE).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled()
         val sink = ByteArrayOutputStream()
         rule.runOnUiThread { vm.save(dest(sink)) }
         rule.waitForIdle()
-        assertEquals(JobUiState.Idle, state())
+        // Nothing is written. (The "result no longer available" error is consumed by the flow host;
+        // the options screen has no snackbar host, so it is not shown there.)
         assertEquals(0, sink.size())
-        assertEquals(app.getString(R.string.core_result_unavailable), vm.saveError.value)
+        assertEquals(JobUiState.Idle, state())
 
-        // Choosing another PDF drops the result too (and the stale save error).
+        // Choosing another PDF drops the result too.
         runToReady()
         assertNull(vm.saveError.value)
         choose(pdf("b.pdf"))
         assertEquals(JobUiState.Idle, state())
         assertTrue(CoreTestSupport.jobsEmpty(app))
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsDisplayed()
 
         // Choosing the level that is already selected changes nothing.
         runToReady()
-        click(compressLevelTag(CompressionLevel.HIGH))
+        rule.runOnUiThread { vm.setLevel(CompressionLevel.HIGH) }
+        rule.waitForIdle()
         assertTrue(state().isReadyToSave)
     }
 
@@ -384,10 +471,14 @@ class CompressScreenTest {
             CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
             rule.waitForIdle()
             assertTrue(state().isSavingNow)
-            rule.onNodeWithTag(TAG_JOB_SAVING).performScrollTo().assertIsDisplayed()
-            rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).performScrollTo().assertIsNotEnabled()
-            CompressionLevel.entries.forEach { rule.onNodeWithTag(compressLevelTag(it)).assertIsNotEnabled() }
-            // The ViewModel ignores changes too.
+            rule.onNodeWithTag(TAG_JOB_SAVING).assertIsDisplayed().assertIsNotEnabled()
+            rule.onNodeWithTag(TAG_JOB_SHARE).assertIsNotEnabled()
+            rule.onNodeWithTag(TAG_JOB_RESET).assertIsNotEnabled()
+            // Leaving is ignored while saving.
+            systemBack()
+            rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertDoesNotExist()
+            assertEquals(0, backCalls)
+            // The ViewModel ignores input changes.
             rule.runOnUiThread {
                 vm.setLevel(CompressionLevel.LOW)
                 vm.choose(other)
@@ -401,42 +492,74 @@ class CompressScreenTest {
         }
         CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsEnabled()
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
     }
 
     @Test
-    fun backWithResultAsksBeforeLeaving() {
-        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
-        rule.waitForIdle()
-        assertEquals(1, backCalls)
-        rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
-
+    fun shareButtonRequestsShare() {
         choose(pdf("a.pdf"))
         runToReady()
-        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_JOB_SHARE)
+        CoreTestSupport.idleUntil(rule, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_LEAVE_STAY).assertIsDisplayed().performClick()
+        assertNotNull(shadowOf(rule.activity).nextStartedActivity)
+        assertNull(vm.shareRequest.value)
+        rule.onNodeWithText(str(R.string.result_shared_only)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
+    }
+
+    @Test
+    fun backOnOptionsLeavesWithoutDialog() {
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
         rule.waitForIdle()
         assertEquals(1, backCalls)
         rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
-        assertTrue(state().isReadyToSave)
-        rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
+    }
 
-        // System back asks as well; confirming leaves.
-        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+    @Test
+    fun discardOnUnsavedResultAsks_keepStays_confirmLeaves() {
+        choose(pdf("a.pdf"))
+        runToReady()
+        click(TAG_JOB_RESET)
+        rule.onNodeWithText(str(R.string.discard_title)).assertExists()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertIsDisplayed().performClick()
         rule.waitForIdle()
+        assertEquals(0, backCalls)
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
+        assertTrue(state().isReadyToSave)
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsDisplayed()
+
+        // Close and system back ask as well; confirming leaves and drops the result.
+        rule.onNodeWithTag(TAG_ACTION_CLOSE).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).performClick()
+        rule.waitForIdle()
+        systemBack()
         rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertIsDisplayed().performClick()
         rule.waitForIdle()
-        assertEquals(2, backCalls)
+        assertEquals(1, backCalls)
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun doneAfterSaveLeavesWithoutDialog() {
+        choose(pdf("a.pdf"))
+        runToReady()
+        saveTo(ByteArrayOutputStream())
+        click(TAG_JOB_RESET)
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertDoesNotExist()
+        assertEquals(1, backCalls)
+        assertEquals(JobUiState.Idle, state())
     }
 
     @Test
     fun successfulSaveIsRecordedAsRecent() {
         choose(pdf("report.pdf"))
         runToReady()
-        rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
-        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        saveTo(ByteArrayOutputStream())
         val recents = RecentFilesStore.get(app).recents.value
         assertEquals(1, recents.size)
         assertEquals("compress", recents.single().tool)
@@ -444,31 +567,19 @@ class CompressScreenTest {
     }
 
     @Test
-    fun failedSaveErrorStaysUntilNextAction() {
+    fun failedSaveShowsSnackbarAndKeepsResult() {
         choose(pdf("a.pdf"))
         runToReady()
+        val failed = str(R.string.core_save_failed)
         rule.runOnUiThread { vm.save(dest(FailingSink)) }
-        CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
+        CoreTestSupport.idleUntil(rule, message = "save error shown") {
+            rule.onAllNodesWithText(failed).fetchSemanticsNodes().isNotEmpty()
+        }
         rule.waitForIdle()
-        val failed = app.getString(R.string.core_save_failed)
-        rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
+        rule.onNodeWithText(failed).assertExists()
         assertTrue(state().isReadyToSave)
-
-        // A save after the result is gone explains it, in Idle, and the message stays.
-        click(TAG_JOB_RESET)
-        rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).assertDoesNotExist()
-        rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
-        rule.waitForIdle()
-        assertEquals(JobUiState.Idle, state())
-        rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).performScrollTo()
-            .assertTextEquals(app.getString(R.string.core_result_unavailable))
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).assertExists()
-
-        // The next action (a new run) clears it.
-        runToReady()
-        rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsEnabled()
+        // The screen reported it as shown, so it is not shown again.
+        assertNull(vm.saveError.value)
     }
 }
