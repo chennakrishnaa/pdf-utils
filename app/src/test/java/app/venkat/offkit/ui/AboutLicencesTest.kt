@@ -75,6 +75,7 @@ class AboutLicencesTest {
         scrollToText("Independent JPEG Group")
         scrollToText("Apache License")
         scrollToText("Material Symbols")
+        scrollToText("Manrope")
         // Back closes the text and returns to About, not Home.
         rule.onNodeWithTag("action_back").performClick()
         rule.waitForIdle()

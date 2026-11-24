@@ -52,7 +52,6 @@ import kotlin.math.min
 /** Brand colours of the launcher icon; the introduction's hero is a brand moment, never dynamic colour. */
 internal object OnboardingBrand {
     val HeroLight = listOf(Color(0xFF5B82C6), Color(0xFF415F91), Color(0xFF284777))
-    val HeroDark = listOf(Color(0xFF2F4D82), Color(0xFF213B69), Color(0xFF142645))
     val Ink = Color(0xFF284777)
     val Coral = Color(0xFFFF7A59)
     val Amber = Color(0xFFFFC857)
@@ -109,7 +108,6 @@ internal fun HeroIllustration(
     entrance: () -> Float,
     pageWidthPx: Float,
     rtl: Boolean,
-    dark: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val badges = listOf(
@@ -131,7 +129,7 @@ internal fun HeroIllustration(
             entrance = entrance,
             travelPx = pageWidthPx / scale,
             direction = if (rtl) -1f else 1f,
-            tile = if (dark) Color(0xFFE4EAF5) else Color.White,
+            tile = Color.White,
         )
         Box(
             Modifier

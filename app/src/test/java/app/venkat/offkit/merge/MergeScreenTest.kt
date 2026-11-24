@@ -46,7 +46,7 @@ import app.venkat.offkit.ui.components.fileRowRemoveTag
 import app.venkat.offkit.ui.components.fileRowTag
 import app.venkat.offkit.ui.components.fileRowUpTag
 import app.venkat.offkit.ui.nav.AppNavHost
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -89,7 +89,7 @@ class MergeScreenTest {
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         resetRecents()
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { MergeScreen(onBack = { backCalls++ }) } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { MergeScreen(onBack = { backCalls++ }) } } }
         rule.waitForIdle()
         vm = ViewModelProvider(rule.activity)[MergeViewModel::class.java]
     }
@@ -181,7 +181,7 @@ class MergeScreenTest {
 
     @Test
     fun opensFromHomeThroughNavigation() {
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AppNavHost() } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { AppNavHost() } } }
         rule.waitForIdle()
         click("tool_merge")
         rule.onNodeWithTag(TAG_MERGE_ADD).performScrollTo().assertIsDisplayed()

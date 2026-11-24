@@ -35,7 +35,7 @@ import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.PrimaryActionButton
 import app.venkat.offkit.ui.components.SecondaryActionButton
 import app.venkat.offkit.ui.components.SelectedFileCard
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -53,8 +53,8 @@ class StyledComponentsTest {
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 
-    private fun show(dark: Boolean = false, content: @Composable () -> Unit) {
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme(darkTheme = dark, dynamicColor = false) { content() } } }
+    private fun show(content: @Composable () -> Unit) {
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { content() } } }
         rule.waitForIdle()
     }
 
@@ -117,7 +117,7 @@ class StyledComponentsTest {
 
     @Test
     fun infoNoteShowsTextOnTaggedNode() {
-        show(dark = true) { InfoNote("Bookmarks are not kept.", testTag = "note") }
+        show { InfoNote("Bookmarks are not kept.", testTag = "note") }
         rule.onNodeWithTag("note").assertTextEquals("Bookmarks are not kept.").assertIsDisplayed()
     }
 
@@ -202,9 +202,9 @@ class StyledComponentsTest {
     }
 
     @Test
-    fun jobPanelFailedTryAgainInDarkTheme() {
+    fun jobPanelFailedTryAgain() {
         val c = Calls()
-        show(dark = true) {
+        show {
             JobPanel(JobUiState.Failed("Boom"), "Go", true, { c.run++ }, { c.cancel++ }, { c.save++ }, { c.reset++ })
         }
         rule.onNodeWithTag("job_error").assertTextEquals("Boom")

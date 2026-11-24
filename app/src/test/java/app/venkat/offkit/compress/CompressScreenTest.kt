@@ -49,7 +49,7 @@ import app.venkat.offkit.ui.components.TAG_LEAVE_CONFIRM
 import app.venkat.offkit.ui.components.TAG_LEAVE_STAY
 import app.venkat.offkit.ui.components.fileRowTag
 import app.venkat.offkit.ui.nav.AppNavHost
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -94,7 +94,7 @@ class CompressScreenTest {
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         resetRecents()
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { CompressScreen(onBack = { backCalls++ }) } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { CompressScreen(onBack = { backCalls++ }) } } }
         rule.waitForIdle()
         vm = ViewModelProvider(rule.activity)[CompressViewModel::class.java]
     }
@@ -157,7 +157,7 @@ class CompressScreenTest {
 
     @Test
     fun opensFromHomeThroughNavigation() {
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AppNavHost() } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { AppNavHost() } } }
         rule.waitForIdle()
         click("tool_compress")
         rule.onNodeWithTag(TAG_COMPRESS_ROOT).assertExists()

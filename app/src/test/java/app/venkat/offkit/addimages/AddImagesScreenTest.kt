@@ -51,7 +51,7 @@ import app.venkat.offkit.ui.components.fileRowTag
 import app.venkat.offkit.ui.components.fileRowUpTag
 import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.nav.AppNavHost
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -97,7 +97,7 @@ class AddImagesScreenTest {
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         resetRecents()
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AddImagesScreen(onBack = { backCalls++ }) } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { AddImagesScreen(onBack = { backCalls++ }) } } }
         rule.waitForIdle()
         vm = ViewModelProvider(rule.activity)[AddImagesViewModel::class.java]
     }
@@ -209,7 +209,7 @@ class AddImagesScreenTest {
 
     @Test
     fun opensFromHomeThroughNavigation() {
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AppNavHost() } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { AppNavHost() } } }
         rule.waitForIdle()
         click("tool_add_images")
         rule.onNodeWithTag(TAG_ADDIMAGES_ROOT).assertExists()
