@@ -31,6 +31,13 @@
             </intent-filter>
         </activity>
 
+        <!-- MuPDF runs here, in its own process, so a hostile file can only kill this process.
+             Bound by RemoteEngine in the UI process; not exported, no intent filter. -->
+        <service
+            android:name=".engine.remote.EngineService"
+            android:exported="false"
+            android:process=":engine" />
+
         <!-- Exported receiver merged in by androidx.profileinstaller; not wanted in this app.
              The class is only on the runtime classpath, hence the MissingClass suppression. -->
         <receiver
