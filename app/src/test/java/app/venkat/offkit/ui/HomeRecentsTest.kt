@@ -113,8 +113,8 @@ class HomeRecentsTest {
             .assertTextContains("2.0 KB", substring = true)
             .assertTextContains(a.getString(R.string.recent_minutes_ago, 5), substring = true)
         rule.onNodeWithTag("recent_empty").assertDoesNotExist()
-        // The remove action says it only removes the entry from the list.
-        rule.onNode(hasTestTag("recent_row_0_remove") and hasContentDescription(a.getString(R.string.recent_remove)))
+        // The remove action says it only removes the entry from Recent, and names the file.
+        rule.onNode(hasTestTag("recent_row_0_remove") and hasContentDescription(a.getString(R.string.cd_remove_recent, "newer.pdf")))
             .assertExists()
     }
 

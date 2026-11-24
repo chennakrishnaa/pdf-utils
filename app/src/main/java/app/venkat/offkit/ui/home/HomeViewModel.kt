@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import app.venkat.offkit.R
 import app.venkat.offkit.core.RecentFile
 import app.venkat.offkit.core.RecentFilesStore
+import app.venkat.offkit.ui.theme.OffkitTool
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -68,10 +69,10 @@ class HomeViewModel(
 /** Title of the tool with id [toolId] (as recorded in [RecentFile.tool]), or null if unknown. */
 @StringRes
 internal fun toolTitle(toolId: String): Int? = when (toolId) {
-    "images_to_pdf" -> R.string.tool_images_to_pdf_title
-    "compress" -> R.string.tool_compress_title
-    "merge" -> R.string.tool_merge_title
-    "add_images" -> R.string.tool_add_images_title
+    "images_to_pdf" -> OffkitTool.IMAGES.title
+    "compress" -> OffkitTool.COMPRESS.title
+    "merge" -> OffkitTool.MERGE.title
+    "add_images" -> OffkitTool.ADD_PAGES.title
     else -> null
 }
 

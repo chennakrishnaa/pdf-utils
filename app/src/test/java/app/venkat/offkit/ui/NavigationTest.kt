@@ -52,7 +52,7 @@ class NavigationTest {
         cards.forEach { rule.onNodeWithTag(it).performScrollTo().assertIsDisplayed() }
         rule.onNodeWithTag("action_about").assertIsDisplayed()
         rule.onNodeWithTag("home_footer").performScrollTo()
-            .assertTextEquals(rule.activity.getString(R.string.home_footer))
+            .assertTextEquals(rule.activity.getString(R.string.home_privacy_line))
     }
 
     @Test

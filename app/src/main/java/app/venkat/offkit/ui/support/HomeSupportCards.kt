@@ -1,14 +1,18 @@
 package app.venkat.offkit.ui.support
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -20,15 +24,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
 import app.venkat.offkit.ui.about.openLink
-import app.venkat.offkit.ui.components.AppIcons
-import app.venkat.offkit.ui.components.IconBadge
+import app.venkat.offkit.ui.theme.OffkitDimens
 
 /** Test tag of the home "Enjoying Offkit? Support the app" card. */
 const val TAG_SUPPORT_CARD = "support_card"
@@ -79,76 +84,100 @@ fun HomeSupportCards(onOpenSupport: () -> Unit, promos: List<HousePromo> = HOUSE
 
 @Composable
 private fun SupportCard(onOpen: () -> Unit, onHide: () -> Unit) {
-    Card(
-        onClick = onOpen,
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth().testTag(TAG_SUPPORT_CARD),
+    Row(
+        modifier = Modifier
+            .padding(top = OffkitDimens.itemGap)
+            .fillMaxWidth()
+            .homeCard()
+            .clickable(role = Role.Button, onClick = onOpen)
+            .testTag(TAG_SUPPORT_CARD)
+            .heightIn(min = 56.dp)
+            .padding(start = 16.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                AppIcons.heart,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                text = stringResource(R.string.support_card_text),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(
-                AppIcons.chevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
-            )
-            HideButton(onHide, Modifier.testTag(TAG_SUPPORT_CARD_HIDE))
-        }
+        Icon(
+            painterResource(R.drawable.ic_heart),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(OffkitDimens.iconSizeSmall),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = stringResource(R.string.support_card_text),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f).padding(vertical = 12.dp),
+        )
+        Icon(
+            painterResource(R.drawable.ic_chevron_right),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(OffkitDimens.iconSizeSmall),
+        )
+        HideButton(onHide, Modifier.testTag(TAG_SUPPORT_CARD_HIDE))
     }
 }
 
 @Composable
 private fun PromoCard(promo: HousePromo, onOpen: () -> Unit, onHide: () -> Unit) {
-    Card(
-        onClick = onOpen,
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth().testTag(promoCardTag(promo.id)),
+    Row(
+        modifier = Modifier
+            .padding(top = OffkitDimens.itemGap)
+            .fillMaxWidth()
+            .homeCard()
+            .clickable(role = Role.Button, onClick = onOpen)
+            .testTag(promoCardTag(promo.id))
+            .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(40.dp)
+                .clip(MaterialTheme.shapes.small)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
-            IconBadge(promo.icon?.let { painterResource(it) } ?: AppIcons.open)
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                PromotedLabel(stringResource(R.string.support_promoted))
-                Text(stringResource(promo.title), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    text = stringResource(promo.text),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            HideButton(onHide, Modifier.testTag(promoHideTag(promo.id)))
+            Icon(
+                painterResource(promo.icon ?: R.drawable.ic_open),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(OffkitDimens.iconSizeSmall),
+            )
         }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            PromotedLabel(stringResource(R.string.support_promoted))
+            Text(
+                text = stringResource(promo.title),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(promo.text),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        HideButton(onHide, Modifier.testTag(promoHideTag(promo.id)))
     }
 }
+
+/** A white card with a 1dp outlineVariant border and 20dp corners (SPEC §0 "Cards and lists"). */
+@Composable
+private fun Modifier.homeCard(): Modifier = this
+    .clip(MaterialTheme.shapes.medium)
+    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+    .border(BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), MaterialTheme.shapes.medium)
 
 /** The × of a home card: a standard 48dp icon button labelled "Hide". */
 @Composable
 private fun HideButton(onClick: () -> Unit, modifier: Modifier) {
-    IconButton(onClick = onClick, modifier = modifier) {
+    IconButton(onClick = onClick, modifier = modifier.size(OffkitDimens.touchTarget)) {
         Icon(
-            AppIcons.close,
+            painterResource(R.drawable.ic_close),
             contentDescription = stringResource(R.string.support_hide),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(OffkitDimens.iconSizeSmall),
         )
     }
 }
