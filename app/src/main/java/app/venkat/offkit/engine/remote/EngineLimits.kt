@@ -30,18 +30,22 @@ data class EngineLimits(
 ) {
     companion object {
         /**
-         * 90 s without progress. Ordinary operations report progress at least once per page or
-         * image, and one legitimate step (one large photo page recompressed) takes seconds, so
-         * 90 s leaves well over an order of magnitude of headroom for slow phones, while a hostile
-         * file stuck in one MuPDF call (SR3-2/3/4) is stopped in minutes rather than never.
+         * 90 s without progress. The operations report progress once per page or image, and one
+         * legitimate page or image takes seconds. The phases after the last progress event (the
+         * final save and the output validation) report nothing; for ordinary files they also take
+         * seconds, but a very large input on a slow phone is the main false-positive risk of this
+         * limit. A hostile file stuck in one MuPDF call (SR3-2 66 s, SR3-3 Merge link copy 60 s
+         * for 50k links and growing quadratically, SR3-4 Merge save 107 s) is stopped after 90 s
+         * instead of never.
          */
         const val STALL_MS = 90_000L
 
         /**
          * 15 minutes per PDF operation in all. The largest legitimate jobs (500 images, a 1 GiB
          * PDF) still make progress, so the stall limit does not stop them; this bounds a hostile
-         * file that keeps reporting progress while doing quadratic work (SR3-3: link copying in
-         * merge) and the battery it can burn.
+         * file that keeps reporting progress while every page is slow (SR3-3: one shared `/Annots`
+         * array on many pages makes Compress spend about 8 s per page, estimated 13 minutes for
+         * 100 pages) and the battery it can burn.
          */
         const val TOTAL_MS = 15 * 60_000L
 
@@ -56,10 +60,11 @@ data class EngineLimits(
         const val MEMORY_SAMPLE_MS = 1_000L
 
         /**
-         * Hard ceiling of the memory limit: 1536 MiB. Legitimate jobs stream page by page and stay
-         * far below this; SR3-1 shows hostile PDFs reaching 900 MB+ and growing. A 64-bit engine
-         * could otherwise grow until the low-memory killer kills the foreground UI's neighbours (and
-         * the phone stutters) before it gets to the engine.
+         * Hard ceiling of the memory limit: 1536 MiB. An ordinary HIGH compress of a 69 MiB,
+         * 16-page photo PDF peaked at 219 MiB RSS on the emulator. SR3-1 shows sub-1 MB hostile PDFs
+         * reaching 902 MB, and 1,502 MB with a larger count, bounded only by the device. Without a
+         * limit the engine could grow until the low-memory killer has killed other apps (and the
+         * phone stutters) before it gets to the engine.
          */
         const val MEMORY_CEILING_BYTES = 1536L * 1024 * 1024
 
