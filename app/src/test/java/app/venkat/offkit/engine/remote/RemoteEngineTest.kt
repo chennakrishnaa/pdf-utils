@@ -371,24 +371,185 @@ class RemoteEngineTest {
         assertEquals(null, ProcRss.bytes(Int.MAX_VALUE))
     }
 
+    // ------------------------------------------------ frozen app (FR-1), causes (FR-3), lock (FR-9)
+
+    /** Real monotonic time plus a jump the test controls: a jump looks like a frozen process. */
+    private class JumpClock {
+        val offset = java.util.concurrent.atomic.AtomicLong()
+        fun now() = System.nanoTime() + offset.get()
+        fun jumpMinutes(m: Long) { offset.addAndGet(TimeUnit.MINUTES.toNanos(m)) }
+    }
+
+    @Test
+    fun tenMinuteFreezeBetweenIterationsIsNotCountedTowardTheLimits() {
+        val clock = JumpClock()
+        val fake = FakePdfEngine().apply { progressSteps = 6; beforeStep = { _, _ -> Thread.sleep(50) } }
+        val conn = FakeConnector { server(fake) }
+        val (_, input, out) = jobDir()
+        val job = object : JobControl {
+            val n = AtomicInteger()
+            override fun progress(done: Int, total: Int) { if (n.incrementAndGet() == 3) clock.jumpMinutes(10) }
+            override fun isCancelled() = false
+        }
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 1_000, totalMs = 2_000), nanoTime = clock::now)
+        assertTrue(engine.merge(listOf(input), out, job) is PdfResult.Ok)
+        assertTrue(conn.killed.isEmpty())
+
+        // A jump while the client waits in poll (another thread) is not counted either.
+        val fake2 = FakePdfEngine().apply { progressSteps = 6; beforeStep = { _, step -> Thread.sleep(50); if (step == 3) clock.jumpMinutes(10) } }
+        val engine2 = RemoteEngine(FakeConnector { server(fake2) }, limits = EngineLimits(stallMs = 1_000, totalMs = 2_000), nanoTime = clock::now)
+        assertTrue(engine2.merge(listOf(input), out, Job()) is PdfResult.Ok)
+    }
+
+    @Test
+    fun genuineStallAfterAFreezeIsStillTimedOut() {
+        val clock = JumpClock()
+        val conn = FakeConnector { hangingService() }
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 500), nanoTime = clock::now)
+        Thread { Thread.sleep(200); clock.jumpMinutes(10) }.start()
+        val (_, input, out) = jobDir()
+        val t0 = System.nanoTime()
+        assertEquals(PdfResult.Err(PdfError.TimedOut), engine.compress(input, CompressionLevel.LOW, out, Job()))
+        val ms = elapsedMs(t0)
+        // Not at the jump (~200 ms): only after 500 ms of observed time without progress.
+        assertTrue("took $ms ms", ms in 450..2_500)
+        assertEquals(listOf(4242), conn.killed)
+    }
+
+    @Test
+    fun repeatedFreezesCannotPostponeTheLimitsBeyondTheDiscountBudget() {
+        val clock = JumpClock()
+        val stop = AtomicBoolean(false)
+        Thread { while (!stop.get()) { Thread.sleep(150); clock.jumpMinutes(10) } }.start()
+        val conn = FakeConnector { hangingService() }
+        // Budget 25 min: the third 10-minute jump exhausts it and the rest counts, so the 60 s
+        // stall limit fires within a few jumps although no jump is fully counted before.
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 60_000, totalMs = 120_000), nanoTime = clock::now, maxFrozenMs = 25 * 60_000L)
+        val (_, input, out) = jobDir()
+        val t0 = System.nanoTime()
+        val r = engine.compress(input, CompressionLevel.LOW, out, Job())
+        val ms = elapsedMs(t0)
+        stop.set(true)
+        assertEquals(PdfResult.Err(PdfError.TimedOut), r)
+        assertTrue("took $ms ms", ms in 300..3_000)
+    }
+
+    @Test
+    fun deathNoticedRightAfterAFreezeIsEngineUnavailable() {
+        val clock = JumpClock()
+        val conn = FakeConnector { hangingService() }
+        val engine = RemoteEngine(conn, nanoTime = clock::now)
+        val (_, input, out) = jobDir()
+        out.writeText("partial")
+        val job = object : JobControl {
+            override fun progress(done: Int, total: Int) {
+                clock.jumpMinutes(10) // frozen in the background ...
+                conn.onLost!!.invoke() // ... and the system killed the cached engine meanwhile
+            }
+            override fun isCancelled() = false
+        }
+        assertEquals(PdfResult.Err(PdfError.EngineUnavailable), engine.compress(input, CompressionLevel.LOW, out, job))
+        assertFalse(out.exists())
+        // Death reported a few polls after the thaw: still EngineUnavailable.
+        val engine2 = RemoteEngine(conn, nanoTime = clock::now)
+        val job2 = object : JobControl {
+            override fun progress(done: Int, total: Int) {
+                clock.jumpMinutes(10)
+                Thread { Thread.sleep(300); conn.onLost!!.invoke() }.start()
+            }
+            override fun isCancelled() = false
+        }
+        assertEquals(PdfResult.Err(PdfError.EngineUnavailable), engine2.compress(input, CompressionLevel.LOW, out, job2))
+    }
+
+    @Test
+    fun deathWhileTheAppIsCachedIsEngineUnavailableInTheForegroundEngineCrashed() {
+        for ((background, expected) in listOf(true to PdfError.EngineUnavailable, false to PdfError.EngineCrashed)) {
+            val conn = FakeConnector { hangingService() }
+            val engine = RemoteEngine(conn, inBackground = { background })
+            val job = object : JobControl {
+                override fun progress(done: Int, total: Int) { conn.onLost!!.invoke() }
+                override fun isCancelled() = false
+            }
+            val (_, input, out) = jobDir()
+            assertEquals(PdfResult.Err(expected), engine.compress(input, CompressionLevel.LOW, out, job))
+        }
+    }
+
+    @Test
+    fun callWaitingForTheLockSeesItsCancel() {
+        val conn = FakeConnector { hangingService() }
+        val engine = RemoteEngine(conn, cancelGraceMs = 200, limits = EngineLimits(stallMs = 60_000))
+        val (_, input, out) = jobDir()
+        val first = Job()
+        val firstStarted = CountDownLatch(1)
+        val firstResult = java.util.concurrent.atomic.AtomicReference<PdfResult>()
+        val t = Thread {
+            firstResult.set(engine.compress(input, CompressionLevel.LOW, out, object : JobControl {
+                override fun progress(done: Int, total: Int) { firstStarted.countDown() }
+                override fun isCancelled() = first.isCancelled()
+            }))
+        }.apply { start() }
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS))
+        val second = Job()
+        Thread { Thread.sleep(200); second.cancelled.set(true) }.start()
+        val t0 = System.nanoTime()
+        val dir = File(root, "jlock/in").apply { mkdirs() }
+        val raw = File(dir, "raw_000").apply { writeText("x") }
+        assertEquals(
+            app.venkat.offkit.core.PreparedImage.Err(PdfError.Cancelled),
+            engine.prepareImage(raw, dir, 0, second),
+        )
+        val ms = elapsedMs(t0)
+        assertTrue("took $ms ms", ms in 150..1_500)
+        assertTrue("first call must still be running", t.isAlive)
+        first.cancelled.set(true)
+        t.join(5_000)
+        assertEquals(PdfResult.Err(PdfError.Cancelled), firstResult.get())
+    }
+
     // ------------------------------------------------ BoundServiceConnector (real connector logic)
 
     @Test
-    fun connectTimeoutReturnsEngineCrashedAndUnbinds() {
+    fun connectTimeoutReturnsEngineUnavailableAndUnbinds() {
         val unbinds = AtomicInteger()
         val conn = BoundServiceConnector(bind = { true }, unbind = { unbinds.incrementAndGet() }, timeoutMs = 200)
         val (_, input, out) = jobDir()
         val t0 = System.nanoTime()
         val r = RemoteEngine(conn).merge(listOf(input), out, JobControl.None)
-        assertEquals(PdfResult.Err(PdfError.EngineCrashed), r)
+        assertEquals(PdfResult.Err(PdfError.EngineUnavailable), r)
         assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0) < 2_000)
         assertEquals(1, unbinds.get())
     }
 
     @Test
-    fun bindFailureReturnsEngineCrashed() {
+    fun disconnectUnlinksTheDeathRecipient() {
+        val linked: MutableList<android.os.IBinder.DeathRecipient> = CopyOnWriteArrayList()
+        val unlinked: MutableList<android.os.IBinder.DeathRecipient> = CopyOnWriteArrayList()
+        val service = object : IEngineService.Stub() {
+            override fun pid() = 4242
+            override fun run(requestId: Long, request: Bundle?, callback: IEngineCallback?) {}
+            override fun cancel(requestId: Long) {}
+            override fun linkToDeath(recipient: android.os.IBinder.DeathRecipient, flags: Int) { linked += recipient }
+            override fun unlinkToDeath(recipient: android.os.IBinder.DeathRecipient, flags: Int): Boolean {
+                unlinked += recipient
+                return true
+            }
+        }
+        val name = ComponentName("app.venkat.offkit", EngineService::class.java.name)
+        val conn = BoundServiceConnector(bind = { c -> c.onServiceConnected(name, service); true }, unbind = {})
+        assertTrue(conn.connect {} != null)
+        assertEquals(1, linked.size)
+        conn.disconnect()
+        assertEquals(linked, unlinked)
+        conn.disconnect() // twice: no second unlink
+        assertEquals(1, unlinked.size)
+    }
+
+    @Test
+    fun bindFailureReturnsEngineUnavailable() {
         val conn = BoundServiceConnector(bind = { false }, unbind = {}, timeoutMs = 200)
-        assertEquals(PdfEstimate.Err(PdfError.EngineCrashed), RemoteEngine(conn).estimateImage(File(root, "x")))
+        assertEquals(PdfEstimate.Err(PdfError.EngineUnavailable), RemoteEngine(conn).estimateImage(File(root, "x")))
     }
 
     @Test

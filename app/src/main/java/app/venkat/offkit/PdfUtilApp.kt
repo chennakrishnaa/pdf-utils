@@ -26,12 +26,26 @@ class PdfUtilApp : Application() {
         get() = engineOrNull ?: synchronized(this) {
             engineOrNull ?: run {
                 EngineProcess.checkNotEngineProcess("PdfUtilApp.engine")
-                RemoteEngine(BoundServiceConnector.forService(this), limits = engineLimits())
+                RemoteEngine(
+                    BoundServiceConnector.forService(this),
+                    limits = engineLimits(),
+                    inBackground = ::isCached,
+                )
             }.also { engineOrNull = it }
         }
         set(value) {
             engineOrNull = value
         }
+
+    /**
+     * True if this process is cached (no visible activity, nothing keeping it important): the
+     * system may then freeze it or kill its bound `:engine` process at any time. No permission.
+     */
+    private fun isCached(): Boolean {
+        val info = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(info)
+        return info.importance >= ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED
+    }
 
     /** Production watchdog limits: default times, memory limit from this device's total RAM. */
     fun engineLimits(): EngineLimits {

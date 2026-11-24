@@ -106,4 +106,92 @@ class EngineServerTest {
         assertEquals(listOf(1 to 3, 2 to 3, 3 to 3), progress)
         assertTrue(out.isFile)
     }
+
+    // ------------------------------------------------ client gone (FR-2)
+
+    /** A server whose kill and death links are recorded instead of real. */
+    private class Hooks {
+        val kills = java.util.concurrent.atomic.AtomicInteger()
+        val deaths: MutableList<() -> Unit> = java.util.concurrent.CopyOnWriteArrayList()
+        val unlinks = java.util.concurrent.atomic.AtomicInteger()
+        fun server(fake: FakePdfEngine, root: File) = EngineServer(
+            { fake }, root,
+            killProcess = { kills.incrementAndGet() },
+            linkDeath = { _, onDeath -> deaths += onDeath; { unlinks.incrementAndGet() } },
+        )
+    }
+
+    private fun blockingMerge(root: File): Triple<FakePdfEngine, java.util.concurrent.CountDownLatch, java.util.concurrent.CountDownLatch> {
+        val started = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val fake = FakePdfEngine().apply {
+            beforeStep = { _, step -> if (step == 2) { started.countDown(); release.await(10, TimeUnit.SECONDS) } }
+        }
+        return Triple(fake, started, release)
+    }
+
+    private val ignore = object : IEngineCallback.Stub() {
+        override fun progress(requestId: Long, done: Int, total: Int) {}
+        override fun result(requestId: Long, result: Bundle?) {}
+    }
+
+    @Test
+    fun clientDeathMidRequestDeletesOutAndKillsTheProcess() {
+        val root = jobsRoot()
+        val input = File(root, "j/in").apply { mkdirs() }.let { File(it, "in_000.pdf").apply { writeText("%PDF") } }
+        val out = File(root, "j/output.pdf")
+        val (fake, started, release) = blockingMerge(root)
+        val hooks = Hooks()
+        val server = hooks.server(fake, root)
+        server.run(1, EngineWire.encodeRequest(EngineRequest.Merge(listOf(input.path), out.path)), ignore)
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        assertTrue(server.busy)
+        out.writeText("partial")
+        hooks.deaths.single().invoke() // the client's callback binder died
+        assertEquals(1, hooks.kills.get())
+        assertFalse(out.exists())
+        release.countDown()
+    }
+
+    @Test
+    fun unbindWhileBusyKillsButIdleUnbindDoesNot() {
+        val root = jobsRoot()
+        val input = File(root, "j/in").apply { mkdirs() }.let { File(it, "in_000.pdf").apply { writeText("%PDF") } }
+        val out = File(root, "j/output.pdf")
+        val hooks = Hooks()
+        // Idle: a finished request is forgotten (and unlinked) before its result is sent.
+        val idle = hooks.server(FakePdfEngine(), root)
+        val (_, reply) = runOn(idle, EngineRequest.Merge(listOf(input.path), out.path))
+        assertTrue(EngineWire.decodeResult(reply) is PdfResult.Ok)
+        assertFalse(idle.busy)
+        assertEquals(1, hooks.unlinks.get())
+        idle.onUnbound()
+        assertEquals(0, hooks.kills.get())
+        assertTrue(out.isFile) // a good output is never deleted
+
+        // Busy (one running, one queued): unbind deletes both outputs and kills.
+        val (fake, started, release) = blockingMerge(root)
+        val busy = hooks.server(fake, root)
+        val out2 = File(root, "j/output2.pdf")
+        busy.run(1, EngineWire.encodeRequest(EngineRequest.Merge(listOf(input.path), out.path)), ignore)
+        busy.run(2, EngineWire.encodeRequest(EngineRequest.Merge(listOf(input.path), out2.path)), ignore)
+        assertTrue(started.await(5, TimeUnit.SECONDS))
+        out2.writeText("never started")
+        busy.onUnbound()
+        assertEquals(1, hooks.kills.get())
+        assertFalse(out.exists())
+        assertFalse(out2.exists())
+        release.countDown()
+    }
+
+    @Test
+    fun everyBindInAProcessGetsTheSameServer() {
+        val a = org.robolectric.Robolectric.buildService(EngineService::class.java).create().get()
+        val first = a.onBind(android.content.Intent())
+        a.onUnbind(android.content.Intent()) // idle: no kill
+        a.onDestroy()
+        val b = org.robolectric.Robolectric.buildService(EngineService::class.java).create().get()
+        assertTrue(first === b.onBind(android.content.Intent()))
+        assertTrue(first is EngineServer)
+    }
 }

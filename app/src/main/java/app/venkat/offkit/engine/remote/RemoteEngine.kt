@@ -15,6 +15,7 @@ import app.venkat.offkit.engine.PdfResult
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * [PdfEngine] that runs every call in the `:engine` process ([EngineService]), so a file that
@@ -26,9 +27,12 @@ import java.util.concurrent.TimeUnit
  * `job.isCancelled()` about every [pollMs]. On cancel it asks the service to cancel; if no result
  * arrives within [cancelGraceMs] it kills the engine process and returns `Err(Cancelled)`.
  *
- * If the engine dies, disconnects, or cannot be bound within the connector's timeout, the call
- * returns `Err(EngineCrashed)` (estimates: `PdfEstimate.Err(EngineCrashed)`) and deletes a partial
- * `out`; the next call binds a fresh engine. It never falls back to running MuPDF in this process.
+ * If the engine dies or disconnects while running the call in the foreground, the call returns
+ * `Err(EngineCrashed)` (estimates: `PdfEstimate.Err(EngineCrashed)`). If it cannot be bound within
+ * the connector's timeout, or it disappears while this app was frozen or in the background (see
+ * [inBackground] and the freeze-gap rule below), the call returns `Err(EngineUnavailable)`, which
+ * does not blame the file. Either way a partial `out` is deleted and the next call binds a fresh
+ * engine. It never falls back to running MuPDF in this process.
  *
  * It is also the app's [ImagePreparer]: image normalisation (platform codecs) runs in the engine
  * process too. A death during it gives `PreparedImage.Err(EngineCrashed)`, a hard cancel
@@ -43,12 +47,36 @@ import java.util.concurrent.TimeUnit
  * once). A user cancel takes precedence over the watchdog and still returns `Cancelled`. After a
  * watchdog kill, partial `out` is deleted and the next call binds a new engine, as for a hard cancel.
  *
- * Calls are serialised (one request at a time). Do not call on the main thread.
+ * **Clock.** Every deadline uses [nanoTime], by default `System.nanoTime()`. On Android that is
+ * `CLOCK_MONOTONIC`, the same clock as `SystemClock.uptimeMillis()`: it stops while the device is
+ * in deep sleep (when neither process runs either), unlike `elapsedRealtime()`
+ * (`CLOCK_BOOTTIME`). It deliberately is not `uptimeMillis()` itself, because Robolectric fakes
+ * that clock and the JVM tests need real time; on a device the two advance identically.
+ *
+ * **Freeze gaps (FR-1).** `CLOCK_MONOTONIC` keeps running while this process is frozen by the
+ * cached-apps freezer or simply not scheduled. The `:engine` process is bound only by this app,
+ * so it is cached and frozen with it. The wait loop wakes about every [pollMs]; when two
+ * consecutive wake-ups are more than [freezeGapMs] apart, this process was frozen, and the gap
+ * minus one [pollMs] is not counted toward the stall, total or image limits, the cancel grace or
+ * the memory sampling (their deadlines are shifted by it). Bound: at most [maxFrozenMs] per call
+ * is discounted in all; beyond that, gaps count as ordinary time. So even if the engine really
+ * did run during every "gap" (it should not: it is frozen with us), a call ends after at most
+ * its limit plus [maxFrozenMs] of wall time, and every loop iteration still counts at least
+ * [pollMs], so the limits can never be postponed forever.
+ *
+ * Calls are serialised (one request at a time). A call waiting for an earlier one still polls
+ * `job.isCancelled()` about every [pollMs] and returns `Cancelled` if it is set. Do not call on
+ * the main thread.
  *
  * @param limits watchdog limits; the app passes the default times and a memory limit from
  *   [EngineLimits.memoryLimitFor]. Tests pass small ones.
  * @param rssBytes resident set size in bytes of an engine pid, or null if unknown.
  * @param nanoTime monotonic clock for every deadline here (polling itself waits in real time).
+ * @param freezeGapMs a gap between two wake-ups of the wait loop longer than this means this
+ *   process was frozen or not scheduled.
+ * @param maxFrozenMs most frozen time discounted from the limits in one call.
+ * @param inBackground true if this process is cached (in the background); then an engine death
+ *   is reported as `EngineUnavailable`, since the system may have killed the cached engine.
  * @param log where the one-time "cannot read the engine's memory" warning goes.
  */
 class RemoteEngine(
@@ -60,6 +88,9 @@ class RemoteEngine(
     private val rssBytes: (pid: Int) -> Long? = ProcRss::bytes,
     private val nanoTime: () -> Long = System::nanoTime,
     private val log: (String) -> Unit = { Log.w(TAG, it) },
+    private val freezeGapMs: Long = FREEZE_GAP_MS,
+    private val maxFrozenMs: Long = MAX_FROZEN_MS,
+    private val inBackground: () -> Boolean = { false },
 ) : PdfEngine, ImagePreparer {
     private sealed interface Event {
         data class Progress(val done: Int, val total: Int) : Event
@@ -91,11 +122,12 @@ class RemoteEngine(
     }
 
     private val crashed = Reply.Failed(PdfError.EngineCrashed)
+    private val unavailable = Reply.Failed(PdfError.EngineUnavailable)
 
     @Volatile
     private var rssUnreadableLogged = false
 
-    private val lock = Any()
+    private val lock = ReentrantLock()
     private var session: Session? = null
     private var nextId = 1L
 
@@ -179,13 +211,48 @@ class RemoteEngine(
      * notification had not arrived yet), it was never started, so it is sent once more on a
      * freshly bound engine.
      */
-    private fun call(request: EngineRequest, job: JobControl): Reply = synchronized(lock) {
-        attempt(request, job) ?: attempt(request, job) ?: crashed
+    private fun call(request: EngineRequest, job: JobControl): Reply {
+        if (!lockOrCancelled(job)) return Reply.Failed(PdfError.Cancelled)
+        try {
+            return attempt(request, job) ?: attempt(request, job) ?: unavailable
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    /**
+     * Takes [lock], checking `job.isCancelled()` about every [pollMs] while another call holds it.
+     * False (lock not taken) if the job was cancelled or the thread interrupted while waiting.
+     */
+    private fun lockOrCancelled(job: JobControl): Boolean {
+        while (true) {
+            if (job.isCancelled()) return false
+            try {
+                if (lock.tryLock(pollMs, TimeUnit.MILLISECONDS)) return true
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+    }
+
+    /**
+     * Unbinds the engine if no call is running (the next call binds again); returns false if a
+     * call is running. The engine process then goes away once nothing else binds it.
+     */
+    fun release(): Boolean {
+        if (!lock.tryLock()) return false
+        try {
+            session?.let { drop(it) }
+            return true
+        } finally {
+            lock.unlock()
+        }
     }
 
     /** One send-and-wait; null if the request never reached the engine. Holds [lock]. */
     private fun attempt(request: EngineRequest, job: JobControl): Reply? {
-        val s = connected() ?: return crashed
+        val s = connected() ?: return unavailable
         val service = s.service!!
         val id = nextId++
         val events = LinkedBlockingQueue<Event>()
@@ -210,13 +277,43 @@ class RemoteEngine(
             return null
         }
 
-        val sentAt = nanoTime()
+        val pollNs = TimeUnit.MILLISECONDS.toNanos(pollMs)
+        val gapNs = TimeUnit.MILLISECONDS.toNanos(freezeGapMs)
+        val thawWindowNs = TimeUnit.MILLISECONDS.toNanos(THAW_WINDOW_MS)
         val totalNs = TimeUnit.MILLISECONDS.toNanos(if (request.isImageRequest()) limits.imageTotalMs else limits.totalMs)
         val stallNs = TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
+        var sentAt = nanoTime()
         var lastActivity = sentAt
         var nextRssSample = sentAt
         var cancelDeadline = 0L
+        var lastWake = sentAt
+        var discountLeftNs = TimeUnit.MILLISECONDS.toNanos(maxFrozenMs)
+        var thawedAt = 0L
         var interrupted = false
+
+        /**
+         * Reads the clock; if the loop went more than [freezeGapMs] since the last read, this
+         * process was frozen: shift every deadline by the gap (minus one poll, within the
+         * [maxFrozenMs] budget). Called after the wait and before the limit checks, so a freeze
+         * anywhere in the loop (in the wait or in `job.progress`) is caught before it is judged.
+         */
+        fun wake(): Long {
+            val now = nanoTime()
+            val gap = now - lastWake
+            lastWake = now
+            if (gap > gapNs) {
+                val discount = minOf(gap - pollNs, discountLeftNs)
+                if (discount > 0) {
+                    discountLeftNs -= discount
+                    sentAt += discount
+                    lastActivity += discount
+                    nextRssSample += discount
+                    if (cancelDeadline != 0L) cancelDeadline += discount
+                }
+                thawedAt = now
+            }
+            return now
+        }
         try {
             while (true) {
                 val event = try {
@@ -225,9 +322,11 @@ class RemoteEngine(
                     interrupted = true
                     null
                 }
+                // Freeze gap first, so a death noticed right after a thaw is classified correctly.
+                val woke = wake()
                 when (event) {
                     is Event.Progress -> {
-                        lastActivity = nanoTime()
+                        lastActivity = woke
                         job.progress(event.done, event.total)
                     }
                     is Event.Result -> {
@@ -236,12 +335,14 @@ class RemoteEngine(
                     }
                     Event.Lost -> {
                         drop(s)
-                        return crashed
+                        val afterThaw = thawedAt != 0L && woke - thawedAt < thawWindowNs
+                        return if (afterThaw || backgrounded()) unavailable else crashed
                     }
                     null -> Unit
                 }
+                val now = wake()
                 if (cancelDeadline == 0L && (interrupted || job.isCancelled())) {
-                    cancelDeadline = nanoTime() + TimeUnit.MILLISECONDS.toNanos(cancelGraceMs)
+                    cancelDeadline = now + TimeUnit.MILLISECONDS.toNanos(cancelGraceMs)
                     try {
                         service.cancel(id)
                     } catch (e: RemoteException) {
@@ -250,13 +351,12 @@ class RemoteEngine(
                 }
                 if (cancelDeadline != 0L) {
                     // A user cancel wins over the watchdog: it ends as Cancelled either way.
-                    if (nanoTime() - cancelDeadline >= 0) {
+                    if (now - cancelDeadline >= 0) {
                         killAndWait(s)
                         return Reply.Failed(PdfError.Cancelled)
                     }
                     continue
                 }
-                val now = nanoTime()
                 if (now - lastActivity >= stallNs || now - sentAt >= totalNs) {
                     killAndWait(s)
                     return Reply.Failed(PdfError.TimedOut)
@@ -274,6 +374,12 @@ class RemoteEngine(
         } finally {
             if (interrupted) Thread.currentThread().interrupt()
         }
+    }
+
+    private fun backgrounded(): Boolean = try {
+        inBackground()
+    } catch (e: RuntimeException) {
+        false
     }
 
     /** True if [pid]'s resident memory exceeds the limit. Unreadable: false (fail open), logged once. */
@@ -315,7 +421,16 @@ class RemoteEngine(
         drop(s)
     }
 
-    private companion object {
-        const val TAG = "OffkitEngine"
+    companion object {
+        private const val TAG = "OffkitEngine"
+
+        /** A wait-loop gap longer than this (the loop wakes every ~100 ms) means a frozen process. */
+        const val FREEZE_GAP_MS = 2_000L
+
+        /** At most one hour of frozen time is discounted per call (see the class KDoc). */
+        const val MAX_FROZEN_MS = 60 * 60_000L
+
+        /** A death noticed this soon after a thaw happened while frozen: `EngineUnavailable`. */
+        const val THAW_WINDOW_MS = 5_000L
     }
 }

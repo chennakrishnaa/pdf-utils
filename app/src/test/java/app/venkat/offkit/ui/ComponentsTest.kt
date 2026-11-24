@@ -314,6 +314,7 @@ class ComponentsTest {
             PdfError.Cancelled,
             PdfError.NotImplemented,
             PdfError.EngineCrashed,
+            PdfError.EngineUnavailable,
             PdfError.TimedOut,
             PdfError.Io(IOException("disk")),
         )
