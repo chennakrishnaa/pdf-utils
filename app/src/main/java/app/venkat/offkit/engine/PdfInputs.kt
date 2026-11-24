@@ -4,6 +4,7 @@ import com.artifex.mupdf.fitz.Document
 import com.artifex.mupdf.fitz.PDFDocument
 import com.artifex.mupdf.fitz.PDFObject
 import java.io.File
+import java.io.IOException
 
 /** An input PDF could not be used; [error] is the classification to report. */
 class PdfInputException(val error: PdfError, cause: Throwable? = null) :
@@ -42,7 +43,8 @@ internal object PdfInputs {
      * - [PdfError.Io] when the file cannot be opened (missing, unreadable);
      * - [PdfError.OutOfMemory] when it is larger than [ImageLimits.MAX_INPUT_PDF_BYTES] (checked
      *   before MuPDF opens it; the user is told "Not enough memory. Try fewer or smaller files.")
-     *   or has more than [ObjectGraph.MAX_OBJECTS] objects.
+     *   or has more than [ObjectGraph.MAX_OBJECTS] objects, or when the raw-file pre-scan
+     *   [ObjStmScan] (before MuPDF opens it) finds an object stream that decodes too large.
      * The object graph is NOT walked here (SR2-3: a walk over every reachable object costs memory
      * proportional to the references): Compress and Add images save without the recursive
      * `garbage` pass ([EDIT_SAVE_OPTIONS]), and Merge bounds what grafting touches itself
@@ -55,6 +57,11 @@ internal object PdfInputs {
      */
     fun open(file: File): PDFDocument {
         if (file.length() > ImageLimits.MAX_INPUT_PDF_BYTES) throw PdfInputException(PdfError.OutOfMemory)
+        try {
+            ObjStmScan.check(file) // SR3-1: object-stream bombs are paid inside MuPDF's open
+        } catch (e: IOException) {
+            // Unreadable: MuPDF's own open below reports it (Io).
+        }
         val doc = try {
             Document.openDocument(file.absolutePath)
         } catch (e: RuntimeException) {
@@ -67,7 +74,8 @@ internal object PdfInputs {
             val pages = try {
                 pdf.countPages()
             } catch (e: RuntimeException) {
-                throw PdfInputException(PdfError.Corrupt, e)
+                // SR3-5: a native allocation failure while loading the page tree is "too large".
+                throw PdfInputException(if (isOutOfMemoryFailure(e)) PdfError.OutOfMemory else PdfError.Corrupt, e)
             }
             if (pages <= 0) throw PdfInputException(PdfError.Corrupt)
             if (pdf.countObjects() > ObjectGraph.MAX_OBJECTS) throw PdfInputException(PdfError.OutOfMemory)
@@ -112,9 +120,11 @@ internal object PdfInputs {
         }
     }
 
-    private fun classifyOpenFailure(e: RuntimeException): PdfInputException {
+    internal fun classifyOpenFailure(e: RuntimeException): PdfInputException {
         val msg = e.message.orEmpty()
-        return if (msg.startsWith("cannot open")) {
+        return if (isOutOfMemoryFailure(e)) {
+            PdfInputException(PdfError.OutOfMemory, e) // SR3-5
+        } else if (msg.startsWith("cannot open")) {
             PdfInputException(PdfError.Io(e), e)
         } else {
             PdfInputException(PdfError.Corrupt, e)

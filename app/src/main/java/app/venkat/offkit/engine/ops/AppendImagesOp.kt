@@ -34,7 +34,10 @@ class AppendImagesOp {
         val doc = PdfInputs.open(pdf)
         try {
             // SR2-3: the save loads every object; refuse inputs whose objects exceed the walk budget.
-            PdfInputs.checkGraph { ObjectGraph.checkObjects(doc) }
+            // SR3-3 first: validation loadPage()s every page, building all of its annotations.
+            val budget = ObjectGraph.Budget()
+            PdfInputs.checkGraph { ObjectGraph.checkAnnots(doc, budget) }
+            PdfInputs.checkGraph { ObjectGraph.checkObjects(doc, budget) }
             val original = doc.countPages()
             val lastSize = ImagePages.pageSizeOf(doc, original - 1)
             images.forEachIndexed { i, image ->

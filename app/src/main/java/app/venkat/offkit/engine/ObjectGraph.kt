@@ -40,7 +40,12 @@ internal object ObjectGraph {
      */
     const val MAX_OBJECTS = 200_000
 
-    /** Most references/entries a walk may visit before the input is "too large" (~110 MB of parsed objects). */
+    /**
+     * Most references/entries a walk may visit before the input is "too large". Measured (SR3, host
+     * MuPDF 1.28.5, `bipseq-objstm.pdf`): a walk that reaches this bound peaks at ~285 MB RSS, because
+     * resolving one object parses its whole object stream before anything is counted; [ObjStmScan]
+     * now bounds that per-stream parse before the file is opened.
+     */
     const val MAX_REFERENCES = 2_000_000
 
     /** Wall-clock budget of one walk. */
@@ -58,8 +63,17 @@ internal object ObjectGraph {
     private val GRAFT_KEYS = listOf("Contents", "Resources", "MediaBox", "CropBox", "BleedBox", "TrimBox", "ArtBox", "Rotate", "UserUnit")
 
     /** Reference and time budget of one walk; [spend] throws `PdfInputException(OutOfMemory)` once exceeded. */
-    class Budget(private val maxRefs: Int = MAX_REFERENCES, maxMillis: Long = MAX_WALK_MILLIS) {
-        private val deadline = System.nanoTime() + maxMillis * 1_000_000
+    class Budget(private val maxRefs: Int = MAX_REFERENCES, private val maxMillis: Long = MAX_WALK_MILLIS) {
+        private var deadline = System.nanoTime() + maxMillis * 1_000_000
+
+        /**
+         * Starts a new walk on this budget: the reference count carries on (one count for all inputs
+         * of a Merge, SR3-4), the time allowance restarts, so later inputs are not charged for the
+         * opening and pre-scan of earlier ones.
+         */
+        fun newWalk() {
+            deadline = System.nanoTime() + maxMillis * 1_000_000
+        }
         var spent = 0
             private set
 
@@ -67,6 +81,52 @@ internal object ObjectGraph {
             spent++
             if (spent > maxRefs) throw PdfInputException(PdfError.OutOfMemory)
             if (spent and 0x3FF == 0 && System.nanoTime() > deadline) throw PdfInputException(PdfError.OutOfMemory)
+        }
+
+        /** Charges [n] (>= 0) units at once; overflow-safe, and checks the deadline on every call. */
+        fun spend(n: Int) {
+            require(n >= 0)
+            if (n.toLong() + spent > maxRefs) throw PdfInputException(PdfError.OutOfMemory)
+            spent += n
+            if (System.nanoTime() > deadline) throw PdfInputException(PdfError.OutOfMemory)
+        }
+    }
+
+    /**
+     * Most annotations (`/Annots` entries) one page may have (SR3-3). MuPDF builds every annotation
+     * of a page on `loadPage` (output validation, Merge's link copy; ~460 B each), and Merge's
+     * `createLink` is quadratic in the links already on the page. Real pages have tens.
+     */
+    const val MAX_ANNOTS_PER_PAGE = 10_000
+
+    /**
+     * SR3-3: for every page, resolves only its `/Annots` array (the length; no annotation is loaded)
+     * and charges that length to [budget] per page, so P pages sharing one array of M entries cost
+     * P × M. A page with more than [maxPerPage] entries is "too large". Run it before any `loadPage`.
+     * @throws PdfInputException `OutOfMemory`.
+     */
+    fun checkAnnots(doc: PDFDocument, budget: Budget = Budget(), maxPerPage: Int = MAX_ANNOTS_PER_PAGE) {
+        for (p in 0 until doc.countPages()) {
+            budget.spend()
+            val page = doc.findPage(p)
+            try {
+                budget.spend(annotCount(page, maxPerPage))
+            } finally {
+                destroy(page)
+            }
+        }
+    }
+
+    /** Length of [page]'s `/Annots` array (0 if absent or not an array); `OutOfMemory` if over [max]. */
+    private fun annotCount(page: PDFObject, max: Int): Int {
+        val raw = page.get("Annots")
+        val arr = if (raw.isIndirect) raw.resolve().also { destroy(raw) } else raw
+        try {
+            val n = if (arr.isArray) arr.size() else 0
+            if (n > max) throw PdfInputException(PdfError.OutOfMemory)
+            return n
+        } finally {
+            destroy(arr)
         }
     }
 
@@ -104,11 +164,17 @@ internal object ObjectGraph {
     /**
      * Merge: walks, for every page, what `pdf_graft_mapped_page` will copy (the [GRAFT_KEYS]
      * values, looked up with inheritance, and everything reachable from them; one visited set per
-     * document, as Merge uses one graft map per input).
-     * @throws PdfInputException `OutOfMemory` when [budget] runs out, `Corrupt` when a path nests
-     *   deeper than [maxNesting].
+     * document, as Merge uses one graft map per input). Each page's `/Annots` length is charged as in
+     * [checkAnnots] (Merge loads the page's links), and a page over [maxAnnots] is refused (SR3-3).
+     * @throws PdfInputException `OutOfMemory` when [budget] runs out or a page has too many
+     *   annotations, `Corrupt` when a path nests deeper than [maxNesting].
      */
-    fun checkPages(doc: PDFDocument, budget: Budget = Budget(), maxNesting: Int = MAX_GRAFT_NESTING) {
+    fun checkPages(
+        doc: PDFDocument,
+        budget: Budget = Budget(),
+        maxNesting: Int = MAX_GRAFT_NESTING,
+        maxAnnots: Int = MAX_ANNOTS_PER_PAGE,
+    ) {
         val count = doc.countObjects()
         if (count > MAX_OBJECTS) throw PdfInputException(PdfError.OutOfMemory)
         val visited = BitSet(count)
@@ -117,6 +183,7 @@ internal object ObjectGraph {
             for (p in 0 until doc.countPages()) {
                 val page = doc.findPage(p)
                 try {
+                    budget.spend(annotCount(page, maxAnnots))
                     for (key in GRAFT_KEYS) {
                         budget.spend()
                         val v = page.getInheritable(key)

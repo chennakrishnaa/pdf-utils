@@ -74,7 +74,9 @@ internal fun guardedRun(out: File, block: () -> PdfResult): PdfResult {
 internal fun isOutOfMemoryFailure(t: Throwable): Boolean {
     if (t is OutOfMemoryError) return true
     val msg = t.message ?: return false
-    return msg.contains("OutOfMemoryError") || msg.startsWith("malloc (")
+    // fitz/memory.c: "malloc (%zu bytes) failed", "calloc (%zu x %zu bytes) failed", "realloc (…) failed".
+    return msg.contains("OutOfMemoryError") || msg.startsWith("malloc (") || msg.startsWith("calloc (") ||
+        msg.startsWith("realloc (")
 }
 
 /** MuPDF messages of page-tree failures (typically during `graftPage` or `loadPage` of a damaged PDF). */
@@ -83,6 +85,7 @@ private val PAGE_TREE_FAILURES = listOf(
     "cycle in page tree",
     "cannot find page",
     "source object number out of range",
+    "cycle in parent chain", // SR3-5: inherited-key lookup in Add images (pageSizeOf / appendImagePage)
 )
 
 /**
