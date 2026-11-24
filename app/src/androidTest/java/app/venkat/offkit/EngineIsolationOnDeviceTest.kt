@@ -254,7 +254,11 @@ class EngineIsolationOnDeviceTest {
             val input = bigPdf.copyTo(File(jobDir, "in/in_000.pdf"))
             val out = File(jobDir, "output.pdf")
             val engine = RemoteEngine(BoundServiceConnector.forService(context), limits = limits)
-            val r = engine.compress(input, CompressionLevel.HIGH, out, FirstProgress(JobControl.None, onFirstProgress))
+            val r = try {
+                engine.compress(input, CompressionLevel.HIGH, out, FirstProgress(JobControl.None, onFirstProgress))
+            } finally {
+                engine.release() // no binding of this test outlives it
+            }
             if (r !is PdfResult.Ok) assertTrue("partial output left after $r", !out.exists())
             return r
         } finally {
@@ -336,6 +340,67 @@ class EngineIsolationOnDeviceTest {
                 "end ${end?.div(mib)} MiB, peak sampled at progress ${peakSampled.get() / mib} MiB, $hwm",
         )
         assertTrue(end != null)
+    }
+
+    // ---------------------------------------------------------------- client gone (PI4, FR-2)
+
+    /** True once [pid] has exited (gone from /proc, or a zombie waiting to be reaped). */
+    private fun exited(pid: Int): Boolean {
+        val stat = try {
+            File("/proc/$pid/stat").readText()
+        } catch (e: Exception) {
+            return true
+        }
+        return stat.substringAfterLast(')').trim().startsWith("Z")
+    }
+
+    /**
+     * The client drops its binding while a job runs (the closest a test in the app's own process
+     * gets to the UI process dying: the service is unbound while busy). The engine must kill
+     * itself within 2 s instead of finishing the job unwatched, and the next job runs in a new
+     * engine process. Client death through the callback binder is covered by the JVM tests.
+     */
+    @Test
+    fun clientUnbindsMidJob_engineExitsWithin2s_nextJobInNewEngine() {
+        ordinaryJobSucceeds()
+        // Only this test's connection may hold the service, so its unbind reaches onUnbind.
+        assertTrue((context.applicationContext as PdfUtilApp).engine.let { it is RemoteEngine && it.release() })
+        val jobDir = File(jobsRoot, "pi4-${System.nanoTime()}").apply { File(this, "in").mkdirs() }
+        val enginePidAtDrop = AtomicInteger(0)
+        val droppedAt = AtomicLong(0)
+        val exitedAfterMs = AtomicLong(-1)
+        try {
+            val input = bigPdf.copyTo(File(jobDir, "in/in_000.pdf"))
+            val out = File(jobDir, "output.pdf")
+            val connector = BoundServiceConnector.forService(context)
+            val engine = RemoteEngine(connector, limits = EngineLimits(stallMs = 4_000))
+            val r = try {
+                engine.compress(input, CompressionLevel.HIGH, out, FirstProgress(JobControl.None) {
+                    val pid = enginePid() ?: error("no :engine process mid-job")
+                    enginePidAtDrop.set(pid)
+                    droppedAt.set(SystemClock.elapsedRealtime())
+                    connector.disconnect() // the client is gone
+                    while (SystemClock.elapsedRealtime() - droppedAt.get() < 3_000) {
+                        if (exited(pid)) {
+                            exitedAfterMs.set(SystemClock.elapsedRealtime() - droppedAt.get())
+                            break
+                        }
+                        SystemClock.sleep(20)
+                    }
+                })
+            } finally {
+                engine.release()
+            }
+            Log.i(TAG, "client gone: engine ${enginePidAtDrop.get()} exited ${exitedAfterMs.get()} ms after unbind; call -> $r")
+            assertTrue("the job never reported progress", droppedAt.get() != 0L)
+            assertTrue("engine still running 3 s after its client unbound", exitedAfterMs.get() in 0..2_000)
+            assertTrue("job finished although its engine was killed: $r", r !is PdfResult.Ok)
+            assertTrue("partial output left", !out.exists())
+        } finally {
+            jobDir.deleteRecursively()
+        }
+        val next = ordinaryJobSucceeds()
+        assertNotEquals("orphaned engine still serving", enginePidAtDrop.get(), next)
     }
 
     @Test
