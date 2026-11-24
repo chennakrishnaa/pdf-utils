@@ -28,9 +28,6 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
 
     private var nextKey = 0L
 
-    /** True when the list holds enough PDFs to merge (two or more). */
-    val canMerge: Boolean get() = _items.value.size >= MIN_INPUTS
-
     override val toolId: String = TOOL_ID
 
     /** True while the list must not change: a job is running or its result is being saved. */
