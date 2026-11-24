@@ -559,6 +559,34 @@ class PdfJobsTest {
         assertTrue(jobs.sharedRoot.listFiles().isNullOrEmpty())
     }
 
+    @Test
+    fun prepareShareReusesOneCopyPerOutputWhileItExists() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val first = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        val copy = jobs.sharedRoot.walk().single { it.isFile }
+        val second = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        assertEquals(first, second)
+        assertEquals(1, jobs.sharedRoot.listFiles()!!.size)
+
+        // Copy deleted externally: the next share recreates it.
+        copy.delete()
+        val third = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        assertFalse(third.uri == first.uri)
+        assertArrayEquals(fake.outputContent, jobs.sharedRoot.walk().single { it.isFile }.readBytes())
+
+        // Copy truncated: recreated too.
+        jobs.sharedRoot.walk().single { it.isFile }.writeBytes(ByteArray(1))
+        val fourth = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        assertFalse(fourth.uri == third.uri)
+        assertTrue(jobs.sharedRoot.walk().filter { it.isFile }.any { it.readBytes().contentEquals(fake.outputContent) })
+        assertEquals(fourth, runBlocking { jobs.prepareShare(output, "r.pdf") })
+
+        // A different output gets its own copy.
+        val other = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "b.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val otherRequest = runBlocking { jobs.prepareShare(other, "r.pdf") }
+        assertFalse(otherRequest.uri == fourth.uri)
+    }
+
     private fun utf8(s: String) = s.toByteArray(Charsets.UTF_8).size
 
     private val cjk = "报"

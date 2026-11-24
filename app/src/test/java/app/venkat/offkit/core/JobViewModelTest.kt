@@ -535,6 +535,40 @@ class JobViewModelTest {
         assertTrue(sharedFiles().isEmpty())
     }
 
+    private fun shareOnce(): ShareRequest {
+        vm.share()
+        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        val request = vm.shareRequest.value!!
+        vm.onShareHandled(launched = true)
+        return request
+    }
+
+    @Test
+    fun repeatedShareReusesOneCopyAndRecreatesItIfDeleted() {
+        runToReady()
+        val first = shareOnce()
+        val second = shareOnce()
+        assertEquals(first.uri, second.uri)
+        assertEquals(1, sharedRoot().listFiles()!!.size)
+        assertEquals(1, sharedFiles().size)
+
+        sharedFiles().single().delete()
+        val third = shareOnce()
+        assertTrue(third.uri != first.uri)
+        assertArrayEquals(fake.outputContent, sharedFiles().single().readBytes())
+    }
+
+    @Test
+    fun newResultGetsItsOwnShareCopy() {
+        runToReady()
+        val first = shareOnce()
+        vm.reset()
+        runToReady()
+        val second = shareOnce()
+        assertTrue(second.uri != first.uri)
+        assertArrayEquals(fake.outputContent, sharedFiles().single().readBytes())
+    }
+
     @Test
     fun failedShareCopySetsErrorAndKeepsState() {
         runToReady()

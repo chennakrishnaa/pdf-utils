@@ -51,7 +51,8 @@ sealed interface JobInput {
 /**
  * A finished output kept in the app cache until the caller discards it. It can be saved
  * ([PdfJobs.save]) and shared ([PdfJobs.prepareShare]) any number of times; only
- * [PdfJobs.discard] (or [PdfJobs.wipeAll]) removes it.
+ * [PdfJobs.discard] (or [PdfJobs.wipeAll]) removes it. It remembers its one shared copy, so
+ * sharing it again reuses that copy while it still exists.
  *
  * @property file the output PDF (inside `cacheDir/jobs/<id>/`).
  * @property pages page count reported by the engine.
@@ -62,7 +63,14 @@ class PendingOutput internal constructor(
     val pages: Int,
     val bytes: Long,
     internal val jobDir: File,
-)
+) {
+    /** The last copy [PdfJobs.prepareShare] made of this output (under `cacheDir/shared/`), or null. */
+    @Volatile
+    internal var sharedCopy: SharedCopy? = null
+}
+
+/** A shared copy of a [PendingOutput]: the [file] under `cacheDir/shared/<id>/` and its [request]. */
+internal class SharedCopy(val file: File, val request: ShareRequest)
 
 /** Result of [PdfJobs.run]. */
 sealed interface JobOutcome {
@@ -352,9 +360,20 @@ class PdfJobs @VisibleForTesting internal constructor(
      * the app's share provider (authority `<applicationId>.share`, which exposes only
      * `cacheDir/shared/`). Throws [IOException] (the partial copy is deleted) or
      * [CancellationException]. The copy stays until [wipeShared].
+     *
+     * One copy per output: if [output] was shared before under the same name and that copy
+     * still exists with the output's length, the same [ShareRequest] is returned without copying
+     * again; otherwise a fresh copy is made and remembered in its place.
      */
     suspend fun prepareShare(output: PendingOutput, suggestedName: String): ShareRequest = withContext(ioDispatcher) {
         val name = shareFileName(suggestedName)
+        output.sharedCopy?.let { copy ->
+            if (copy.request.name == name && output.file.isFile && copy.file.isFile &&
+                copy.file.length() == output.file.length()
+            ) {
+                return@withContext copy.request
+            }
+        }
         val dir = File(sharedRoot, UUID.randomUUID().toString())
         try {
             if (!output.file.isFile) throw IOException("Output no longer exists")
@@ -362,7 +381,9 @@ class PdfJobs @VisibleForTesting internal constructor(
             val target = File(dir, name)
             val ctx = currentCoroutineContext()
             target.outputStream().use { UriIo.copyToStream(output.file, it) { !ctx.isActive } }
-            ShareRequest(FileProvider.getUriForFile(appContext, shareAuthority(appContext), target), name)
+            ShareRequest(FileProvider.getUriForFile(appContext, shareAuthority(appContext), target), name).also {
+                output.sharedCopy = SharedCopy(target, it)
+            }
         } catch (e: Throwable) {
             withContext(NonCancellable) { dir.deleteRecursively() }
             if (e is IllegalArgumentException) throw IOException("Cannot share file", e)
@@ -389,6 +410,7 @@ class PdfJobs @VisibleForTesting internal constructor(
 
     /** Deletes [output] and its job directory. Safe to call more than once. */
     fun discard(output: PendingOutput) {
+        output.sharedCopy = null
         output.jobDir.deleteRecursively()
     }
 

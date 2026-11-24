@@ -40,9 +40,10 @@ import kotlin.coroutines.cancellation.CancellationException
  *   --failure--> `Done` as before with [saveError] set. While saving, [save], [share], [reset],
  *   [cancel], [invalidateResult] and [startJob] are ignored. The copy runs in
  *   [PdfJobs.processScope], so it completes (and cleans up) even if this ViewModel is cleared.
- * - `Done` --[share]--> copy to `cacheDir/shared/` --> [shareRequest] set; the screen launches the
- *   share sheet and calls [onShareHandled], which sets `Done.shared` if it launched. A failed copy
- *   sets [saveError]; the state does not change.
+ * - `Done` --[share]--> copy to `cacheDir/shared/` (one copy per output, reused by later shares
+ *   while it exists) --> [shareRequest] set; the screen launches the share sheet and calls
+ *   [onShareHandled], which sets `Done.shared` if it launched. A failed copy sets [saveError];
+ *   the state does not change.
  * - any but saving --[reset]--> `Idle` (cancels a running job, discards the output).
  * - `Done` (not saving)/`Failed` --[invalidateResult]--> `Idle` (discards the output).
  *
@@ -196,6 +197,8 @@ open class JobViewModel(
     /**
      * Prepares the output for sharing: copies it off the main thread to
      * `cacheDir/shared/<random id>/<sanitised Done.suggestedName>`, then sets [shareRequest].
+     * Sharing the same output again reuses that copy (same Uri) while it still exists with the
+     * output's length ([PdfJobs.prepareShare]); a new output always gets its own copy.
      * Ignored unless in `Done` and not saving, and while a share is already being prepared. A
      * failed copy (or a missing output) sets [saveError] and leaves the state unchanged.
      */
