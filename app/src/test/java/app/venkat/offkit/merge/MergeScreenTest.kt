@@ -525,7 +525,7 @@ class MergeScreenTest {
         rule.runOnUiThread { vm.save(dest(FailingSink)) }
         CoreTestSupport.idleUntil(message = "save finished") { !state().isSavingNow }
         rule.waitForIdle()
-        rule.onNodeWithText(app.getString(R.string.core_save_failed)).assertIsDisplayed()
+        rule.onNodeWithText("Couldn't save. There may not be enough space. Your result is still here, so try another folder.").assertIsDisplayed()
         assertTrue(state().isReadyToSave)
         rule.onNodeWithTag(TAG_JOB_SAVE).assertIsEnabled()
     }

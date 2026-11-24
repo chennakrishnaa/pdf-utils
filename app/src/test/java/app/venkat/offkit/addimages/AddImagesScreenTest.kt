@@ -629,7 +629,7 @@ class AddImagesScreenTest {
     @Test
     fun failedSaveShowsSnackbarAndKeepsResult() {
         ready()
-        val failed = str(R.string.core_save_failed)
+        val failed = str(R.string.error_save_message, str(R.string.error_save_title), str(R.string.error_save_body))
         rule.runOnUiThread { vm.save(dest(FailingSink)) }
         CoreTestSupport.idleUntil(rule, message = "save error shown") {
             rule.onAllNodesWithText(failed).fetchSemanticsNodes().isNotEmpty()

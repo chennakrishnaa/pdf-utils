@@ -851,7 +851,7 @@ class ImagesToPdfScreenTest {
         } finally {
             release.countDown()
         }
-        val failed = str(R.string.core_save_failed)
+        val failed = str(R.string.error_save_message, str(R.string.error_save_title), str(R.string.error_save_body))
         CoreTestSupport.idleUntil(rule, message = "save error shown") {
             rule.onAllNodesWithText(failed).fetchSemanticsNodes().isNotEmpty()
         }
@@ -869,7 +869,7 @@ class ImagesToPdfScreenTest {
         readyResult()
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_JOB_SHARE)
-        CoreTestSupport.idleUntil(rule, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
+        CoreTestSupport.idleUntil(rule, timeoutMs = CoreTestSupport.SHARE_TIMEOUT_MS, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
         rule.waitForIdle()
         assertNotNull(shadowOf(rule.activity).nextStartedActivity)
         assertNull(vm.shareRequest.value)

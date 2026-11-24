@@ -192,7 +192,7 @@ class JobViewModelTest {
             ),
         )
         CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
-        assertEquals(app.getString(R.string.core_save_failed), vm.saveError.value)
+        assertEquals("Couldn't save. There may not be enough space. Your result is still here, so try another folder.", vm.saveError.value)
         assertEquals(ready, state())
         vm.clearSaveError()
         assertNull(vm.saveError.value)
@@ -542,7 +542,7 @@ class JobViewModelTest {
     fun shareCopiesUnderSharedWithSuggestedNameAndShareAuthority() {
         runToReady()
         vm.share()
-        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        CoreTestSupport.idleUntil(timeoutMs = CoreTestSupport.SHARE_TIMEOUT_MS, message = "share request") { vm.shareRequest.value != null }
         val request = vm.shareRequest.value!!
         assertEquals("merged.pdf", request.name)
         assertEquals("content", request.uri.scheme)
@@ -565,7 +565,7 @@ class JobViewModelTest {
     fun shareNotLaunchedDoesNotMarkShared() {
         runToReady()
         vm.share()
-        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        CoreTestSupport.idleUntil(timeoutMs = CoreTestSupport.SHARE_TIMEOUT_MS, message = "share request") { vm.shareRequest.value != null }
         vm.onShareHandled(launched = false)
         assertFalse((state() as JobUiState.Done).shared)
         assertTrue(state().hasUnsavedWork())
@@ -575,7 +575,7 @@ class JobViewModelTest {
     fun sharedCopiesAreWipedByTheNextJob() {
         runToReady()
         vm.share()
-        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        CoreTestSupport.idleUntil(timeoutMs = CoreTestSupport.SHARE_TIMEOUT_MS, message = "share request") { vm.shareRequest.value != null }
         vm.onShareHandled(launched = true)
         assertEquals(1, sharedFiles().size)
         vm.merge(listOf(input()))
@@ -585,7 +585,7 @@ class JobViewModelTest {
 
     private fun shareOnce(): ShareRequest {
         vm.share()
-        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        CoreTestSupport.idleUntil(timeoutMs = CoreTestSupport.SHARE_TIMEOUT_MS, message = "share request") { vm.shareRequest.value != null }
         val request = vm.shareRequest.value!!
         vm.onShareHandled(launched = true)
         return request

@@ -527,7 +527,7 @@ class CompressScreenTest {
         runToReady()
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_JOB_SHARE)
-        CoreTestSupport.idleUntil(rule, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
+        CoreTestSupport.idleUntil(rule, timeoutMs = CoreTestSupport.SHARE_TIMEOUT_MS, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
         rule.waitForIdle()
         assertNotNull(shadowOf(rule.activity).nextStartedActivity)
         assertNull(vm.shareRequest.value)
@@ -595,7 +595,7 @@ class CompressScreenTest {
     fun failedSaveShowsSnackbarAndKeepsResult() {
         choose(pdf("a.pdf"))
         runToReady()
-        val failed = str(R.string.core_save_failed)
+        val failed = str(R.string.error_save_message, str(R.string.error_save_title), str(R.string.error_save_body))
         rule.runOnUiThread { vm.save(dest(FailingSink)) }
         CoreTestSupport.idleUntil(rule, message = "save error shown") {
             rule.onAllNodesWithText(failed).fetchSemanticsNodes().isNotEmpty()
