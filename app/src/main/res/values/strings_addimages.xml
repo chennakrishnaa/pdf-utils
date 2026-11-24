@@ -1,17 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Add images to PDF screen -->
-    <string name="addimages_pdf_header">PDF</string>
-    <string name="addimages_choose_pdf">Choose PDF</string>
-    <string name="addimages_no_pdf">No PDF chosen yet.</string>
-    <string name="addimages_images_header">Images</string>
-    <string name="addimages_add_images">Add images</string>
-    <string name="addimages_empty">No images yet. Add the pictures to put after the last page.</string>
-    <string name="addimages_note">The images are added as new pages at the end, in the order shown, each sized like the last page of the PDF.</string>
-    <string name="addimages_run">Add to PDF</string>
-    <!-- Result summary: page count and output size, e.g. "5 pages · 1.2 MB". -->
-    <plurals name="addimages_summary">
-        <item quantity="one">%1$d page · %2$s</item>
-        <item quantity="other">%1$d pages · %2$s</item>
-    </plurals>
+    <!-- Images section header with the number of images, e.g. "Images · 3". -->
+    <string name="addimages_section_count">Images · %1$d</string>
 </resources>
