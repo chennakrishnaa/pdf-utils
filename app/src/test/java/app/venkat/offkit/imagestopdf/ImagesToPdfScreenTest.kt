@@ -183,10 +183,20 @@ class ImagesToPdfScreenTest {
         return false
     }
 
+    /**
+     * Clicks tile [index]. performScrollTo only scrolls the nearest scroller (the horizontal row), so
+     * the screen's column is first scrolled to the images header, just above the row.
+     */
+    private fun clickTile(index: Int) {
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo()
+        rule.onNodeWithTag(thumbTag(index)).performScrollTo().performClick()
+        rule.waitForIdle()
+    }
+
     /** Selects tile [index] (if not selected yet) and clicks the toolbar button [tag]. */
     private fun onTile(index: Int, tag: String) {
         if (!rule.onNodeWithTag(thumbTag(index)).fetchSemanticsNode().config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Selected) { false }) {
-            click(thumbTag(index))
+            clickTile(index)
         }
         click(tag)
     }
@@ -284,17 +294,17 @@ class ImagesToPdfScreenTest {
     @Test
     fun tapSelectsAndTapAgainDeselects() {
         addImages("a.jpg", "b.jpg")
-        click(thumbTag(1))
+        clickTile(1)
         rule.onNodeWithTag(thumbTag(1)).assertIsSelected()
         rule.onNodeWithTag(thumbTag(0)).assertIsNotSelected()
         rule.onNodeWithText(str(R.string.cd_image_n, 2)).assertExists()
         rule.onNodeWithTag(TAG_THUMB_REMOVE).assertExists()
 
-        click(thumbTag(0))
+        clickTile(0)
         rule.onNodeWithTag(thumbTag(0)).assertIsSelected()
         rule.onNodeWithTag(thumbTag(1)).assertIsNotSelected()
 
-        click(thumbTag(0))
+        clickTile(0)
         rule.onNodeWithTag(thumbTag(0)).assertIsNotSelected()
         rule.onNodeWithTag(TAG_THUMB_MOVE_EARLIER).assertDoesNotExist()
         rule.onNodeWithTag(TAG_THUMB_REMOVE).assertDoesNotExist()
@@ -303,7 +313,7 @@ class ImagesToPdfScreenTest {
     @Test
     fun moveEarlierAndLater_selectionFollows_endsDisabled() {
         addImages("a.jpg", "b.jpg", "c.jpg")
-        click(thumbTag(0))
+        clickTile(0)
         rule.onNodeWithTag(TAG_THUMB_MOVE_EARLIER).assertIsNotEnabled()
         rule.onNodeWithTag(TAG_THUMB_MOVE_LATER).assertIsEnabled()
 
@@ -332,7 +342,7 @@ class ImagesToPdfScreenTest {
         (0..1).forEach { rule.onNodeWithTag(thumbTag(it)).assertIsNotSelected() }
         rule.onNodeWithText(str(R.string.imagestopdf_section_count, 2)).assertExists()
 
-        click(thumbTag(1))
+        clickTile(1)
         rule.onNodeWithTag(thumbTag(1)).assertIsSelected()
         addImages("d.jpg")
         (0..2).forEach { rule.onNodeWithTag(thumbTag(it)).assertIsNotSelected() }
