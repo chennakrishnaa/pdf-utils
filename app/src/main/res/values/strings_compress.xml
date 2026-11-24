@@ -12,7 +12,6 @@
     <string name="compress_level_low_detail">Up to %1$d px images, best quality</string>
     <string name="compress_level_medium_detail">Up to %1$d px, good quality</string>
     <string name="compress_level_high_detail">Up to %1$d px, smallest file</string>
-    <string name="compress_note">Images are downscaled and re-encoded. Text stays sharp and selectable.</string>
     <string name="compress_run">Compress</string>
     <!-- Result summary: original size → new size and the saving, e.g. "2.4 MB → 310.0 KB (87% smaller)". -->
     <string name="compress_summary">%1$s → %2$s (%3$d%% smaller)</string>
