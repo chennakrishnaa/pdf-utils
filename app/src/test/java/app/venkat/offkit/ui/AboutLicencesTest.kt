@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.test.core.app.ApplicationProvider
@@ -62,14 +63,12 @@ class AboutLicencesTest {
         }
     }
 
-    // The licence text is now a plain Column inside OffkitScaffold's own scrolling column (a
-    // LazyColumn cannot nest there), so the tagged node is not itself scrollable: scroll the
-    // first matching paragraph under it into view instead.
+    // The licence text is a LazyColumn tagged TAG_LICENCE_TEXT: scroll it to the first paragraph
+    // containing the text (it may not be composed yet), then check it is on screen.
     private fun scrollToText(text: String) {
-        rule.onAllNodes(hasText(text, substring = true) and hasAnyAncestor(hasTestTag(TAG_LICENCE_TEXT)))
-            .onFirst()
-            .performScrollTo()
-            .assertIsDisplayed()
+        val match = hasText(text, substring = true) and hasAnyAncestor(hasTestTag(TAG_LICENCE_TEXT))
+        rule.onNodeWithTag(TAG_LICENCE_TEXT).performScrollToNode(match)
+        rule.onAllNodes(match).onFirst().assertIsDisplayed()
     }
 
     @Test
