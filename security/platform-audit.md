@@ -237,7 +237,7 @@ Re-checker: SR, independent of the fix authors, at `main` `ca22d9a`. The check i
 - Unit tests (`RecentFilesStoreTest`, `DisplayNamesTest`, `HostileIntentTest`) and throwaway hostile-JSON cases: not run in this session yet.
 - Wrapper checksum not verified online.
 
-## Process isolation (PI1/PI2)
+## Process isolation (PI1/PI2/PI3)
 
 **What runs where.**
 - **UI process** (`app.venkat.offkit`): the Compose UI, the Storage Access Framework, and `PdfJobs`. `PdfJobs` copies each picked document or image as raw bytes (size-capped by `UriIo`) into `cacheDir/jobs/<uuid>/in/`, and saves and deletes outputs. It loads no MuPDF: no source outside `engine/` imports `com.artifex.mupdf`, which `scripts/verify.sh` checks. It also decodes no untrusted image: `scripts/isolation-smoke.sh` checks that the UI process maps no `libmupdf` after launch.
@@ -248,7 +248,13 @@ Re-checker: SR, independent of the fix authors, at `main` `ca22d9a`. The check i
 - **Crashes and memory exhaustion from hostile files.** A native crash (SIGSEGV), an abort, an OOM kill or the low-memory killer ends only the engine. The job returns `EngineCrashed`, its directory is deleted, and the next job binds a new engine. `EngineIsolationOnDeviceTest` checks this on device for SIGKILL and SIGSEGV mid-job and for a kill while idle. Measured on the API 31 emulator: `EngineCrashed` 38 ms after SIGKILL and 533 ms after SIGSEGV.
 - **Low-memory ordering.** With the activity in front, `oom_score_adj` was 0 for the UI and 100 for the engine, so the engine is killed first.
 - **Hard cancel.** If the engine does not stop within 2 s of a cancel, the UI kills it. This was measured with a SIGSTOPped engine: `Cancelled` came back after 2.0 s.
+- **Watchdog (PI3).** MuPDF calls cannot be interrupted (SR3 in `engine-audit.md`), so `RemoteEngine` also kills the engine without a cancel. The limits are in `engine/remote/EngineLimits.kt`:
+  - **Stall:** a PDF operation that gets no progress event and no result for 90 s returns `TimedOut`. The clock starts when the request is sent and restarts on every progress event.
+  - **Total:** a PDF operation may take 15 minutes in all, and an image estimate or normalisation 30 s. Past that, it returns `TimedOut`.
+  - **Memory:** while it waits, the client samples the engine's RSS from `/proc/<pid>/statm` about once a second. Over the limit, it returns `OutOfMemory`. The limit is min(1536 MiB, 40 % of `ActivityManager.MemoryInfo.totalMem`) and is computed once in `PdfUtilApp`. If `/proc` cannot be read, this one check is skipped and logged once.
+  - After any watchdog kill, partial output is deleted and the next job binds a new engine. A user cancel still wins and returns `Cancelled`. The user sees "This file is taking too long to process…" for `TimedOut`.
+  - Measured on the API 31 emulator (`EngineIsolationOnDeviceTest`, small limits injected): a SIGSTOPped engine with a 3 s stall limit gave `TimedOut` 3.0 s after it stopped, and the next job ran in a new engine. A 1 MiB memory limit gave `OutOfMemory` after 0.3 s, and the next job with the production limit (787 MiB on this 2 GB emulator) succeeded. The engine's RSS during an ordinary HIGH compress of a 69 MiB, 16-page photo PDF was 153 MiB idle, 152 MiB at the end, and 219 MiB at peak (VmHWM).
 
 **What it does not protect against.**
 - The engine runs with the **same UID and the same data directory** as the UI, and it is **not `isolatedProcess`**. It is therefore not a sandbox against code execution: code running in the engine could read or write everything the app can, including other jobs, preferences and recents. The service's path check protects only against a misbehaving client.
-- An engine that hangs without being cancelled is not timed out. The user cancels.
+- A hostile file still gets up to the watchdog limits before it is stopped: up to 90 s stuck in one call, 15 minutes while it keeps reporting progress, and memory up to the limit between two one-second samples. A spike faster than that is left to the system's OOM handling, which ends only the engine.
