@@ -26,12 +26,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -84,6 +86,7 @@ internal fun Modifier.mirrorInRtl(): Modifier =
  *   Put a full-width [OffkitPrimaryButton] or an [OffkitBottomSummary] in it. Without a bottom
  *   bar the content column ends with the navigation-bar inset.
  *
+ * The frame provides `LocalContentColor = onSurface` to its slots.
  * The whole frame applies `imePadding()`, so the bottom bar rises above the keyboard, and the
  * horizontal safe-drawing insets (landscape cut-outs). Call `enableEdgeToEdge()` in the Activity.
  * It has no leave confirmation and no BackHandler: system back is left to navigation.
@@ -99,28 +102,31 @@ fun OffkitScaffold(
     scrollState: ScrollState = rememberScrollState(),
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
-            .imePadding(),
-    ) {
-        OffkitTopBar(title = title, navIcon = navIcon, onNavigate = onNavigate)
+    // Untinted Text / Icons in the slots take onSurface, not the default black.
+    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
         Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(scrollState)
-                .padding(start = OffkitDimens.screenPadding, end = OffkitDimens.screenPadding, top = 8.dp, bottom = 24.dp),
+            modifier = modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .imePadding(),
         ) {
-            content()
-            if (bottomBar == null) Spacer(Modifier.navigationBarsPadding())
+            OffkitTopBar(title = title, navIcon = navIcon, onNavigate = onNavigate)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState)
+                    .padding(start = OffkitDimens.screenPadding, end = OffkitDimens.screenPadding, top = 8.dp, bottom = 24.dp),
+            ) {
+                content()
+                if (bottomBar == null) Spacer(Modifier.navigationBarsPadding())
+            }
+            if (snackbarHostState != null) {
+                SnackbarHost(snackbarHostState, modifier = Modifier.fillMaxWidth())
+            }
+            if (bottomBar != null) OffkitBottomBar(content = bottomBar)
         }
-        if (snackbarHostState != null) {
-            SnackbarHost(snackbarHostState, modifier = Modifier.fillMaxWidth())
-        }
-        if (bottomBar != null) OffkitBottomBar(content = bottomBar)
     }
 }
 
