@@ -1,12 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="recent_tools_title">Tools</string>
     <string name="recent_clear_title">Clear recent files?</string>
     <string name="recent_clear_text">Clear the list of recent files? The files themselves are not deleted.</string>
     <string name="recent_clear_confirm">Clear</string>
     <string name="recent_clear_cancel">Cancel</string>
-    <string name="recent_share">Share</string>
-    <string name="recent_remove">Remove from list</string>
     <string name="recent_no_viewer">No app found to open PDFs</string>
     <string name="recent_no_share">No app found to share PDFs</string>
     <string name="recent_unavailable">This file is no longer available</string>

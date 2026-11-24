@@ -3,38 +3,52 @@ package app.venkat.offkit.ui.home
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import androidx.annotation.StringRes
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -42,35 +56,57 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
 import app.venkat.offkit.core.RecentFile
-import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.nav.Routes
 import app.venkat.offkit.ui.support.HOUSE_PROMOS
 import app.venkat.offkit.ui.support.HomeSupportCards
 import app.venkat.offkit.ui.support.HousePromo
+import app.venkat.offkit.ui.theme.OffkitDimens
+import app.venkat.offkit.ui.theme.OffkitLink
+import app.venkat.offkit.ui.theme.OffkitOnSuccessContainer
+import app.venkat.offkit.ui.theme.OffkitTheme
+import app.venkat.offkit.ui.theme.OffkitTool
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /** Test tag of the About action in the home app bar. */
 const val TAG_ACTION_ABOUT = "action_about"
 
+/**
+ * Test tag of the privacy line under the wordmark ("Works offline. …"). It keeps the tag of the
+ * old home footer, which it replaces, so tests that use it as a "Home is shown" marker still work.
+ */
+const val TAG_HOME_PRIVACY = "home_footer"
+
 /** Test tag of the recent-files section. */
 const val TAG_RECENT_SECTION = "recent_section"
 
-/** Test tag of the "Files you save will appear here" hint. */
+/** Test tag of the "Files you save or share show up here." hint. */
 const val TAG_RECENT_EMPTY = "recent_empty"
 
 /** Test tag of the "Clear" action of the recent-files section. */
@@ -89,34 +125,22 @@ fun recentRowShareTag(index: Int): String = "recent_row_${index}_share"
 /** Test tag of the remove-from-list button of recent row [index]. */
 fun recentRowRemoveTag(index: Int): String = "recent_row_${index}_remove"
 
-private data class Tool(
-    val route: String,
-    val testTag: String,
-    @param:StringRes val title: Int,
-    @param:StringRes val description: Int,
-)
+/** A tool card of the home grid: the design's [OffkitTool], the route it opens and its test tag. */
+private data class HomeTool(val tool: OffkitTool, val route: String, val testTag: String)
 
-private val tools = listOf(
-    Tool(Routes.IMAGES_TO_PDF, "tool_images_to_pdf", R.string.tool_images_to_pdf_title, R.string.tool_images_to_pdf_desc),
-    Tool(Routes.COMPRESS, "tool_compress", R.string.tool_compress_title, R.string.tool_compress_desc),
-    Tool(Routes.MERGE, "tool_merge", R.string.tool_merge_title, R.string.tool_merge_desc),
-    Tool(Routes.ADD_IMAGES, "tool_add_images", R.string.tool_add_images_title, R.string.tool_add_images_desc),
+private val homeTools = listOf(
+    HomeTool(OffkitTool.IMAGES, Routes.IMAGES_TO_PDF, "tool_images_to_pdf"),
+    HomeTool(OffkitTool.COMPRESS, Routes.COMPRESS, "tool_compress"),
+    HomeTool(OffkitTool.MERGE, Routes.MERGE, "tool_merge"),
+    HomeTool(OffkitTool.ADD_PAGES, Routes.ADD_IMAGES, "tool_add_images"),
 )
-
-@Composable
-private fun toolIcon(route: String): Painter = when (route) {
-    Routes.IMAGES_TO_PDF -> AppIcons.image
-    Routes.COMPRESS -> AppIcons.compress
-    Routes.MERGE -> AppIcons.merge
-    else -> AppIcons.addToPdf
-}
 
 /**
- * Home screen: one card per tool, then the recently saved files, then (unless hidden) one house
- * promo card from [promos] and the "Support the app" card, which calls [onOpenSupport].
- * [onOpenTool] receives the tool's route from [Routes]. The whole content scrolls as one column.
+ * Home screen: the wordmark and privacy line, a 2×2 grid of tool cards, the recently saved files,
+ * then (unless hidden) one house promo card from [promos] and the "Support the app" card, which
+ * calls [onOpenSupport]. [onOpenTool] receives the tool's route from [Routes]. Everything below
+ * the top bar scrolls as one column.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     onOpenTool: (route: String) -> Unit,
@@ -135,65 +159,32 @@ fun HomeScreen(
     val msgNoViewer = stringResource(R.string.recent_no_viewer)
     val msgNoShare = stringResource(R.string.recent_no_share)
 
-    Scaffold(
-        contentWindowInsets = WindowInsets.safeDrawing,
-        snackbarHost = { SnackbarHost(snackbar) },
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge) },
-                actions = {
-                    IconButton(onClick = onOpenAbout, modifier = Modifier.testTag(TAG_ACTION_ABOUT)) {
-                        Icon(AppIcons.info, contentDescription = stringResource(R.string.home_about))
-                    }
-                },
-            )
+    HomeContent(
+        recents = recents,
+        snackbar = snackbar,
+        onOpenTool = onOpenTool,
+        onOpenAbout = onOpenAbout,
+        onOpen = { file ->
+            scope.launch {
+                val intent = vm.viewIntentIfAvailable(file)
+                if (intent == null) {
+                    showMessage(scope, snackbar, msgUnavailable)
+                } else if (!tryStart(context, intent)) {
+                    showMessage(scope, snackbar, msgNoViewer)
+                }
+            }
         },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            HomeSectionTitle(stringResource(R.string.recent_tools_title))
-            tools.forEach { tool -> ToolCard(tool, onClick = { onOpenTool(tool.route) }) }
-
-            RecentSection(
-                recents = recents,
-                onOpen = { file ->
-                    scope.launch {
-                        val intent = vm.viewIntentIfAvailable(file)
-                        if (intent == null) {
-                            showMessage(scope, snackbar, msgUnavailable)
-                        } else if (!tryStart(context, intent)) {
-                            showMessage(scope, snackbar, msgNoViewer)
-                        }
-                    }
-                },
-                onShare = { file ->
-                    scope.launch {
-                        if (!tryStart(context, vm.shareIntent(file))) {
-                            showMessage(scope, snackbar, msgNoShare)
-                        }
-                    }
-                },
-                onRemove = vm::remove,
-                onClear = vm::clear,
-            )
-
-            HomeSupportCards(onOpenSupport = onOpenSupport, promos = promos)
-
-            Text(
-                text = stringResource(R.string.home_footer),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).testTag("home_footer"),
-            )
-        }
-    }
+        onShare = { file ->
+            scope.launch {
+                if (!tryStart(context, vm.shareIntent(file))) {
+                    showMessage(scope, snackbar, msgNoShare)
+                }
+            }
+        },
+        onRemove = vm::remove,
+        onClear = vm::clear,
+        bottomCards = { HomeSupportCards(onOpenSupport = onOpenSupport, promos = promos) },
+    )
 }
 
 /** Shows [message] without suspending the caller (a snackbar suspends until dismissed). */
@@ -211,51 +202,160 @@ private fun tryStart(context: Context, intent: Intent): Boolean = try {
     false
 }
 
+/** The stateless home layout; [bottomCards] are emitted into the scrolling column after Recent. */
 @Composable
-private fun HomeSectionTitle(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = modifier.padding(top = 4.dp).semantics { heading() },
-    )
+private fun HomeContent(
+    recents: List<RecentFile>?,
+    snackbar: SnackbarHostState,
+    onOpenTool: (route: String) -> Unit,
+    onOpenAbout: () -> Unit,
+    onOpen: (RecentFile) -> Unit,
+    onShare: (RecentFile) -> Unit,
+    onRemove: (RecentFile) -> Unit,
+    onClear: () -> Unit,
+    bottomCards: @Composable ColumnScope.() -> Unit,
+) {
+    Scaffold(
+        // Insets are applied by hand: status bar in the top bar, navigation bar inside the scroll.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) },
+        topBar = { HomeTopBar(onOpenAbout) },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = OffkitDimens.screenPadding),
+        ) {
+            PrivacyLine()
+            Spacer(Modifier.height(20.dp))
+            ToolGrid(onOpenTool)
+            Spacer(Modifier.height(OffkitDimens.sectionGap))
+            RecentSection(recents, onOpen, onShare, onRemove, onClear)
+            Spacer(Modifier.height(OffkitDimens.itemGap))
+            bottomCards()
+            Spacer(Modifier.height(OffkitDimens.sectionGap))
+            Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+        }
+    }
 }
 
 @Composable
-private fun ToolCard(tool: Tool, onClick: () -> Unit) {
-    Card(
-        onClick = onClick,
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth().testTag(tool.testTag),
+private fun HomeTopBar(onOpenAbout: () -> Unit) {
+    val appName = stringResource(R.string.app_name)
+    val wordmark = buildAnnotatedString {
+        append(appName)
+        withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
+            append(stringResource(R.string.home_wordmark_dot))
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+            .heightIn(min = 64.dp)
+            .padding(start = OffkitDimens.contentInset, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Text(
+            text = wordmark,
+            style = MaterialTheme.typography.displaySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            // The brand dot is decoration: accessibility services and tests see just the name.
+            modifier = Modifier.weight(1f).clearAndSetSemantics {
+                heading()
+                text = AnnotatedString(appName)
+            },
+        )
+        IconButton(
+            onClick = onOpenAbout,
+            modifier = Modifier.size(OffkitDimens.touchTarget).testTag(TAG_ACTION_ABOUT),
         ) {
-            Surface(
-                shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(52.dp),
-            ) {
-                Icon(toolIcon(tool.route), contentDescription = null, modifier = Modifier.padding(13.dp))
-            }
-            Spacer(Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(stringResource(tool.title), style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = stringResource(tool.description),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-            Spacer(Modifier.width(8.dp))
             Icon(
-                AppIcons.chevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                painterResource(R.drawable.ic_info),
+                contentDescription = stringResource(R.string.home_about),
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PrivacyLine() {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = OffkitDimens.itemGap),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            painterResource(R.drawable.ic_shield),
+            contentDescription = null,
+            tint = OffkitOnSuccessContainer,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(OffkitDimens.itemGap))
+        Text(
+            text = stringResource(R.string.home_privacy_line),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag(TAG_HOME_PRIVACY),
+        )
+    }
+}
+
+/** A white card with a 1dp outlineVariant border and 20dp corners (SPEC §0 "Cards and lists"). */
+@Composable
+private fun Modifier.homeCard(): Modifier = this
+    .clip(MaterialTheme.shapes.medium)
+    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+    .border(BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), MaterialTheme.shapes.medium)
+
+@Composable
+private fun ToolGrid(onOpenTool: (route: String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(OffkitDimens.itemGap)) {
+        homeTools.chunked(2).forEach { pair ->
+            Row(
+                modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(OffkitDimens.itemGap),
+            ) {
+                pair.forEach { tool ->
+                    ToolCard(tool, onClick = { onOpenTool(tool.route) }, modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolCard(tool: HomeTool, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .heightIn(min = 128.dp)
+            .homeCard()
+            .clickable(role = Role.Button, onClick = onClick)
+            .testTag(tool.testTag)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Image(
+            painterResource(tool.tool.badge),
+            contentDescription = null,
+            modifier = Modifier.size(OffkitDimens.iconContainer),
+        )
+        Column(modifier = Modifier.padding(top = 16.dp)) {
+            Text(
+                text = stringResource(tool.tool.title),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(tool.tool.description),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -271,44 +371,57 @@ private fun RecentSection(
 ) {
     var askClear by rememberSaveable { mutableStateOf(false) }
     Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag(TAG_RECENT_SECTION),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth().testTag(TAG_RECENT_SECTION),
+        verticalArrangement = Arrangement.spacedBy(OffkitDimens.itemGap),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 48.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(start = OffkitDimens.itemGap),
+        ) {
             Icon(
-                AppIcons.history,
+                painterResource(R.drawable.ic_history),
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(OffkitDimens.iconSizeSmall),
             )
-            Spacer(Modifier.width(8.dp))
-            HomeSectionTitle(stringResource(R.string.recent_title), Modifier.weight(1f).padding(bottom = 4.dp))
+            Spacer(Modifier.width(OffkitDimens.itemGap))
+            Text(
+                text = stringResource(R.string.recent_title),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
             if (!recents.isNullOrEmpty()) {
-                TextButton(onClick = { askClear = true }, modifier = Modifier.testTag(TAG_RECENT_CLEAR)) {
-                    Text(stringResource(R.string.recent_clear))
+                TextButton(
+                    onClick = { askClear = true },
+                    colors = ButtonDefaults.textButtonColors(contentColor = OffkitLink),
+                    modifier = Modifier.heightIn(min = OffkitDimens.touchTarget).testTag(TAG_RECENT_CLEAR),
+                ) {
+                    Text(stringResource(R.string.recent_clear), style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
         when {
             recents == null -> Unit // Still loading (a few milliseconds); show nothing.
-            recents.isEmpty() -> Surface(
-                shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
+            recents.isEmpty() -> Box(modifier = Modifier.fillMaxWidth().homeCard().padding(24.dp)) {
                 Text(
                     text = stringResource(R.string.recent_empty),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 20.dp).testTag(TAG_RECENT_EMPTY),
+                    modifier = Modifier.fillMaxWidth().testTag(TAG_RECENT_EMPTY),
                 )
             }
             else -> {
                 val now = remember(recents) { System.currentTimeMillis() }
-                recents.forEachIndexed { index, file ->
-                    androidx.compose.runtime.key(file.uri.toString()) {
-                        RecentRow(index, file, now, onOpen, onShare, onRemove)
+                Column(modifier = Modifier.fillMaxWidth().homeCard()) {
+                    recents.forEachIndexed { index, file ->
+                        key(file.uri.toString()) {
+                            if (index > 0) {
+                                HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+                            }
+                            RecentRow(index, file, now, onOpen, onShare, onRemove)
+                        }
                     }
                 }
             }
@@ -337,6 +450,22 @@ private fun RecentSection(
     }
 }
 
+/** "tool · size · time", leaving out the tool or size when unknown. */
+@Composable
+private fun recentMeta(file: RecentFile, now: Long): String {
+    val context = LocalContext.current
+    val parts = listOfNotNull(
+        toolTitle(file.tool)?.let { stringResource(it) },
+        file.sizeBytes?.let(::formatBytes),
+        relativeTime(context, file.savedAtMillis, now),
+    )
+    return when (parts.size) {
+        3 -> stringResource(R.string.recent_meta, parts[0], parts[1], parts[2])
+        2 -> stringResource(R.string.recent_meta_two, parts[0], parts[1])
+        else -> parts[0]
+    }
+}
+
 @Composable
 private fun RecentRow(
     index: Int,
@@ -346,50 +475,110 @@ private fun RecentRow(
     onShare: (RecentFile) -> Unit,
     onRemove: (RecentFile) -> Unit,
 ) {
-    val context = LocalContext.current
-    val meta = listOfNotNull(
-        toolTitle(file.tool)?.let { stringResource(it) },
-        file.sizeBytes?.let(::formatBytes),
-        relativeTime(context, file.savedAtMillis, now),
-    ).joinToString(" · ")
-    Card(
-        onClick = { onOpen(file) },
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        modifier = Modifier.fillMaxWidth().testTag(recentRowTag(index)),
+    val openLabel = stringResource(R.string.cd_open_file, file.name)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 64.dp)
+                .clickable(role = Role.Button) { onOpen(file) }
+                .semantics(mergeDescendants = true) { contentDescription = openLabel }
+                .testTag(recentRowTag(index))
+                .padding(start = 12.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Surface(
-                shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier.size(40.dp),
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(MaterialTheme.shapes.small)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
             ) {
-                Icon(AppIcons.pdf, contentDescription = null, modifier = Modifier.padding(9.dp))
+                Icon(
+                    painterResource(R.drawable.ic_pdf_file),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(OffkitDimens.iconSizeSmall),
+                )
             }
             Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Column {
                 Text(
                     text = file.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = meta,
+                    text = recentMeta(file, now),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
-            IconButton(onClick = { onShare(file) }, modifier = Modifier.testTag(recentRowShareTag(index))) {
-                Icon(AppIcons.share, contentDescription = stringResource(R.string.recent_share))
-            }
-            IconButton(onClick = { onRemove(file) }, modifier = Modifier.testTag(recentRowRemoveTag(index))) {
-                Icon(AppIcons.close, contentDescription = stringResource(R.string.recent_remove))
-            }
+        }
+        IconButton(
+            onClick = { onShare(file) },
+            modifier = Modifier.size(OffkitDimens.touchTarget).testTag(recentRowShareTag(index)),
+        ) {
+            Icon(
+                painterResource(R.drawable.ic_share),
+                contentDescription = stringResource(R.string.cd_share_file, file.name),
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(OffkitDimens.iconSizeSmall),
+            )
+        }
+        IconButton(
+            onClick = { onRemove(file) },
+            modifier = Modifier.size(OffkitDimens.touchTarget).testTag(recentRowRemoveTag(index)),
+        ) {
+            Icon(
+                painterResource(R.drawable.ic_close),
+                contentDescription = stringResource(R.string.cd_remove_recent, file.name),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(OffkitDimens.iconSizeSmall),
+            )
         }
     }
+}
+
+private fun previewRecents(now: Long): List<RecentFile> = listOf(
+    RecentFile("content://preview/a".toUri(), "merged-compressed-with-images.pdf", 1_200_000, now - 60_000, "add_images"),
+    RecentFile("content://preview/b".toUri(), "airtel-Nov-Dec-compressed.pdf", 565_500, now - 120_000, "compress"),
+    RecentFile("content://preview/c".toUri(), "merged.pdf", 2_300_000, now - 120_000, "merge"),
+    RecentFile("content://preview/d".toUri(), "Photos-24-Nov.pdf", 405_200, now - 86_400_000, "images_to_pdf"),
+)
+
+@Composable
+private fun HomePreview(recents: List<RecentFile>) {
+    OffkitTheme {
+        HomeContent(
+            recents = recents,
+            snackbar = remember { SnackbarHostState() },
+            onOpenTool = {},
+            onOpenAbout = {},
+            onOpen = {},
+            onShare = {},
+            onRemove = {},
+            onClear = {},
+            bottomCards = {},
+        )
+    }
+}
+
+@Preview(name = "Home", widthDp = 412, heightDp = 915, showBackground = true)
+@Composable
+private fun HomePopulatedPreview() {
+    HomePreview(previewRecents(System.currentTimeMillis()))
+}
+
+@Preview(name = "Home, no recent files", widthDp = 412, heightDp = 915, showBackground = true)
+@Composable
+private fun HomeEmptyPreview() {
+    HomePreview(emptyList())
 }
