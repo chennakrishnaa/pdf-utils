@@ -10,6 +10,7 @@ import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -139,11 +140,9 @@ class CompressScreenTest {
         override fun write(b: ByteArray, off: Int, len: Int) = throw IOException("disk full")
     }
 
-    private fun dest(sink: OutputStream): Uri {
-        val uri = Uri.parse("content://dest.test/${System.nanoTime()}/out.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(uri, sink)
-        return uri
-    }
+    /** A save destination whose provider reports [displayName] (none if null) as its display name. */
+    private fun dest(sink: OutputStream, displayName: String? = "report-compressed.pdf"): Uri =
+        CoreTestSupport.saveDestination(app, sink, displayName)
 
     private fun pdf(name: String, size: Int = 10_000): Uri =
         CoreTestSupport.contentUri(app, name, ByteArray(size) { (it % 251).toByte() })
@@ -326,11 +325,31 @@ class CompressScreenTest {
         val sink = ByteArrayOutputStream()
         saveTo(sink)
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        val saved = state() as JobUiState.Done
-        rule.onNodeWithText(str(R.string.result_saved_as, saved.savedName ?: saved.suggestedName)).assertExists()
+        assertEquals("report-compressed.pdf", (state() as JobUiState.Done).savedName)
+        rule.onNodeWithText(str(R.string.result_saved_as, "report-compressed.pdf")).assertExists()
         rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_copy))
         rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
         rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(str(R.string.result_smaller, 90))
+    }
+
+    @Test
+    fun savedToDestinationWithNoReportedNameShowsPlainSaved() {
+        choose(pdf("report.pdf", size = 10_000))
+        fake.setResult(FakePdfEngine.Op.COMPRESS, PdfResult.Ok(pages = 3, bytes = 1_000))
+        runToReady()
+
+        val sink = ByteArrayOutputStream()
+        rule.runOnUiThread { vm.save(dest(sink, displayName = null)) }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        rule.waitForIdle()
+
+        assertArrayEquals(fake.outputContent, sink.toByteArray())
+        assertNull("no guessed saved name", (state() as JobUiState.Done).savedName)
+        rule.onNodeWithText(str(R.string.result_saved)).assertExists()
+        val savedAsPrefix = str(R.string.result_saved_as, "")
+        rule.onAllNodesWithText(savedAsPrefix, substring = true).assertCountEquals(0)
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_copy))
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
     }
 
     @Test

@@ -65,7 +65,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -130,11 +129,9 @@ class MergeScreenTest {
         override fun write(b: ByteArray, off: Int, len: Int) = throw IOException("disk full")
     }
 
-    private fun dest(sink: OutputStream): Uri {
-        val uri = Uri.parse("content://dest.test/${System.nanoTime()}/merged.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(uri, sink)
-        return uri
-    }
+    /** A save destination whose provider reports "merged.pdf" as its display name. */
+    private fun dest(sink: OutputStream): Uri =
+        CoreTestSupport.saveDestination(app, sink, displayName = "merged.pdf")
 
     private fun tap(tag: String) {
         rule.onNodeWithTag(tag).performClick()
@@ -352,8 +349,8 @@ class MergeScreenTest {
         rule.waitForIdle()
 
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        val savedName = (state() as JobUiState.Done).let { it.savedName ?: it.suggestedName }
-        rule.onNodeWithText(app.getString(R.string.result_saved_as, savedName)).assertIsDisplayed()
+        assertEquals("merged.pdf", (state() as JobUiState.Done).savedName)
+        rule.onNodeWithText(app.getString(R.string.result_saved_as, "merged.pdf")).assertIsDisplayed()
         rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pagesText(5))
         rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(app.getString(R.string.action_done))
     }
