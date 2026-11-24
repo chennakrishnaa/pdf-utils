@@ -490,6 +490,45 @@ class JobViewModelTest {
         assertArrayEquals(fake.outputContent, target.readBytes())
     }
 
+    /** Destination provider: reports a DISPLAY_NAME for `/named/...` Uris and no row otherwise. */
+    class SaveDestProvider : android.content.ContentProvider() {
+        override fun onCreate() = true
+        override fun query(uri: Uri, p: Array<out String>?, s: String?, a: Array<out String>?, o: String?): android.database.Cursor {
+            val c = android.database.MatrixCursor(arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE))
+            if (uri.pathSegments.firstOrNull() == "named") c.addRow(arrayOf<Any?>("Bills 2026.pdf", null))
+            return c
+        }
+        override fun getType(uri: Uri): String? = null
+        override fun insert(uri: Uri, values: android.content.ContentValues?): Uri? = null
+        override fun delete(uri: Uri, s: String?, a: Array<out String>?) = 0
+        override fun update(uri: Uri, v: android.content.ContentValues?, s: String?, a: Array<out String>?) = 0
+    }
+
+    private fun saveToProvider(path: String): JobUiState.Done {
+        org.robolectric.Robolectric.setupContentProvider(SaveDestProvider::class.java, "savedest.test")
+        val uri = Uri.parse("content://savedest.test/$path")
+        shadowOf(app.contentResolver).registerOutputStream(uri, ByteArrayOutputStream())
+        runToReady()
+        vm.save(uri)
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        return state() as JobUiState.Done
+    }
+
+    @Test
+    fun savedNameIsTheProviderReportedName() {
+        val done = saveToProvider("named/1234")
+        assertEquals("Bills 2026.pdf", done.savedName)
+        assertEquals("Bills 2026.pdf", RecentFilesStore.get(app).recents.value.single().name)
+    }
+
+    @Test
+    fun savedNameIsNullWhenProviderReportsNoName() {
+        val done = saveToProvider("msf:1234")
+        assertNull("no guessed saved name", done.savedName)
+        // The Recent entry still gets the Uri-derived fallback name.
+        assertEquals("1234", RecentFilesStore.get(app).recents.value.single().name)
+    }
+
     @Test
     fun failedSaveIsNotRecorded() {
         runToReady()
