@@ -101,7 +101,7 @@ const val TAG_ACTION_ABOUT = "action_about"
  * Test tag of the privacy line under the wordmark ("Works offline. …"). It keeps the tag of the
  * old home footer, which it replaces, so tests that use it as a "Home is shown" marker still work.
  */
-const val TAG_HOME_PRIVACY = "home_footer"
+const val TAG_HOME_PRIVACY = "home_privacy"
 
 /** Test tag of the recent-files section. */
 const val TAG_RECENT_SECTION = "recent_section"

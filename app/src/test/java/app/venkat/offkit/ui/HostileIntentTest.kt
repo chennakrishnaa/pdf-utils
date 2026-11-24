@@ -67,7 +67,7 @@ class HostileIntentTest {
             // ActivityScenario cannot be used: it matches the activity by its (now replaced) intent.
             val controller = Robolectric.buildActivity(MainActivity::class.java, hostile(route)).setup()
             rule.waitForIdle()
-            rule.onNodeWithTag("home_footer").performScrollTo()
+            rule.onNodeWithTag("home_privacy").performScrollTo()
             rule.onNodeWithTag("action_back").assertDoesNotExist()
             val a = controller.get()
             assertNull(a.intent.data)
