@@ -41,7 +41,7 @@ import androidx.compose.material3.Text
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowToast
 import app.venkat.offkit.ui.components.pdfErrorMessage
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -62,7 +62,7 @@ class ComponentsTest {
     val rule = createAndroidComposeRule<MainActivity>()
 
     private fun show(content: @Composable () -> Unit) {
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { content() } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { content() } } }
         rule.waitForIdle()
     }
 

@@ -8,7 +8,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -135,8 +134,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         }
     }
 
-    val dark = isSystemInDarkTheme()
-    val heroColors = if (dark) OnboardingBrand.HeroDark else OnboardingBrand.HeroLight
+    val heroColors = OnboardingBrand.HeroLight
     val sheetColor = MaterialTheme.colorScheme.surface
     val density = LocalDensity.current
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
@@ -187,7 +185,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     entrance = { entrance.value },
                     pageWidthPx = pageWidthPx,
                     rtl = rtl,
-                    dark = dark,
                     modifier = modifier,
                 )
             }

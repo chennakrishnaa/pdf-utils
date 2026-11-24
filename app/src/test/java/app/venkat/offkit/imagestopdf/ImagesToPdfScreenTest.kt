@@ -60,7 +60,7 @@ import app.venkat.offkit.ui.components.fileRowTag
 import app.venkat.offkit.ui.components.fileRowUpTag
 import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.components.pdfErrorMessage
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -116,7 +116,7 @@ class ImagesToPdfScreenTest {
                 fake.calls.last().images!!.forEach { received += it.readBytes().copyOfRange(3, it.length().toInt()).decodeToString() }
             }
         }
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { ImagesToPdfScreen(onBack = { backs.incrementAndGet() }) } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { ImagesToPdfScreen(onBack = { backs.incrementAndGet() }) } } }
         rule.waitForIdle()
         // Same instance the screen created (through its explicit initializer, bound to this test's Application).
         vm = ViewModelProvider(rule.activity)[ImagesToPdfViewModel::class.java]
