@@ -207,7 +207,7 @@ fun JobPanel(
                     shape = MaterialTheme.shapes.large,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(TAG_JOB_SHARE),
                 ) {
-                    Text(stringResource(R.string.recent_share))
+                    Text(stringResource(R.string.action_share))
                 }
             }
         }
