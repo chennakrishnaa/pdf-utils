@@ -2,6 +2,8 @@ package app.venkat.offkit.engine.remote
 
 import android.os.Bundle
 import android.os.RemoteException
+import app.venkat.offkit.core.ImagePreparer
+import app.venkat.offkit.core.PreparedImage
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageSize
@@ -27,6 +29,10 @@ import java.util.concurrent.TimeUnit
  * returns `Err(EngineCrashed)` (estimates: `PdfEstimate.Err(EngineCrashed)`) and deletes a partial
  * `out`; the next call binds a fresh engine. It never falls back to running MuPDF in this process.
  *
+ * It is also the app's [ImagePreparer]: image normalisation (platform codecs) runs in the engine
+ * process too. A death during it gives `PreparedImage.Err(EngineCrashed)`, a hard cancel
+ * `PreparedImage.Err(Cancelled)`; the raw file is deleted in every case.
+ *
  * Calls are serialised (one request at a time). Do not call on the main thread.
  */
 class RemoteEngine(
@@ -34,7 +40,7 @@ class RemoteEngine(
     private val pollMs: Long = 100,
     private val cancelGraceMs: Long = 2_000,
     private val deathWaitMs: Long = 1_000,
-) : PdfEngine {
+) : PdfEngine, ImagePreparer {
     private sealed interface Event {
         data class Progress(val done: Int, val total: Int) : Event
         data class Result(val bundle: Bundle) : Event
@@ -88,6 +94,23 @@ class RemoteEngine(
     override fun appendImages(pdf: File, images: List<File>, out: File, job: JobControl): PdfResult =
         result(EngineRequest.AppendImages(pdf.path, images.map { it.path }, out.path), out, job)
 
+    /** Process id of the engine that last normalised an image successfully (0: none yet). For tests. */
+    @Volatile
+    var lastImagePreparedByPid: Int = 0
+        private set
+
+    override fun prepareImage(raw: File, destDir: File, index: Int, job: JobControl): PreparedImage = try {
+        when (val r = call(EngineRequest.NormalizeImage(raw.path, destDir.path, index), job)) {
+            is Reply.Done -> EngineWire.decodePrepared(r.bundle, destDir, index).also {
+                if (it is PreparedImage.Ok) lastImagePreparedByPid = EngineWire.preparedPid(r.bundle)
+            }
+            Reply.Crashed -> PreparedImage.Err(PdfError.EngineCrashed)
+            Reply.Killed -> PreparedImage.Err(PdfError.Cancelled)
+        }
+    } finally {
+        raw.delete()
+    }
+
     private fun result(request: EngineRequest, out: File, job: JobControl): PdfResult =
         when (val r = call(request, job)) {
             is Reply.Done -> EngineWire.decodeResult(r.bundle).also { if (it is PdfResult.Err) out.delete() }
@@ -124,7 +147,18 @@ class RemoteEngine(
         }
     }
 
+    /**
+     * Sends [request] and waits for its reply. If the request could not even be handed to the
+     * engine (the binder was already dead, e.g. the engine was killed while idle and its death
+     * notification had not arrived yet), it was never started, so it is sent once more on a
+     * freshly bound engine.
+     */
     private fun call(request: EngineRequest, job: JobControl): Reply = synchronized(lock) {
+        attempt(request, job) ?: attempt(request, job) ?: Reply.Crashed
+    }
+
+    /** One send-and-wait; null if the request never reached the engine. Holds [lock]. */
+    private fun attempt(request: EngineRequest, job: JobControl): Reply? {
         val s = connected() ?: return Reply.Crashed
         val service = s.service!!
         val id = nextId++
@@ -132,7 +166,7 @@ class RemoteEngine(
         s.events = events
         if (s.lost) {
             drop(s)
-            return Reply.Crashed
+            return null
         }
         val callback = object : IEngineCallback.Stub() {
             override fun progress(requestId: Long, done: Int, total: Int) {
@@ -147,7 +181,7 @@ class RemoteEngine(
             service.run(id, EngineWire.encodeRequest(request), callback)
         } catch (e: RemoteException) {
             drop(s)
-            return Reply.Crashed
+            return null
         }
 
         var cancelDeadline = 0L

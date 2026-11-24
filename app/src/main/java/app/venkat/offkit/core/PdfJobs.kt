@@ -40,7 +40,10 @@ sealed interface JobInput {
     /** A PDF document; copied verbatim into the job directory. */
     data class Pdf(val uri: Uri) : JobInput
 
-    /** An image; normalised to JPEG/PNG by [ImageNormalizer]. */
+    /**
+     * An image; its raw bytes are copied, then normalised to JPEG/PNG ([ImageNormalizer]) by the
+     * engine's [ImagePreparer], in the `:engine` process.
+     */
     data class Image(val uri: Uri) : JobInput
 }
 
@@ -101,8 +104,9 @@ class PdfJobs @VisibleForTesting internal constructor(
     /**
      * Prepares [inputs] and runs [block] on the engine thread.
      *
-     * 1. Creates `cacheDir/jobs/<uuid>/`; copies each [JobInput.Pdf] and normalises each
-     *    [JobInput.Image] (on the IO dispatcher), in input order.
+     * 1. Creates `cacheDir/jobs/<uuid>/`; copies each [JobInput.Pdf] and each [JobInput.Image]'s raw
+     *    bytes (on the IO dispatcher), in input order; each image is then normalised by the
+     *    engine's [ImagePreparer] (the `:engine` process in the app; `EngineCrashed` if it dies).
      * 2. Calls [block] on the engine thread with the app's current [PdfEngine] (read now, not
      *    at construction), the prepared files in the same order as [inputs], the output file to
      *    write, and a [JobControl] whose `isCancelled()` is true once the calling coroutine is
@@ -147,6 +151,8 @@ class PdfJobs @VisibleForTesting internal constructor(
         } catch (e: CancellationException) {
             if (!currentCoroutineContext().isActive) throw e
             return JobOutcome.Failed(PdfError.Cancelled)
+        } catch (e: ImagePreparationException) {
+            return JobOutcome.Failed(e.error)
         } catch (e: UnsupportedImageException) {
             return JobOutcome.Failed(PdfError.UnsupportedImage)
         } catch (e: OutOfMemoryError) {
@@ -173,10 +179,30 @@ class PdfJobs @VisibleForTesting internal constructor(
                 is JobInput.Pdf -> File(inDir, String.format(Locale.ROOT, "in_%03d.pdf", index)).also {
                     UriIo.copyToFile(appContext, input.uri, it, cancelled)
                 }
-                is JobInput.Image -> ImageNormalizer.normalize(appContext, input.uri, inDir, index, cancelled)
+                is JobInput.Image -> {
+                    // Raw bytes only: decoding untrusted image data happens in the engine process.
+                    val raw = ImageNormalizer.rawFile(inDir, index)
+                    UriIo.copyToFile(appContext, input.uri, raw, cancelled)
+                    val preparer = (appContext as PdfUtilApp).engine as? ImagePreparer
+                        ?: throw ImagePreparationException(PdfError.Io(IOException("Engine cannot prepare images")))
+                    val job = object : JobControl {
+                        override fun progress(done: Int, total: Int) = Unit
+                        override fun isCancelled(): Boolean = cancelled()
+                    }
+                    when (val prepared = preparer.prepareImage(raw, inDir, index, job)) {
+                        is PreparedImage.Ok -> prepared.file
+                        is PreparedImage.Err -> {
+                            if (prepared.error == PdfError.Cancelled) ctx.ensureActive()
+                            throw ImagePreparationException(prepared.error)
+                        }
+                    }
+                }
             }
         }
     }
+
+    /** An image input could not be prepared; [error] is reported as the job's error. */
+    private class ImagePreparationException(val error: PdfError) : Exception(error.toString())
 
     /**
      * Estimates the image data size of the image at [uri] for `PdfEngine.imagesToPdf` (see
@@ -200,6 +226,8 @@ class PdfJobs @VisibleForTesting internal constructor(
         } catch (e: CancellationException) {
             if (!currentCoroutineContext().isActive) throw e
             return PdfEstimate.Err(PdfError.Cancelled)
+        } catch (e: ImagePreparationException) {
+            return PdfEstimate.Err(e.error)
         } catch (e: UnsupportedImageException) {
             return PdfEstimate.Err(PdfError.UnsupportedImage)
         } catch (e: OutOfMemoryError) {
