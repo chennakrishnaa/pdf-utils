@@ -174,7 +174,18 @@ Independent review of `main` at `b0a3ba4` ("Merge PI3"), which includes PI1, PI2
 
 ### A. Gates
 
-_(filled in below)_
+I ran all three myself, one after another, with 60 s between the emulator scripts. All passed.
+
+```
+verify.sh:            aapt2 dump permissions (debug/release): package: app.venkat.offkit  (none)
+                      exported components: app.venkat.offkit.MainActivity
+                      EngineService process/exported (debug, release): :engine false
+                      VERIFY OK
+emulator-smoke.sh:    tests=30 failures=0 errors=0
+                      SMOKE OK
+isolation-smoke.sh:   :engine process not running
+                      ISOLATION SMOKE OK
+```
 
 ### B. Code review of `engine/remote/**` and its callers
 
@@ -220,3 +231,20 @@ Sentences that are now inaccurate or incomplete:
 | `security/platform-audit.md`, "Low-memory ordering" | "the engine is killed first" (with the activity in front) | This is correct as measured with the activity in front, but the text should say that in the background both processes are cached, and either may be killed or frozen (FR-1). |
 | `security/platform-audit.md`, Watchdog | "(787 MiB on this 2 GB emulator)" | See Part C for the limit logged by my run. |
 | `README.md`, `PRIVACY.md` | none | No inaccurate sentence found. PRIVACY's "Metadata inside the pages of PDFs you give to Merge may also remain" is still true. |
+
+### C. Hostile files through the real app path: NOT DONE
+
+I wrote a throwaway instrumented test, `FrHostileOnDeviceTest`, and did not commit it. For each SR3 input it was to run Compress (HIGH) and Merge through `PdfJobs.run` with the app's production `RemoteEngine` and `engineLimits()`. It records the `JobOutcome`, wall time, engine `VmHWM`, the engine pids, whether the test process survives, and whether an ordinary follow-up job succeeds. The inputs were `annots-50k-1`, `bigarr-20m-1`, `bigarr-60m-1`, `wf-20k` and `bigdict-400k`, copied in through `uiAutomation.executeShellCommand("cat …")`.
+
+The run did not happen. My driver started the emulator without the `sg kvm` wrapper that the project scripts use, so the emulator could not use KVM and never booted (`booted=` empty after 300 s). After the gates I was at the turn limit, so I removed the test from the worktree and stopped. **I therefore have no evidence of my own for any SR3 item.** Every number in `engine-audit.md` "SF6 / PI status" comes from the fix author or the earlier audit. To repeat this: run the test with the emulator started as `isolation-smoke.sh` starts it (`sg kvm -c …`), and give `am instrument` about 25 minutes, because `bigdict-400k` may need 2 × 90 s.
+
+### Not verified
+- **Part C as a whole:** no SR3 file was run through the app on the emulator in this review (see above).
+- **FR-1 and FR-2:** reasoned from the code and platform behaviour. I did not reproduce the background freeze, the LMK kill or the orphan engine.
+- **FR-9:** reasoned only.
+- **Hardware and data:** no real phone, no ARM device, no Android version other than the API 31 emulator image used by the scripts, no real-world large PDFs or camera photos, no low-RAM (2-3 GB) phone under memory pressure.
+- **Freezer settings:** whether the cached-apps freezer is on in the scripts' emulator image or on target devices.
+- **Production limits:** the 787 MiB memory limit quoted in `platform-audit.md` was not re-logged by me.
+
+### Verdict (FR)
+All three gates pass. The process-isolation design is sound for binder trust, paths, request ids and the resend, and I found no High defect in `engine/remote/**`. The build is fit for a Play **closed** test. Before a **public** release, fix FR-1 (the watchdog counts frozen background time, so a good job can end as "taking too long" when the user leaves the app) and FR-2 (an orphan engine job runs with no limit after the UI dies, and shares its process with the next one). Run Part C on the emulator and on at least one real ARM phone. Apply the doc corrections in Part D.
