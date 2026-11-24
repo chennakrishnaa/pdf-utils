@@ -1,6 +1,9 @@
 package app.venkat.offkit.engine.remote
 
 import android.os.Bundle
+import android.os.Process
+import app.venkat.offkit.core.ImagePreparer
+import app.venkat.offkit.core.PreparedImage
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageSize
@@ -47,10 +50,32 @@ sealed interface EngineRequest {
     data class AppendImages(val pdf: String, val images: List<String>, override val out: String) : EngineRequest {
         override val paths get() = listOf(pdf) + images + out
     }
+
+    /**
+     * Decode/normalise the raw image bytes at [raw] into [destDir] as image input [index]
+     * ([ImagePreparer]); the reply is [EngineWire.encodePrepared]. Runs in the engine process so
+     * platform codecs never see untrusted image data in the UI process.
+     */
+    data class NormalizeImage(val raw: String, val destDir: String, val index: Int) : EngineRequest {
+        override val paths get() = listOf(raw, destDir)
+        override val out: String? get() = null
+    }
 }
 
-/** Runs [request] on [engine]: a [PdfResult], or a [PdfEstimate] for [EngineRequest.Estimate]. */
-internal fun EngineRequest.execute(engine: PdfEngine, job: JobControl): Any = when (this) {
+/** Largest image input index accepted by [EngineRequest.NormalizeImage] (file names are `img_NNN`). */
+internal const val MAX_IMAGE_INDEX = 99_999
+
+/**
+ * Runs [request] on [engine] (or [preparer]): a [PdfResult], a [PdfEstimate] for
+ * [EngineRequest.Estimate], or a [PreparedImage] for [EngineRequest.NormalizeImage].
+ */
+internal fun EngineRequest.execute(engine: () -> PdfEngine, preparer: ImagePreparer, job: JobControl): Any = when (this) {
+    is EngineRequest.NormalizeImage -> preparer.prepareImage(File(raw), File(destDir), index, job)
+    else -> execute(engine(), job)
+}
+
+private fun EngineRequest.execute(engine: PdfEngine, job: JobControl): Any = when (this) {
+    is EngineRequest.NormalizeImage -> error("not an engine request")
     is EngineRequest.ImagesToPdf -> engine.imagesToPdf(images.map(::File), pageSize, File(out), job, compression)
     is EngineRequest.Estimate -> engine.estimateImage(File(image))
     is EngineRequest.Compress -> engine.compress(File(pdf), level, File(out), job)
@@ -74,6 +99,11 @@ object EngineWire {
     private const val OUT = "out"
     private const val PAGE_SIZE = "pageSize"
     private const val LEVEL = "level"
+    private const val RAW = "raw"
+    private const val DEST_DIR = "destDir"
+    private const val INDEX = "index"
+    private const val FILE_NAME = "fileName"
+    private const val PID = "pid"
 
     private const val KIND = "kind"
     private const val PAGES = "pages"
@@ -88,6 +118,7 @@ object EngineWire {
     private const val KIND_ERR = "err"
     private const val KIND_EST_OK = "estOk"
     private const val KIND_EST_ERR = "estErr"
+    private const val KIND_IMG_OK = "imgOk"
 
     // ---------------------------------------------------------------- requests
 
@@ -115,6 +146,12 @@ object EngineWire {
                 putStringArray(PDFS, r.pdfs.toTypedArray())
                 putString(OUT, r.out)
             }
+            is EngineRequest.NormalizeImage -> {
+                putString(OP, "normalizeImage")
+                putString(RAW, r.raw)
+                putString(DEST_DIR, r.destDir)
+                putInt(INDEX, r.index)
+            }
             is EngineRequest.AppendImages -> {
                 putString(OP, "appendImages")
                 putString(PDF, r.pdf)
@@ -139,6 +176,12 @@ object EngineWire {
             "compress" -> EngineRequest.Compress(str(PDF), CompressionLevel.valueOf(str(LEVEL)), str(OUT))
             "merge" -> EngineRequest.Merge(list(PDFS), str(OUT))
             "appendImages" -> EngineRequest.AppendImages(str(PDF), list(IMAGES), str(OUT))
+            "normalizeImage" -> {
+                require(b.containsKey(INDEX)) { "missing $INDEX" }
+                val index = b.getInt(INDEX)
+                require(index in 0..MAX_IMAGE_INDEX) { "bad index $index" }
+                EngineRequest.NormalizeImage(str(RAW), str(DEST_DIR), index)
+            }
             else -> throw IllegalArgumentException("unknown op $op")
         }
     }
@@ -192,10 +235,42 @@ object EngineWire {
         else -> PdfEstimate.Err(malformed())
     }
 
+    /**
+     * Encodes a [PreparedImage]. `Ok` carries only the file NAME (the client rebuilds it inside
+     * the directory it asked for) and the engine process id [pid] (diagnostics and tests).
+     */
+    fun encodePrepared(p: PreparedImage, pid: Int = Process.myPid()): Bundle = when (p) {
+        is PreparedImage.Ok -> Bundle().apply {
+            putString(KIND, KIND_IMG_OK)
+            putString(FILE_NAME, p.file.name)
+            putInt(PID, pid)
+        }
+        is PreparedImage.Err -> encodeResult(PdfResult.Err(p.error))
+    }
+
+    /**
+     * Decodes a [PreparedImage] bundle for a request whose destination was [destDir]. The name must
+     * be one [app.venkat.offkit.core.ImageNormalizer.normalizedFile] produces for [index];
+     * anything else (or a malformed bundle) becomes `Err(Io)`.
+     */
+    fun decodePrepared(b: Bundle, destDir: File, index: Int): PreparedImage = when (b.getString(KIND)) {
+        KIND_IMG_OK -> {
+            val name = b.getString(FILE_NAME)
+            val expected = listOf("jpg", "png").map { app.venkat.offkit.core.ImageNormalizer.normalizedFile(destDir, index, it).name }
+            if (name != null && name in expected) PreparedImage.Ok(File(destDir, name)) else PreparedImage.Err(malformed())
+        }
+        KIND_ERR -> PreparedImage.Err(getError(b))
+        else -> PreparedImage.Err(malformed())
+    }
+
+    /** The engine process id carried by an `Ok` [encodePrepared] bundle, or 0. */
+    fun preparedPid(b: Bundle): Int = b.getInt(PID, 0)
+
     /** Encodes whatever [EngineRequest.execute] returned. */
     internal fun encodeAny(value: Any): Bundle = when (value) {
         is PdfResult -> encodeResult(value)
         is PdfEstimate -> encodeEstimate(value)
+        is PreparedImage -> encodePrepared(value)
         else -> throw IllegalArgumentException("not a result: $value")
     }
 

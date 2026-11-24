@@ -163,4 +163,8 @@ ANDROID_SERIAL="$SERIAL" ./gradlew --console=plain connectedDebugAndroidTest \
     || fail "instrumented tests failed (report: app/build/reports/androidTests/connected/debug/index.html)"
 
 check_results "$RESULTS_DIR"
+# The process-isolation death tests (PI2) must have run.
+for cls in EngineIsolationOnDeviceTest EngineOnDeviceTest; do
+    grep -rqs "classname=\"app.venkat.offkit.$cls\"" "$RESULTS_DIR" || fail "$cls did not run"
+done
 echo "SMOKE OK"

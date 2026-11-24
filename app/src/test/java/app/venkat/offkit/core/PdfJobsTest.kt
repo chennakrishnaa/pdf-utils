@@ -324,6 +324,26 @@ class PdfJobsTest {
         assertTrue(CoreTestSupport.jobsEmpty(context))
     }
 
+    /** PI2: image normalisation runs in the engine process; its death or OOM is the job's error. */
+    @Test
+    fun imagePreparationErrorsFailTheJobAndEmptyTheCache() {
+        val img = CoreTestSupport.contentUri(context, "x.webp", ByteArray(512) { 0x42 })
+        for (error in listOf(PdfError.EngineCrashed, PdfError.OutOfMemory, PdfError.UnsupportedImage)) {
+            fake.prepare = { _, _, _ -> app.venkat.offkit.core.PreparedImage.Err(error) }
+            val outcome = runBlocking {
+                jobs.run(listOf(JobInput.Image(img)), { _, _ -> }) { engine, files, out, job ->
+                    engine.imagesToPdf(files, app.venkat.offkit.engine.PageSize.A4, out, job)
+                }
+            }
+            assertEquals(JobOutcome.Failed(error), outcome)
+            assertEquals(PdfEstimate.Err(error), runBlocking { jobs.estimateImage(img) })
+            assertTrue(fake.calls.isEmpty())
+            assertTrue(CoreTestSupport.jobsEmpty(context))
+        }
+        // Only the raw bytes reach the preparer.
+        assertTrue(fake.prepareCalls.all { it.name.matches(Regex("img_\\d{3}\\.raw")) })
+    }
+
     @Test
     fun exceptionsInBlockAreMapped() {
         val input = listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))

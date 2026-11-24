@@ -4,6 +4,9 @@ import android.os.Binder
 import android.os.Bundle
 import android.os.Process
 import android.os.RemoteException
+import app.venkat.offkit.core.ImagePreparer
+import app.venkat.offkit.core.InProcessImagePreparer
+import app.venkat.offkit.core.PreparedImage
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.PdfError
@@ -34,6 +37,7 @@ class EngineServer(
         Thread(r, "offkit-engine-worker").apply { isDaemon = true }
     },
     private val myPid: () -> Int = { Process.myPid() },
+    private val preparer: ImagePreparer = InProcessImagePreparer,
 ) : IEngineService.Stub() {
     private val engine by lazy(engine)
 
@@ -74,7 +78,10 @@ class EngineServer(
             }
             val out = request.out?.let(::File)
             try {
-                EngineWire.encodeAny(request.execute(engine, job))
+                when (val value = request.execute({ engine }, preparer, job)) {
+                    is PreparedImage -> EngineWire.encodePrepared(checkPrepared(value), myPid())
+                    else -> EngineWire.encodeAny(value)
+                }
             } catch (e: OutOfMemoryError) {
                 out?.delete()
                 errorFor(request, PdfError.OutOfMemory)
@@ -98,6 +105,18 @@ class EngineServer(
         } else {
             EngineWire.encodeResult(PdfResult.Err(error))
         }
+
+    /** A prepared image must also lie inside [jobsRoot]; otherwise it is deleted and rejected. */
+    private fun checkPrepared(p: PreparedImage): PreparedImage {
+        if (p !is PreparedImage.Ok) return p
+        return try {
+            checkPaths(jobsRoot, listOf(p.file.path))
+            p
+        } catch (e: SecurityException) {
+            p.file.delete()
+            PreparedImage.Err(PdfError.Io(e))
+        }
+    }
 
     companion object {
         /**

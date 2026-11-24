@@ -26,6 +26,12 @@ done
 command -v python3 >/dev/null || fail "python3 is required to parse the manifest"
 command -v unzip >/dev/null || fail "unzip is required to list APK entries"
 
+# MuPDF is used only by the engine (which runs in the :engine process): no source outside engine/
+# may import it.
+MUPDF_IMPORTS="$(grep -rlE '^import com\.artifex\.mupdf' "$ROOT/app/src/main/java" | grep -v '/app/venkat/offkit/engine/' || true)"
+[[ -z "$MUPDF_IMPORTS" ]] || fail "com.artifex.mupdf imported outside engine/: $MUPDF_IMPORTS"
+echo "==> No com.artifex.mupdf import outside engine/"
+
 echo "==> ./gradlew assembleDebug assembleRelease testDebugUnitTest lintDebug"
 ./gradlew --console=plain assembleDebug assembleRelease testDebugUnitTest lintDebug \
     || fail "gradle build/test/lint failed"
@@ -85,6 +91,21 @@ check_apk() {
         [[ "$comp" == "$ALLOWED_EXPORTED" ]] || fail "$label APK has unexpected exported component: $comp"
     done <<<"$exported"
     grep -qxF "$ALLOWED_EXPORTED" <<<"$exported" || fail "$label APK: $ALLOWED_EXPORTED is not exported"
+
+    # 2b. The PDF engine service runs in its own unexported :engine process (PI1/PI2).
+    local engine_service
+    engine_service="$(python3 -I -c '
+import sys
+import xml.etree.ElementTree as ET
+A = "{http://schemas.android.com/apk/res/android}"
+app = ET.fromstring(sys.stdin.read()).find("application")
+for el in (app if app is not None else []):
+    if el.tag == "service" and el.get(A + "name", "").endswith("engine.remote.EngineService"):
+        print(el.get(A + "process", ""), el.get(A + "exported", ""))
+' <<<"$manifest")" || fail "$label: could not parse manifest for EngineService"
+    echo "--- EngineService process/exported ($label): ${engine_service:-<missing>}"
+    [[ "$engine_service" == ":engine false" ]] \
+        || fail "$label APK: EngineService must be declared with process=\":engine\" exported=\"false\" (got '${engine_service:-missing}')"
 
     # 3. Native ABIs.
     local entries
