@@ -314,6 +314,7 @@ class ComponentsTest {
             PdfError.Cancelled,
             PdfError.NotImplemented,
             PdfError.EngineCrashed,
+            PdfError.TimedOut,
             PdfError.Io(IOException("disk")),
         )
         val texts = all.map { rule.activity.getString(pdfErrorMessage(it)) }

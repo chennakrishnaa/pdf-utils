@@ -210,6 +210,167 @@ class RemoteEngineTest {
         assertEquals(1, conn.disconnects.get())
     }
 
+    // ------------------------------------------------ watchdog (PI3)
+
+    /** Engine stub that accepts every request, reports one progress event, then never answers. */
+    private fun hangingService(cancels: AtomicInteger = AtomicInteger()) = object : IEngineService.Stub() {
+        override fun pid() = 4242
+        override fun run(requestId: Long, request: Bundle?, callback: IEngineCallback?) {
+            callback!!.progress(requestId, 1, 10)
+        }
+        override fun cancel(requestId: Long) { cancels.incrementAndGet() }
+    }
+
+    /** First connect gets [first], later ones a working [EngineServer] over [fake]. */
+    private fun firstThenWorking(first: IEngineService, fake: FakePdfEngine = FakePdfEngine()): FakeConnector {
+        val n = AtomicInteger()
+        return FakeConnector { if (n.getAndIncrement() == 0) first else server(fake) }
+    }
+
+    private fun elapsedMs(t0: Long) = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0)
+
+    @Test
+    fun stallKillsEngineReturnsTimedOutDeletesOutAndNextCallWorks() {
+        val conn = firstThenWorking(hangingService())
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 200))
+        val (_, input, out) = jobDir()
+        out.writeText("partial")
+        val job = Job()
+        val t0 = System.nanoTime()
+        val r = engine.compress(input, CompressionLevel.LOW, out, job)
+        val ms = elapsedMs(t0)
+        assertEquals(PdfResult.Err(PdfError.TimedOut), r)
+        assertEquals(listOf(4242), conn.killed)
+        assertEquals(listOf(1 to 10), job.steps)
+        assertFalse(out.exists())
+        assertTrue("took $ms ms", ms in 200..2_000)
+        assertEquals(1, conn.disconnects.get())
+        assertTrue(engine.compress(input, CompressionLevel.LOW, out, Job()) is PdfResult.Ok)
+        assertEquals(2, conn.connects.get())
+    }
+
+    @Test
+    fun progressRestartsTheStallClock() {
+        val fake = FakePdfEngine().apply { progressSteps = 12 }
+        fake.beforeStep = { _, _ -> Thread.sleep(50) } // ~600 ms in all, progress every 50 ms
+        val conn = FakeConnector { server(fake) }
+        val (_, input, out) = jobDir()
+        val t0 = System.nanoTime()
+        val r = RemoteEngine(conn, limits = EngineLimits(stallMs = 200)).merge(listOf(input), out, Job())
+        assertTrue("$r", r is PdfResult.Ok)
+        assertTrue("finished too fast to prove anything", elapsedMs(t0) > 400)
+        assertTrue(conn.killed.isEmpty())
+    }
+
+    @Test
+    fun totalLimitStopsAJobThatKeepsReportingProgress() {
+        val stop = AtomicBoolean(false)
+        val chatty = object : IEngineService.Stub() {
+            override fun pid() = 4242
+            override fun run(requestId: Long, request: Bundle?, callback: IEngineCallback?) {
+                Thread {
+                    var i = 0
+                    while (!stop.get()) { callback!!.progress(requestId, ++i, 1_000_000); Thread.sleep(20) }
+                }.start()
+            }
+            override fun cancel(requestId: Long) {}
+        }
+        val conn = FakeConnector { chatty }
+        val (_, input, out) = jobDir()
+        val t0 = System.nanoTime()
+        val r = RemoteEngine(conn, limits = EngineLimits(stallMs = 200, totalMs = 500)).merge(listOf(input), out, Job())
+        val ms = elapsedMs(t0)
+        stop.set(true)
+        assertEquals(PdfResult.Err(PdfError.TimedOut), r)
+        assertTrue("took $ms ms", ms in 500..2_500)
+        assertEquals(listOf(4242), conn.killed)
+    }
+
+    @Test
+    fun estimateAndNormaliseUseTheShortImageLimit() {
+        val conn = FakeConnector { hangingService() }
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 60_000, totalMs = 60_000, imageTotalMs = 200))
+        var t0 = System.nanoTime()
+        assertEquals(PdfEstimate.Err(PdfError.TimedOut), engine.estimateImage(File(root, "x.jpg")))
+        assertTrue(elapsedMs(t0) < 2_000)
+        val dir = File(root, "jimg/in").apply { mkdirs() }
+        val raw = File(dir, "raw_000").apply { writeText("x") }
+        t0 = System.nanoTime()
+        assertEquals(
+            app.venkat.offkit.core.PreparedImage.Err(PdfError.TimedOut),
+            engine.prepareImage(raw, dir, 0, JobControl.None),
+        )
+        assertTrue(elapsedMs(t0) < 2_000)
+        assertFalse(raw.exists())
+        assertEquals(listOf(4242, 4242), conn.killed)
+    }
+
+    @Test
+    fun memoryOverLimitKillsEngineAndReturnsOutOfMemory() {
+        val conn = firstThenWorking(hangingService())
+        val sampled: MutableList<Int> = CopyOnWriteArrayList()
+        val engine = RemoteEngine(
+            conn,
+            limits = EngineLimits(memoryBytes = 1_000, memorySampleMs = 50),
+            rssBytes = { pid -> sampled += pid; 2_000L },
+        )
+        val (_, input, out) = jobDir()
+        out.writeText("partial")
+        val t0 = System.nanoTime()
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.compress(input, CompressionLevel.LOW, out, Job()))
+        assertTrue(elapsedMs(t0) < 2_000)
+        assertEquals(listOf(4242), conn.killed)
+        assertEquals(4242, sampled.first())
+        assertFalse(out.exists())
+        // Under the limit, an ordinary job completes; RSS is sampled while it runs.
+        val fake = FakePdfEngine().apply { progressSteps = 5; beforeStep = { _, _ -> Thread.sleep(30) } }
+        val ok = RemoteEngine(FakeConnector { server(fake) }, limits = EngineLimits(memoryBytes = 1_000, memorySampleMs = 10), rssBytes = { 999L })
+        assertTrue(ok.compress(input, CompressionLevel.LOW, out, Job()) is PdfResult.Ok)
+    }
+
+    @Test
+    fun unreadableRssFailsOpenAndLogsOnce() {
+        val fake = FakePdfEngine().apply { progressSteps = 5; beforeStep = { _, _ -> Thread.sleep(30) } }
+        val conn = FakeConnector { server(fake) }
+        val logs: MutableList<String> = CopyOnWriteArrayList()
+        val engine = RemoteEngine(
+            conn,
+            limits = EngineLimits(memoryBytes = 1, memorySampleMs = 10),
+            rssBytes = { null },
+            log = { logs += it },
+        )
+        val (_, input, out) = jobDir()
+        assertTrue(engine.compress(input, CompressionLevel.LOW, out, Job()) is PdfResult.Ok)
+        assertTrue(engine.merge(listOf(input), out, Job()) is PdfResult.Ok)
+        assertTrue(conn.killed.isEmpty())
+        assertEquals(1, logs.size)
+    }
+
+    @Test
+    fun cancelDuringAStalledJobIsCancelledNotTimedOut() {
+        val cancels = AtomicInteger()
+        val conn = FakeConnector { hangingService(cancels) }
+        val engine = RemoteEngine(conn, cancelGraceMs = 500, limits = EngineLimits(stallMs = 300))
+        val (_, input, out) = jobDir()
+        val job = Job()
+        Thread { Thread.sleep(100); job.cancelled.set(true) }.start()
+        assertEquals(PdfResult.Err(PdfError.Cancelled), engine.compress(input, CompressionLevel.LOW, out, job))
+        assertEquals(1, cancels.get())
+        assertEquals(listOf(4242), conn.killed)
+    }
+
+    @Test
+    fun memoryLimitIsTheSmallerOfCeilingAndFortyPercentOfRam() {
+        val gib = 1024L * 1024 * 1024
+        assertEquals(EngineLimits.MEMORY_CEILING_BYTES, EngineLimits.memoryLimitFor(8 * gib))
+        assertEquals(2 * gib / 100 * 40, EngineLimits.memoryLimitFor(2 * gib))
+        assertEquals(EngineLimits.MEMORY_CEILING_BYTES, EngineLimits.memoryLimitFor(0))
+        assertEquals(1536L * 1024 * 1024, EngineLimits.MEMORY_CEILING_BYTES)
+        assertEquals(3L * 4096, ProcRss.parseStatm("100 3 2 1 0 5 0\n", 4096))
+        assertEquals(null, ProcRss.parseStatm("garbage", 4096))
+        assertEquals(null, ProcRss.bytes(Int.MAX_VALUE))
+    }
+
     // ------------------------------------------------ BoundServiceConnector (real connector logic)
 
     @Test

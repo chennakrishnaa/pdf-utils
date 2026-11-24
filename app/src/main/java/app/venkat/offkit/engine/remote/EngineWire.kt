@@ -286,6 +286,7 @@ object EngineWire {
             PdfError.Cancelled -> "Cancelled"
             PdfError.NotImplemented -> "NotImplemented"
             PdfError.EngineCrashed -> "EngineCrashed"
+            PdfError.TimedOut -> "TimedOut"
             is PdfError.Io -> {
                 b.putString(IO_CLASS, e.cause.javaClass.name)
                 e.cause.message?.let { b.putString(IO_MESSAGE, it) }
@@ -304,6 +305,7 @@ object EngineWire {
         "Cancelled" -> PdfError.Cancelled
         "NotImplemented" -> PdfError.NotImplemented
         "EngineCrashed" -> PdfError.EngineCrashed
+        "TimedOut" -> PdfError.TimedOut
         "Io" -> {
             val cls = b.getString(IO_CLASS) ?: "?"
             val msg = b.getString(IO_MESSAGE)
