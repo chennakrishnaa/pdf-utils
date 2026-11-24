@@ -151,7 +151,7 @@ internal fun HeroIllustration(
         stringResource(R.string.onboarding_private_badge_ads),
     )
     val semantics = if (page == 3) {
-        val text = badges.joinToString(", ")
+        val text = badges.joinToString(stringResource(R.string.cd_list_separator))
         Modifier.clearAndSetSemantics { contentDescription = text }
     } else {
         Modifier.clearAndSetSemantics { }

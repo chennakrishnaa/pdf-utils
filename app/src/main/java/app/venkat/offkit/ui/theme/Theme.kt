@@ -25,8 +25,8 @@ fun OffkitTheme(content: @Composable () -> Unit) {
 
 /**
  * The background is always light, but enableEdgeToEdge()'s default style follows the system
- * dark setting. Force dark status- and navigation-bar icons so they stay readable. A screen
- * that sits on a dark surface (onboarding) may still switch them for as long as it is shown.
+ * dark setting. Force dark status- and navigation-bar icons so they stay readable. Every
+ * screen, onboarding included, is light, so nothing switches them back.
  */
 @Composable
 private fun DarkSystemBarIcons() {

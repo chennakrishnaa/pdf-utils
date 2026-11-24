@@ -16,6 +16,10 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -37,6 +41,7 @@ import app.venkat.offkit.ui.components.TAG_JOB_SAVE
 import app.venkat.offkit.ui.components.TAG_JOB_SAVING
 import app.venkat.offkit.ui.components.TAG_JOB_SHARE
 import app.venkat.offkit.ui.components.TAG_JOB_SUMMARY
+import app.venkat.offkit.ui.components.TAG_JOB_SNACKBAR_OVERLAY
 import app.venkat.offkit.ui.components.TAG_LEAVE_CONFIRM
 import app.venkat.offkit.ui.components.TAG_LEAVE_STAY
 import app.venkat.offkit.ui.components.formatBytes
@@ -304,6 +309,28 @@ class JobFlowTest {
         rule.onNodeWithText("Couldn't save").assertExists()
         rule.onNodeWithTag(TAG_JOB_SUMMARY).assertExists()
         assertEquals(listOf("errorShown"), calls)
+    }
+
+    @Test
+    fun saveErrorWhileOptionsShowIsShownBeforeBeingCleared() {
+        flow(JobUiState.Idle)
+        rule.runOnUiThread { saveError = "Result unavailable" }
+        rule.waitForIdle()
+        rule.onNodeWithTag("options").assertExists()
+        rule.onNodeWithText("Result unavailable").assertIsDisplayed()
+        rule.onNode(hasText("Result unavailable") and hasAnyAncestor(hasTestTag(TAG_JOB_SNACKBAR_OVERLAY))).assertExists()
+        assertEquals(listOf("errorShown"), calls)
+    }
+
+    @Test
+    fun nonPositiveOriginalCountsAsUnknown() {
+        val pages = rule.activity.resources.getQuantityString(R.plurals.pages_count, 3, 3)
+        for (original in listOf(0L, -1L)) {
+            flow(unsaved.copy(bytes = 360, originalBytes = original), noGain = true)
+            rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pages)
+            rule.onNodeWithText(formatBytes(360)).assertExists()
+            rule.onNodeWithText(str(R.string.error_no_gain_title)).assertDoesNotExist()
+        }
     }
 
     // ---- Error ----

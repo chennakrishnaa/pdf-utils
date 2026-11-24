@@ -107,9 +107,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
         }
 
         /** Saving in whole percent, rounded down but at least 1 when the file did get smaller. */
-        fun savingPercent(originalBytes: Long, newBytes: Long): Int {
-            if (originalBytes <= 0 || newBytes >= originalBytes) return 0
-            return ((originalBytes - newBytes) * 100 / originalBytes).toInt().coerceIn(1, 100)
-        }
+        fun savingPercent(originalBytes: Long, newBytes: Long): Int =
+            app.venkat.offkit.ui.components.savingPercent(originalBytes, newBytes)
     }
 }

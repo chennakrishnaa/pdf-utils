@@ -4,6 +4,9 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -50,6 +53,9 @@ import app.venkat.offkit.R
 import app.venkat.offkit.ui.theme.OffkitDimens
 import app.venkat.offkit.ui.theme.OffkitTheme
 
+/** Test tag of the Back navigation icon of [OffkitScaffold]. */
+const val TAG_ACTION_BACK = "action_back"
+
 /** Test tag of the Close navigation icon of [OffkitScaffold]. (Back uses [TAG_ACTION_BACK].) */
 const val TAG_ACTION_CLOSE = "action_close"
 
@@ -71,7 +77,7 @@ internal fun Modifier.mirrorInRtl(): Modifier =
     if (LocalLayoutDirection.current == LayoutDirection.Rtl) this.scale(scaleX = -1f, scaleY = 1f) else this
 
 /**
- * Screen frame of the redesign (SPEC §0 "Screen skeleton"), a replacement for [ToolScaffold].
+ * Screen frame of the redesign (SPEC §0 "Screen skeleton").
  *
  * Renders, top to bottom, on the `background` colour:
  * - a top app bar: a row of at least 64dp, padded by the status-bar insets, with a 48dp navigation
@@ -102,6 +108,59 @@ fun OffkitScaffold(
     scrollState: ScrollState = rememberScrollState(),
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    OffkitScaffoldFrame(title, navIcon, onNavigate, modifier, bottomBar, snackbarHostState) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(start = OffkitDimens.screenPadding, end = OffkitDimens.screenPadding, top = 8.dp, bottom = 24.dp),
+        ) {
+            content()
+            if (bottomBar == null) Spacer(Modifier.navigationBarsPadding())
+        }
+    }
+}
+
+/**
+ * [OffkitScaffold] for content that scrolls itself (a `LazyColumn` of long text): same top bar,
+ * insets, background, snackbars and [bottomBar], but [content] is placed as is in the area
+ * between the bars, without a scrolling column around it. [content] receives the padding the
+ * scrolling variant would apply (16dp sides, 8dp top, 24dp bottom, plus the navigation-bar inset
+ * when there is no bottom bar); pass it as the lazy list's `contentPadding`.
+ */
+@Composable
+fun OffkitLazyScaffold(
+    title: String,
+    navIcon: OffkitNavIcon,
+    onNavigate: () -> Unit,
+    modifier: Modifier = Modifier,
+    bottomBar: (@Composable () -> Unit)? = null,
+    snackbarHostState: SnackbarHostState? = null,
+    content: @Composable (PaddingValues) -> Unit,
+) {
+    val navBottom = if (bottomBar == null) WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() else 0.dp
+    val padding = PaddingValues(
+        start = OffkitDimens.screenPadding,
+        end = OffkitDimens.screenPadding,
+        top = 8.dp,
+        bottom = 24.dp + navBottom,
+    )
+    OffkitScaffoldFrame(title, navIcon, onNavigate, modifier, bottomBar, snackbarHostState) {
+        content(padding)
+    }
+}
+
+/** Shared frame of [OffkitScaffold] and [OffkitLazyScaffold]; [body] fills the area between the bars. */
+@Composable
+private fun OffkitScaffoldFrame(
+    title: String,
+    navIcon: OffkitNavIcon,
+    onNavigate: () -> Unit,
+    modifier: Modifier,
+    bottomBar: (@Composable () -> Unit)?,
+    snackbarHostState: SnackbarHostState?,
+    body: @Composable () -> Unit,
+) {
     // Untinted Text / Icons in the slots take onSurface, not the default black.
     CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
         Column(
@@ -112,16 +171,7 @@ fun OffkitScaffold(
                 .imePadding(),
         ) {
             OffkitTopBar(title = title, navIcon = navIcon, onNavigate = onNavigate)
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .padding(start = OffkitDimens.screenPadding, end = OffkitDimens.screenPadding, top = 8.dp, bottom = 24.dp),
-            ) {
-                content()
-                if (bottomBar == null) Spacer(Modifier.navigationBarsPadding())
-            }
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) { body() }
             if (snackbarHostState != null) {
                 SnackbarHost(snackbarHostState, modifier = Modifier.fillMaxWidth())
             }
@@ -161,6 +211,9 @@ private fun OffkitTopBar(title: String, navIcon: OffkitNavIcon, onNavigate: () -
         )
     }
 }
+
+/** Height of an [OffkitBottomBar] holding one button, without the navigation-bar inset. */
+internal val OffkitBottomBarHeight = 1.dp + OffkitDimens.bottomBarPaddingTop * 2 + OffkitDimens.buttonHeight
 
 /** The fixed bottom action bar of [OffkitScaffold]. */
 @Composable

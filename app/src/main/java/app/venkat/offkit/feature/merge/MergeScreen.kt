@@ -157,6 +157,7 @@ private fun MergeOptions(
     ) {
         OffkitSectionHeader(
             text = stringResource(R.string.merge_section_count, rows.size),
+            first = true,
             actionLabel = stringResource(R.string.add_pdfs),
             onAction = onAdd,
             actionIcon = AppIcons.add,

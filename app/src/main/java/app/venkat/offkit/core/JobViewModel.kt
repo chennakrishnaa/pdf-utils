@@ -26,7 +26,7 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Base class for tool ViewModels: owns one job's lifecycle and exposes it as [jobState] for
- * `JobPanel`. Subclasses hold their own input state and call [startJob].
+ * `OffkitJobFlow`. Subclasses hold their own input state and call [startJob].
  *
  * State machine (all transitions on the main thread):
  * - `Idle`/`Done`/`Failed` --[startJob]--> `Running(0, 0)` --progress--> `Running(d, t)`.
@@ -58,7 +58,7 @@ open class JobViewModel(
 
     private val _jobState = MutableStateFlow<JobUiState>(JobUiState.Idle)
 
-    /** Current job state; render with `JobPanel(state = jobState.collectAsState().value, ...)`. */
+    /** Current job state; render with `OffkitJobFlow(state = jobState.collectAsState().value, ...)`. */
     val jobState: StateFlow<JobUiState> = _jobState.asStateFlow()
 
     private val _saveError = MutableStateFlow<String?>(null)

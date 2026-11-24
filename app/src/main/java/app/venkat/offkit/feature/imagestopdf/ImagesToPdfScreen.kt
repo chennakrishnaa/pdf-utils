@@ -218,6 +218,7 @@ private fun ImagesToPdfOptions(
     ) {
         OffkitSectionHeader(
             text = stringResource(R.string.imagestopdf_section_count, imageCount),
+            first = true,
             actionLabel = stringResource(R.string.add),
             onAction = onAdd,
             actionIcon = AppIcons.add,

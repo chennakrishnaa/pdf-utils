@@ -47,7 +47,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
 import app.venkat.offkit.engine.PdfError
-import app.venkat.offkit.feature.compress.CompressViewModel
 import app.venkat.offkit.ui.theme.OffkitDimens
 import app.venkat.offkit.ui.theme.OffkitTheme
 import app.venkat.offkit.ui.theme.OffkitTool
@@ -259,10 +258,10 @@ fun OffkitResultScreen(
                 Icon(AppIcons.check, contentDescription = null, tint = onSuccess, modifier = Modifier.size(32.dp))
             }
             Column(Modifier.weight(1f)) {
-                val original = state.originalBytes
+                val original = state.knownOriginalBytes
                 val smaller = original != null && state.bytes < original
                 val headline = if (smaller) {
-                    stringResource(R.string.result_smaller, CompressViewModel.savingPercent(original, state.bytes))
+                    stringResource(R.string.result_smaller, savingPercent(original, state.bytes))
                 } else {
                     pluralStringResource(R.plurals.pages_count, state.pages, state.pages)
                 }
@@ -324,6 +323,12 @@ fun OffkitResultScreen(
 
 /** Test tag of the Open button in the saved row of [OffkitResultScreen]. */
 const val TAG_JOB_OPEN = "job_open"
+
+/** Test tag of the Keep button of [OffkitDiscardDialog]. */
+const val TAG_LEAVE_STAY = "leave_stay"
+
+/** Test tag of the Discard button of [OffkitDiscardDialog]. */
+const val TAG_LEAVE_CONFIRM = "leave_confirm"
 
 /**
  * "Discard this PDF?" dialog (SPEC §5): `discard_title` (`titleLarge`), `discard_body`, a `keep`

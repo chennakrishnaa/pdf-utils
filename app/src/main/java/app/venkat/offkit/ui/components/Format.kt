@@ -65,3 +65,9 @@ fun formatBytes(bytes: Long): String {
         else -> String.format(Locale.ROOT, "%.1f MB", b / (1024.0 * 1024.0))
     }
 }
+
+/** Saving in whole percent, rounded down but at least 1 when the file did get smaller; 0 otherwise. */
+fun savingPercent(originalBytes: Long, newBytes: Long): Int {
+    if (originalBytes <= 0 || newBytes >= originalBytes) return 0
+    return ((originalBytes - newBytes) * 100 / originalBytes).toInt().coerceIn(1, 100)
+}

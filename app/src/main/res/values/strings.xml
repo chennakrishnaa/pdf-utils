@@ -2,26 +2,14 @@
 <resources>
 
     <!-- Home -->
-    <string name="home_footer">Everything happens on this device. Offkit uploads nothing.</string>
     <string name="tool_images_to_pdf_title">Images to PDF</string>
-    <string name="tool_images_to_pdf_desc">Turn photos and pictures into a single PDF.</string>
     <string name="tool_add_images_title">Add images to PDF</string>
-    <string name="tool_add_images_desc">Append pictures as new pages at the end of a PDF.</string>
 
     <!-- Shared components -->
     <string name="action_back">Back</string>
-    <string name="file_list_move_up">Move up</string>
-    <string name="file_list_move_down">Move down</string>
-    <string name="file_list_remove">Remove</string>
-    <string name="file_list_number">%1$d.</string>
     <string name="job_progress">%1$d of %2$d</string>
     <string name="job_working">Working…</string>
-    <string name="job_cancel">Cancel</string>
-    <string name="job_save">Save as…</string>
-    <string name="job_discard">Discard</string>
-    <string name="job_start_over">Start over</string>
     <string name="job_try_again">Try again</string>
-    <string name="job_saved_title">Saved</string>
     <string name="job_percent">%1$d%%</string>
     <string name="job_failed_title">Something went wrong</string>
 
@@ -49,4 +37,6 @@
     <string name="about_no_browser">No app on this device can open web links.</string>
     <!-- TODO(owner): replace with the real public source URL before distribution -->
     <string name="source_code_url" translatable="false">https://github.com/chennakrishnaa/pdf-utils</string>
+    <!-- Joins the parts of a spoken content description (e.g. name and size). -->
+    <string name="cd_list_separator">", "</string>
 </resources>

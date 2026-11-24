@@ -2,7 +2,16 @@ package app.venkat.offkit.ui.components
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -18,6 +27,9 @@ import app.venkat.offkit.core.ShareRequest
 import app.venkat.offkit.ui.theme.OffkitTool
 import kotlinx.coroutines.launch
 
+/** Test tag of the snackbar overlay [OffkitJobFlow] shows outside the Result screen. */
+const val TAG_JOB_SNACKBAR_OVERLAY = "job_snackbar_overlay"
+
 /** Which screen [OffkitJobFlow] shows for a state. */
 internal enum class JobFlowScreen { Options, Processing, Result, NoGain, Error }
 
@@ -26,7 +38,7 @@ internal fun jobFlowScreen(state: JobUiState, noGainAsError: Boolean): JobFlowSc
     JobUiState.Idle -> JobFlowScreen.Options
     is JobUiState.Running -> JobFlowScreen.Processing
     is JobUiState.Done -> {
-        val original = state.originalBytes
+        val original = state.knownOriginalBytes
         if (noGainAsError && original != null && state.bytes >= original) JobFlowScreen.NoGain else JobFlowScreen.Result
     }
     is JobUiState.Failed -> JobFlowScreen.Error
@@ -42,8 +54,7 @@ internal fun jobFlowScreen(state: JobUiState, noGainAsError: Boolean): JobFlowSc
  * - [JobUiState.Done]: [OffkitResultScreen]. Save launches the system "create document" dialog
  *   with `suggestedName` and passes the chosen Uri (or null on cancel) to [onSave]. Share calls
  *   [onShare]; each new [shareRequest] launches the share sheet and is reported through
- *   [onShareHandled]. A non-null [saveError] is shown as a snackbar, then [onSaveErrorShown] is
- *   called; the result stays. Close, Discard/Done (tag [TAG_JOB_RESET]) and system back leave
+ *   [onShareHandled]. The result stays after a save error. Close, Discard/Done (tag [TAG_JOB_RESET]) and system back leave
  *   the tool ([onReset] then [onLeave]); while the result is neither saved nor shared they first
  *   show [OffkitDiscardDialog] (Keep stays, Discard leaves). While saving, leaving is ignored.
  * - With [noGainAsError], a `Done` whose `bytes >= originalBytes` shows the no-gain card instead
@@ -52,6 +63,11 @@ internal fun jobFlowScreen(state: JobUiState, noGainAsError: Boolean): JobFlowSc
  * - [JobUiState.Failed]: [OffkitErrorScreen] with [pdfErrorTitle] / [pdfErrorBody], [inputName]
  *   and [inputBytes]; the primary [errorActionLabel] (tag [TAG_JOB_RESET]), Back and system
  *   back call [onReset] (back to the options with the inputs kept).
+ *
+ * A non-null [saveError] is shown as a snackbar in every state, then [onSaveErrorShown] is called:
+ * on the Result screen inside its scaffold above the bottom bar, on the other screens (e.g. an
+ * error that arrives after the result became unavailable) in an overlay above the navigation bar
+ * and a one-button bottom bar.
  */
 @Composable
 fun OffkitJobFlow(
@@ -101,52 +117,66 @@ fun OffkitJobFlow(
         }
     }
 
-    when (screen) {
-        JobFlowScreen.Options -> options()
-        JobFlowScreen.Processing -> {
-            val running = state as JobUiState.Running
-            BackHandler(onBack = onCancel)
-            OffkitProcessingScreen(tool, title, running.done, running.total, inputName, onCancel)
+    Box(Modifier.fillMaxSize()) {
+        when (screen) {
+            JobFlowScreen.Options -> options()
+            JobFlowScreen.Processing -> {
+                val running = state as JobUiState.Running
+                BackHandler(onBack = onCancel)
+                OffkitProcessingScreen(tool, title, running.done, running.total, inputName, onCancel)
+            }
+            JobFlowScreen.Result -> {
+                val done = state as JobUiState.Done
+                BackHandler(onBack = requestLeave)
+                OffkitResultScreen(
+                    title = title,
+                    state = done,
+                    onClose = requestLeave,
+                    onSave = { if (!done.saving) launchSaver(done.suggestedName) },
+                    onShare = onShare,
+                    onFinish = requestLeave,
+                    onOpen = { uri -> openSavedPdf(context, uri) },
+                    snackbarHostState = snackbar,
+                )
+                if (askDiscard) OffkitDiscardDialog(onKeep = { askDiscard = false }, onDiscard = leave)
+            }
+            JobFlowScreen.NoGain -> {
+                BackHandler(onBack = onReset)
+                OffkitErrorScreen(
+                    title = title,
+                    icon = AppIcons.warning,
+                    errorTitle = stringResource(R.string.error_no_gain_title),
+                    errorBody = stringResource(R.string.error_no_gain_body),
+                    fileName = inputName,
+                    fileBytes = inputBytes,
+                    actionLabel = stringResource(R.string.action_choose_another),
+                    onAction = onReset,
+                    onBack = onReset,
+                )
+            }
+            JobFlowScreen.Error -> {
+                BackHandler(onBack = onReset)
+                OffkitJobErrorScreen(
+                    title = title,
+                    error = (state as JobUiState.Failed).error,
+                    fileName = inputName,
+                    fileBytes = inputBytes,
+                    actionLabel = errorActionLabel,
+                    onAction = onReset,
+                    onBack = onReset,
+                )
+            }
         }
-        JobFlowScreen.Result -> {
-            val done = state as JobUiState.Done
-            BackHandler(onBack = requestLeave)
-            OffkitResultScreen(
-                title = title,
-                state = done,
-                onClose = requestLeave,
-                onSave = { if (!done.saving) launchSaver(done.suggestedName) },
-                onShare = onShare,
-                onFinish = requestLeave,
-                onOpen = { uri -> openSavedPdf(context, uri) },
-                snackbarHostState = snackbar,
-            )
-            if (askDiscard) OffkitDiscardDialog(onKeep = { askDiscard = false }, onDiscard = leave)
-        }
-        JobFlowScreen.NoGain -> {
-            BackHandler(onBack = onReset)
-            OffkitErrorScreen(
-                title = title,
-                icon = AppIcons.warning,
-                errorTitle = stringResource(R.string.error_no_gain_title),
-                errorBody = stringResource(R.string.error_no_gain_body),
-                fileName = inputName,
-                fileBytes = inputBytes,
-                actionLabel = stringResource(R.string.action_choose_another),
-                onAction = onReset,
-                onBack = onReset,
-            )
-        }
-        JobFlowScreen.Error -> {
-            BackHandler(onBack = onReset)
-            OffkitJobErrorScreen(
-                title = title,
-                error = (state as JobUiState.Failed).error,
-                fileName = inputName,
-                fileBytes = inputBytes,
-                actionLabel = errorActionLabel,
-                onAction = onReset,
-                onBack = onReset,
+        if (screen != JobFlowScreen.Result) {
+            // The Result screen hosts the snackbar in its scaffold; every other screen gets this overlay.
+            SnackbarHost(
+                snackbar,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(bottom = OffkitBottomBarHeight)
+                    .testTag(TAG_JOB_SNACKBAR_OVERLAY),
             )
         }
     }
