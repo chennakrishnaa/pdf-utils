@@ -202,10 +202,10 @@ class ImageNormalizeProtocolTest {
         val engine = RemoteEngine(conn)
         assertEquals(PreparedImage.Ok(File(dir, "img_000.png")), engine.prepareImage(raw(dir, 0, pngMagic), dir, 0))
         assertEquals(2, conn.connects)
-        // A dead engine on both attempts is EngineCrashed, not a loop.
+        // A dead engine on both attempts is EngineUnavailable (never ran), not a loop.
         val alwaysDead = Connector { dead }
         assertEquals(
-            PreparedImage.Err(PdfError.EngineCrashed),
+            PreparedImage.Err(PdfError.EngineUnavailable),
             RemoteEngine(alwaysDead).prepareImage(raw(dir, 1, pngMagic), dir, 1),
         )
         assertEquals(2, alwaysDead.connects)

@@ -162,10 +162,17 @@ sealed interface PdfError {
     data object NotImplemented : PdfError
 
     /**
-     * The separate engine process died (native crash, out of memory, killed by the system) or
-     * could not be started while it was working on this call; any partial output was deleted.
+     * The separate engine process died (native crash, out of memory, killed by the system) while
+     * it was running this call with the app in the foreground; any partial output was deleted.
      */
     data object EngineCrashed : PdfError
+
+    /**
+     * The engine process could not be reached (binding failed or timed out), or it disappeared
+     * while the app was frozen or in the background, so the failure says nothing about the file;
+     * any partial output was deleted. Trying again usually works.
+     */
+    data object EngineUnavailable : PdfError
 
     /**
      * The engine process stopped making progress, or the operation ran past its total time limit,

@@ -40,6 +40,7 @@ class EngineWireTest {
         PdfError.Cancelled,
         PdfError.NotImplemented,
         PdfError.EngineCrashed,
+        PdfError.EngineUnavailable,
         PdfError.TimedOut,
     )
 
