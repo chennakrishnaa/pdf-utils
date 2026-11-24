@@ -38,7 +38,7 @@ import app.venkat.offkit.ui.theme.OffkitDimens
 import app.venkat.offkit.ui.theme.OffkitTheme
 import app.venkat.offkit.ui.theme.OffkitTool
 
-/** Test tag of the options screen's content column. */
+/** Test tag of the options screen (its scaffold root). */
 const val TAG_MERGE_ROOT = "merge_root"
 
 /** Test tag of the "Add PDFs" button. */
@@ -68,8 +68,15 @@ fun MergeScreen(onBack: () -> Unit) {
     // Screen state: the selected row, by index. Cleared on add and remove; follows a moved row.
     var selected by rememberSaveable { mutableStateOf<Int?>(null) }
     val picker = rememberPdfPicker(multiple = true) { uris ->
-        selected = null
+        if (uris.isNotEmpty()) selected = null
         vm.add(uris)
+    }
+    // Moves the row at [index] and keeps the same file selected, wherever it ends up (the
+    // ViewModel may ignore the move).
+    val moveSelected = { index: Int, move: (Int) -> Unit ->
+        val key = vm.items.value.getOrNull(index)?.key
+        move(index)
+        selected = vm.items.value.indexOfFirst { it.key == key }.takeIf { it >= 0 }
     }
 
     OffkitJobFlow(
@@ -99,14 +106,8 @@ fun MergeScreen(onBack: () -> Unit) {
             },
             selectedIndex = selected?.takeIf { it in items.indices },
             onSelect = { selected = it },
-            onMoveUp = { index ->
-                vm.moveUp(index)
-                selected = index - 1
-            },
-            onMoveDown = { index ->
-                vm.moveDown(index)
-                selected = index + 1
-            },
+            onMoveUp = { index -> moveSelected(index, vm::moveUp) },
+            onMoveDown = { index -> moveSelected(index, vm::moveDown) },
             onRemove = { index ->
                 vm.remove(index)
                 selected = null

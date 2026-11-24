@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -309,6 +310,9 @@ class MergeScreenTest {
         select(1)
         click(fileRowRemoveTag(1)) // B D C
         assertEquals(listOf("b.pdf", "d.pdf", "c.pdf"), names())
+        listOf("b.pdf", "d.pdf", "c.pdf").forEachIndexed { i, name ->
+            rule.onNodeWithTag(fileRowTag(i)).performScrollTo().assertTextContains(name)
+        }
 
         tap(TAG_JOB_RUN)
         CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
