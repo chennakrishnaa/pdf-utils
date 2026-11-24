@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -242,6 +244,7 @@ private fun ToolbarTextButton(icon: Painter, label: String, enabled: Boolean, ta
  * Column, so it can sit in [OffkitScaffold]'s scrolling content.
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun OffkitSelectableFileList(
     rows: List<FileRow>,
     selectedIndex: Int?,
@@ -299,7 +302,10 @@ fun OffkitSelectableFileList(
                         )
                     }
                     if (isSelected) {
-                        DarkToolbar(Modifier.padding(top = 4.dp)) {
+                        FlowRow(
+                            modifier = Modifier.padding(top = 4.dp).fillMaxWidth().clip(ToolbarShape).background(colors.onSurface).padding(4.dp),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
                             ToolbarTextButton(AppIcons.moveUp, stringResource(R.string.move_up), index > 0, fileRowUpTag(index)) { onMoveUp(index) }
                             ToolbarTextButton(AppIcons.moveDown, stringResource(R.string.move_down), index < last, fileRowDownTag(index)) { onMoveDown(index) }
                             ToolbarTextButton(AppIcons.delete, stringResource(R.string.remove), true, fileRowRemoveTag(index)) { onRemove(index) }
