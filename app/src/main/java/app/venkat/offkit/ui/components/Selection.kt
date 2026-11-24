@@ -55,10 +55,12 @@ data class OffkitOption(
 
 /**
  * Section header (SPEC §0): [text] in `titleSmall`, inset 8dp from the content column, 24dp
- * above and 8dp below, marked as a heading. With [actionLabel] and [onAction], a trailing
- * [OffkitTextButton] (optional leading [actionIcon], e.g. `ic_add`; tag [actionTestTag]) sits on
- * the right; the header then has 12dp above it and none below, so the 48dp button is centred on
- * the title line. Example: "Images · 3" + "Add".
+ * above ([OffkitDimens.sectionGap]) and 8dp below, marked as a heading. Pass [first] = true for the
+ * first header of a screen: it then has nothing above it (the scaffold's own top padding is the
+ * gap under the app bar). With [actionLabel] and [onAction], a trailing [OffkitTextButton]
+ * (optional leading [actionIcon], e.g. `ic_add`; tag [actionTestTag]) sits on the right, centred
+ * on the title line; the header keeps the same space above and has none below (the 48dp button
+ * already pads it). Example: "Images · 3" + "Add".
  */
 @Composable
 fun OffkitSectionHeader(
@@ -68,12 +70,13 @@ fun OffkitSectionHeader(
     onAction: (() -> Unit)? = null,
     actionIcon: Painter? = null,
     actionTestTag: String? = null,
+    first: Boolean = false,
 ) {
     val hasAction = actionLabel != null && onAction != null
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = 8.dp, top = if (hasAction) 12.dp else OffkitDimens.sectionGap, bottom = if (hasAction) 0.dp else 8.dp),
+            .padding(start = 8.dp, top = if (first) 0.dp else OffkitDimens.sectionGap, bottom = if (hasAction) 0.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(

@@ -171,7 +171,7 @@ private fun AddImagesOptions(
             )
         },
     ) {
-        OffkitSectionHeader(stringResource(R.string.section_pdf))
+        OffkitSectionHeader(stringResource(R.string.section_pdf), first = true)
         if (pdf == null) {
             OffkitFileSlot(
                 title = stringResource(R.string.choose_pdf),
@@ -192,8 +192,6 @@ private fun AddImagesOptions(
 
         OffkitSectionHeader(
             text = stringResource(R.string.addimages_section_count, count),
-            // The header gives itself 12dp above when it has an action; the design has 24dp here.
-            modifier = Modifier.padding(top = OffkitDimens.sectionGap - 12.dp),
             actionLabel = stringResource(R.string.add),
             onAction = onAddImages,
             actionIcon = AppIcons.add,

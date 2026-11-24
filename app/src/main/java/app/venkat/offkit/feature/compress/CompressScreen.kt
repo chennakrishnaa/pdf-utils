@@ -132,7 +132,7 @@ private fun CompressOptions(
             )
         },
     ) {
-        OffkitSectionHeader(stringResource(R.string.section_pdf))
+        OffkitSectionHeader(stringResource(R.string.section_pdf), first = true)
         if (file == null) {
             OffkitFileSlot(
                 title = stringResource(R.string.choose_pdf),
