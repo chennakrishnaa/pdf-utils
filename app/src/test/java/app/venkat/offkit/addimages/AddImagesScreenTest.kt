@@ -82,8 +82,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
-// The design frame (412 x 915 dp): the default Robolectric screen is too short for the processing
-// screen with a file name and for the tile row under the empty PDF slot.
+// The design frame (412 x 915 dp). On the default, shorter Robolectric screen the tile row under the
+// empty PDF slot stays partly behind the bottom bar after performScrollTo(), so taps miss the tiles.
 @Config(sdk = [36], qualifiers = "w412dp-h915dp")
 class AddImagesScreenTest {
     @get:Rule(order = Int.MIN_VALUE)
