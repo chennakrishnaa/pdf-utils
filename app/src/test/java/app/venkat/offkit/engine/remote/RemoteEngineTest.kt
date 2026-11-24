@@ -523,6 +523,30 @@ class RemoteEngineTest {
     }
 
     @Test
+    fun disconnectUnlinksTheDeathRecipient() {
+        val linked: MutableList<android.os.IBinder.DeathRecipient> = CopyOnWriteArrayList()
+        val unlinked: MutableList<android.os.IBinder.DeathRecipient> = CopyOnWriteArrayList()
+        val service = object : IEngineService.Stub() {
+            override fun pid() = 4242
+            override fun run(requestId: Long, request: Bundle?, callback: IEngineCallback?) {}
+            override fun cancel(requestId: Long) {}
+            override fun linkToDeath(recipient: android.os.IBinder.DeathRecipient, flags: Int) { linked += recipient }
+            override fun unlinkToDeath(recipient: android.os.IBinder.DeathRecipient, flags: Int): Boolean {
+                unlinked += recipient
+                return true
+            }
+        }
+        val name = ComponentName("app.venkat.offkit", EngineService::class.java.name)
+        val conn = BoundServiceConnector(bind = { c -> c.onServiceConnected(name, service); true }, unbind = {})
+        assertTrue(conn.connect {} != null)
+        assertEquals(1, linked.size)
+        conn.disconnect()
+        assertEquals(linked, unlinked)
+        conn.disconnect() // twice: no second unlink
+        assertEquals(1, unlinked.size)
+    }
+
+    @Test
     fun bindFailureReturnsEngineUnavailable() {
         val conn = BoundServiceConnector(bind = { false }, unbind = {}, timeoutMs = 200)
         assertEquals(PdfEstimate.Err(PdfError.EngineUnavailable), RemoteEngine(conn).estimateImage(File(root, "x")))

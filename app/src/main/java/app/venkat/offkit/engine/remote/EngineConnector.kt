@@ -45,6 +45,9 @@ class BoundServiceConnector(
     private val lock = Any()
     private var current: ServiceConnection? = null
 
+    /** Death link of [current]'s binder, removed in [disconnect] (FR-4). */
+    private var linked: Pair<IBinder, IBinder.DeathRecipient>? = null
+
     override fun connect(onLost: () -> Unit): IEngineService? {
         disconnect()
         val connected = CountDownLatch(1)
@@ -88,15 +91,33 @@ class BoundServiceConnector(
             disconnect()
             return null
         }
+        synchronized(lock) {
+            if (current === conn) linked = b to death else unlink(b to death)
+        }
         return IEngineService.Stub.asInterface(b)
     }
 
     override fun disconnect() {
-        val conn = synchronized(lock) { current.also { current = null } } ?: return
+        val (conn, link) = synchronized(lock) {
+            (current to linked).also {
+                current = null
+                linked = null
+            }
+        }
+        link?.let(::unlink)
+        if (conn == null) return
         try {
             unbind(conn)
         } catch (e: RuntimeException) {
             // Already unbound or the context is gone.
+        }
+    }
+
+    private fun unlink(link: Pair<IBinder, IBinder.DeathRecipient>) {
+        try {
+            link.first.unlinkToDeath(link.second, 0)
+        } catch (e: RuntimeException) {
+            // Already dead: nothing linked any more.
         }
     }
 
