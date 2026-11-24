@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown when the result could not be prepared for sharing. -->
+    <string name="result_share_failed">Could not prepare the file for sharing. Please try again.</string>
+</resources>

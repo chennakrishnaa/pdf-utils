@@ -1,6 +1,8 @@
 package app.venkat.offkit.ui.components
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.Intent
 import android.content.Context
 import android.net.Uri
 import android.widget.Toast
@@ -8,11 +10,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.platform.LocalContext
 import app.venkat.offkit.R
+import app.venkat.offkit.core.ShareRequest
 
 /** MIME type of PDF documents. */
 const val MIME_PDF = "application/pdf"
@@ -35,6 +39,36 @@ internal fun launchOrExplain(context: Context, launch: () -> Unit): Boolean = tr
 } catch (_: ActivityNotFoundException) {
     Toast.makeText(context, R.string.core_no_picker, Toast.LENGTH_SHORT).show()
     false
+}
+
+/**
+ * A chooser for `ACTION_SEND` of one PDF: type `application/pdf`, [uri] as `EXTRA_STREAM` and as
+ * `ClipData` (labelled [name]), with `FLAG_GRANT_READ_URI_PERMISSION` so only the chosen app gets
+ * temporary read access.
+ */
+fun sharePdfIntent(uri: Uri, name: String): Intent {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = MIME_PDF
+        putExtra(Intent.EXTRA_STREAM, uri)
+        clipData = ClipData(name, arrayOf(MIME_PDF), ClipData.Item(uri))
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return Intent.createChooser(send, null).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+}
+
+/**
+ * Launches the share sheet for each new [request] (guarded by [launchOrExplain]) and reports
+ * whether it launched through [onHandled] (e.g. `JobViewModel.onShareHandled`).
+ */
+@Composable
+fun ShareRequestEffect(request: ShareRequest?, onHandled: (launched: Boolean) -> Unit) {
+    val context = LocalContext.current
+    val callback by rememberUpdatedState(onHandled)
+    LaunchedEffect(request) {
+        if (request != null) {
+            callback(launchOrExplain(context) { context.startActivity(sharePdfIntent(request.uri, request.name)) })
+        }
+    }
 }
 
 /**

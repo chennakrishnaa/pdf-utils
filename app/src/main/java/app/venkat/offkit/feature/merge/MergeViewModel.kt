@@ -9,7 +9,7 @@ import app.venkat.offkit.core.JobViewModel
 import app.venkat.offkit.core.PickedFile
 import app.venkat.offkit.core.UriIo
 import app.venkat.offkit.ui.components.JobUiState
-import app.venkat.offkit.ui.components.formatBytes
+import app.venkat.offkit.ui.components.isSaving
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,7 +34,7 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
     override val toolId: String = TOOL_ID
 
     /** True while the list must not change: a job is running or its result is being saved. */
-    private val locked: Boolean get() = isRunning || jobState.value is JobUiState.Saving
+    private val locked: Boolean get() = isRunning || jobState.value.isSaving
 
     /**
      * Appends [uris] (in picker order) after describing them off the main thread. Discards any
@@ -66,10 +66,8 @@ class MergeViewModel(app: Application) : JobViewModel(app) {
     fun merge() {
         val list = _items.value
         if (list.size < MIN_INPUTS) return
-        val res = getApplication<Application>().resources
         startJob(
             inputs = list.map { JobInput.Pdf(it.file.uri) },
-            summarize = { ok -> res.getQuantityString(R.plurals.merge_summary, ok.pages, ok.pages, formatBytes(ok.bytes)) },
         ) { engine, files, out, job -> engine.merge(files, out, job) }
     }
 

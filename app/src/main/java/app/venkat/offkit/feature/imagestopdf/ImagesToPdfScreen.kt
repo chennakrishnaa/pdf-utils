@@ -24,6 +24,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
+import androidx.compose.ui.res.pluralStringResource
+import app.venkat.offkit.ui.components.isSaving
+import app.venkat.offkit.ui.components.ShareRequestEffect
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.ui.components.AppIcons
@@ -79,7 +82,9 @@ fun ImagesToPdfScreen(onBack: () -> Unit) {
     val estimates by vm.estimates.collectAsState()
     val state by vm.jobState.collectAsState()
     val saveError by vm.saveError.collectAsState()
-    val editable = state !is JobUiState.Running && state !is JobUiState.Saving
+    val shareRequest by vm.shareRequest.collectAsState()
+    ShareRequestEffect(shareRequest, vm::onShareHandled)
+    val editable = state !is JobUiState.Running && !state.isSaving
 
     val pickImages = rememberImagePicker { uris -> vm.add(uris) }
     val saver = rememberPdfSaver { uri -> vm.save(uri) }
@@ -175,6 +180,8 @@ fun ImagesToPdfScreen(onBack: () -> Unit) {
                     saver(vm.suggestedFileName())
                 },
                 onReset = vm::reset,
+                onShare = vm::share,
+                summary = { imagesToPdfSummary(it) },
                 runIcon = AppIcons.pdf,
                 modifier = Modifier.padding(top = 8.dp),
             )
@@ -223,3 +230,11 @@ private fun sizeLabel(size: PageSize): Int = when (size) {
     PageSize.A4 -> R.string.imagestopdf_size_a4
     PageSize.LETTER -> R.string.imagestopdf_size_letter
 }
+
+/** Result summary: "N pages · size". */
+@Composable
+private fun imagesToPdfSummary(done: JobUiState.Done): String = stringResource(
+    R.string.imagestopdf_summary,
+    pluralStringResource(R.plurals.imagestopdf_pages, done.pages, done.pages),
+    formatBytes(done.bytes),
+)
