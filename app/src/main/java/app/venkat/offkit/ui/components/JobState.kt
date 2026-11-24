@@ -18,7 +18,7 @@ sealed interface JobUiState {
      * @property pages page count of the output.
      * @property bytes output size in bytes.
      * @property originalBytes size of the input the output replaces, when the tool knows it
-     *   (Compress); null otherwise.
+     *   (Compress); null otherwise. 0 or less is treated as unknown.
      * @property suggestedName file name pre-filled in the save dialog and used for sharing.
      * @property saving true while the output is being copied to a chosen location. Nothing can be
      *   started, reset, invalidated, shared or cancelled meanwhile.
@@ -40,6 +40,9 @@ sealed interface JobUiState {
     /** Job failed with [error]; map it to text with [pdfErrorMessage]. */
     data class Failed(val error: PdfError) : JobUiState
 }
+
+/** [JobUiState.Done.originalBytes] when it is known and positive; 0 or less counts as unknown. */
+internal val JobUiState.Done.knownOriginalBytes: Long? get() = originalBytes?.takeIf { it > 0 }
 
 /** True while a result is being saved (`Done` with `saving`). */
 val JobUiState.isSaving: Boolean get() = this is JobUiState.Done && saving

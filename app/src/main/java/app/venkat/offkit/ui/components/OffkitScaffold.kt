@@ -165,6 +165,9 @@ private fun OffkitTopBar(title: String, navIcon: OffkitNavIcon, onNavigate: () -
     }
 }
 
+/** Height of an [OffkitBottomBar] holding one button, without the navigation-bar inset. */
+internal val OffkitBottomBarHeight = 1.dp + OffkitDimens.bottomBarPaddingTop * 2 + OffkitDimens.buttonHeight
+
 /** The fixed bottom action bar of [OffkitScaffold]. */
 @Composable
 private fun OffkitBottomBar(content: @Composable () -> Unit) {

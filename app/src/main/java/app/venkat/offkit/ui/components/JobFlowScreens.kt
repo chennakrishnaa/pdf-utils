@@ -259,7 +259,7 @@ fun OffkitResultScreen(
                 Icon(AppIcons.check, contentDescription = null, tint = onSuccess, modifier = Modifier.size(32.dp))
             }
             Column(Modifier.weight(1f)) {
-                val original = state.originalBytes
+                val original = state.knownOriginalBytes
                 val smaller = original != null && state.bytes < original
                 val headline = if (smaller) {
                     stringResource(R.string.result_smaller, CompressViewModel.savingPercent(original, state.bytes))
