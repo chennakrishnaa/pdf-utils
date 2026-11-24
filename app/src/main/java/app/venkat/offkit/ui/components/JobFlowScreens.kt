@@ -325,6 +325,12 @@ fun OffkitResultScreen(
 /** Test tag of the Open button in the saved row of [OffkitResultScreen]. */
 const val TAG_JOB_OPEN = "job_open"
 
+/** Test tag of the Keep button of [OffkitDiscardDialog]. */
+const val TAG_LEAVE_STAY = "leave_stay"
+
+/** Test tag of the Discard button of [OffkitDiscardDialog]. */
+const val TAG_LEAVE_CONFIRM = "leave_confirm"
+
 /**
  * "Discard this PDF?" dialog (SPEC §5): `discard_title` (`titleLarge`), `discard_body`, a `keep`
  * button (tag [TAG_LEAVE_STAY], `onSurface`) calling [onKeep] and an `action_discard` button

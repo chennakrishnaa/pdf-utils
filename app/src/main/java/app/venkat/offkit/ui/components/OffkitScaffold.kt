@@ -50,6 +50,9 @@ import app.venkat.offkit.R
 import app.venkat.offkit.ui.theme.OffkitDimens
 import app.venkat.offkit.ui.theme.OffkitTheme
 
+/** Test tag of the Back navigation icon of [OffkitScaffold]. */
+const val TAG_ACTION_BACK = "action_back"
+
 /** Test tag of the Close navigation icon of [OffkitScaffold]. (Back uses [TAG_ACTION_BACK].) */
 const val TAG_ACTION_CLOSE = "action_close"
 
@@ -71,7 +74,7 @@ internal fun Modifier.mirrorInRtl(): Modifier =
     if (LocalLayoutDirection.current == LayoutDirection.Rtl) this.scale(scaleX = -1f, scaleY = 1f) else this
 
 /**
- * Screen frame of the redesign (SPEC §0 "Screen skeleton"), a replacement for [ToolScaffold].
+ * Screen frame of the redesign (SPEC §0 "Screen skeleton").
  *
  * Renders, top to bottom, on the `background` colour:
  * - a top app bar: a row of at least 64dp, padded by the status-bar insets, with a 48dp navigation
