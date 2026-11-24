@@ -376,7 +376,7 @@ private fun RecentSection(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().heightIn(min = OffkitDimens.touchTarget).padding(start = OffkitDimens.itemGap),
+            modifier = Modifier.fillMaxWidth().padding(start = OffkitDimens.itemGap),
         ) {
             Icon(
                 painterResource(R.drawable.ic_history),
