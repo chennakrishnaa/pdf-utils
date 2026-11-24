@@ -407,13 +407,61 @@ class PdfJobs @VisibleForTesting internal constructor(
         /** Authority of the app's non-exported share `FileProvider` (see the manifest). */
         fun shareAuthority(context: Context): String = context.packageName + ".share"
 
+        /** Longest shared-copy file name, in UTF-8 bytes, extension included (file systems allow 255). */
+        @VisibleForTesting
+        internal const val MAX_SHARE_NAME_BYTES = 200
+
         /**
-         * File name for a shared copy: [suggestedName] through [sanitizeDisplayName] (no path
-         * separators), with a `.pdf` extension added if missing.
+         * File name for a shared copy, always one path segment: [suggestedName] through
+         * [sanitizeDisplayName] (no path separators), with a `.pdf` extension added if missing,
+         * then cut to at most [MAX_SHARE_NAME_BYTES] UTF-8 bytes. The cut keeps the extension,
+         * falls on a code-point boundary and also drops a base character whose combining marks
+         * would be cut off. [DEFAULT_SHARE_NAME] if nothing usable is left.
          */
         fun shareFileName(suggestedName: String): String {
             val clean = sanitizeDisplayName(suggestedName, DEFAULT_SHARE_NAME)
-            return if (clean.endsWith(PDF_EXTENSION, ignoreCase = true)) clean else clean + PDF_EXTENSION
+            val hasExt = clean.endsWith(PDF_EXTENSION, ignoreCase = true)
+            val ext = if (hasExt) clean.takeLast(PDF_EXTENSION.length) else PDF_EXTENSION
+            val base = cutToUtf8Bytes(
+                if (hasExt) clean.dropLast(PDF_EXTENSION.length) else clean,
+                MAX_SHARE_NAME_BYTES - ext.toByteArray(Charsets.UTF_8).size,
+            ).trimEnd()
+            val name = base + ext
+            val usable = base.any { !it.isWhitespace() && it != '.' } &&
+                name.none { it == '/' || it == '\\' || it == '\u0000' }
+            return if (usable) name else DEFAULT_SHARE_NAME
+        }
+
+        /**
+         * The longest prefix of [s] that fits in [maxBytes] UTF-8 bytes, cut between code points;
+         * if the cut would separate a character from its combining marks, the character goes too.
+         */
+        private fun cutToUtf8Bytes(s: String, maxBytes: Int): String {
+            var bytes = 0
+            var end = 0
+            while (end < s.length) {
+                val cp = s.codePointAt(end)
+                val size = when {
+                    cp < 0x80 -> 1
+                    cp < 0x800 -> 2
+                    cp < 0x10000 -> 3
+                    else -> 4
+                }
+                if (bytes + size > maxBytes) break
+                bytes += size
+                end += Character.charCount(cp)
+            }
+            if (end == s.length) return s
+            // Back off while the next code point is a mark that belongs to the one before the cut.
+            while (end > 0 && isCombining(s.codePointAt(end))) {
+                end = s.offsetByCodePoints(end, -1)
+            }
+            return s.substring(0, end)
+        }
+
+        private fun isCombining(cp: Int): Boolean = when (Character.getType(cp).toByte()) {
+            Character.NON_SPACING_MARK, Character.ENCLOSING_MARK, Character.COMBINING_SPACING_MARK -> true
+            else -> false
         }
 
         /** The single thread on which every engine call in the process runs. */

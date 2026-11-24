@@ -558,4 +558,62 @@ class PdfJobsTest {
         runBlocking { jobs.wipeShared() }
         assertTrue(jobs.sharedRoot.listFiles().isNullOrEmpty())
     }
+
+    private fun utf8(s: String) = s.toByteArray(Charsets.UTF_8).size
+
+    private val cjk = "报"
+
+    @Test
+    fun shareFileNameCapsLongCjkNameInBytes() {
+        val name = PdfJobs.shareFileName(cjk.repeat(125))
+        assertTrue(utf8(name) <= PdfJobs.MAX_SHARE_NAME_BYTES)
+        assertEquals(cjk.repeat(65) + ".pdf", name)
+    }
+
+    @Test
+    fun shareFileNameCapsLongEmojiNameWithoutSplittingSurrogates() {
+        val name = PdfJobs.shareFileName("😀".repeat(100) + ".pdf")
+        assertEquals(PdfJobs.MAX_SHARE_NAME_BYTES, utf8(name))
+        assertEquals("😀".repeat(49) + ".pdf", name)
+        // Every surrogate is paired: 49 emoji plus ".pdf".
+        assertEquals(53, name.codePointCount(0, name.length))
+        assertTrue(name.codePoints().noneMatch { Character.getType(it) == Character.SURROGATE.toInt() })
+    }
+
+    @Test
+    fun shareFileNameAtExactlyTheLimitIsKeptAndOneByteMoreIsCut() {
+        val exact = "a" + cjk.repeat(65) + ".pdf"
+        assertEquals(PdfJobs.MAX_SHARE_NAME_BYTES, utf8(exact))
+        assertEquals(exact, PdfJobs.shareFileName(exact))
+        assertEquals("ab" + cjk.repeat(64) + ".pdf", PdfJobs.shareFileName("ab" + cjk.repeat(65) + ".pdf"))
+        // Upper-case extension is kept as is.
+        assertEquals("a" + cjk.repeat(65) + ".PDF", PdfJobs.shareFileName("a" + cjk.repeat(65) + ".PDF"))
+    }
+
+    @Test
+    fun shareFileNameDoesNotLeaveABaseWithoutItsCombiningMark() {
+        // 195 + 1 + 2 bytes: the mark does not fit, so its base letter is dropped too.
+        assertEquals(cjk.repeat(65) + ".pdf", PdfJobs.shareFileName(cjk.repeat(65) + "é.pdf"))
+    }
+
+    @Test
+    fun shareFileNameIsOneSafeSegment() {
+        assertEquals("document.pdf", PdfJobs.shareFileName(".."))
+        assertEquals("document.pdf", PdfJobs.shareFileName("."))
+        assertEquals("document.pdf", PdfJobs.shareFileName(".pdf"))
+        assertEquals("document.pdf", PdfJobs.shareFileName(""))
+        assertEquals("a_b_c.pdf", PdfJobs.shareFileName("a/b\\c"))
+        assertEquals("_.._x.pdf", PdfJobs.shareFileName("/../x"))
+    }
+
+    @Test
+    fun prepareShareWorksForLongCjkNameDirectlyUnderItsShareDirectory() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val request = runBlocking { jobs.prepareShare(output, cjk.repeat(125)) }
+        assertEquals(cjk.repeat(65) + ".pdf", request.name)
+        val copy = jobs.sharedRoot.walk().single { it.isFile }
+        assertEquals(request.name, copy.name)
+        assertEquals(jobs.sharedRoot.canonicalFile, copy.parentFile!!.parentFile!!.canonicalFile)
+        assertArrayEquals(fake.outputContent, copy.readBytes())
+    }
 }
