@@ -58,8 +58,17 @@ internal object ObjectGraph {
     private val GRAFT_KEYS = listOf("Contents", "Resources", "MediaBox", "CropBox", "BleedBox", "TrimBox", "ArtBox", "Rotate", "UserUnit")
 
     /** Reference and time budget of one walk; [spend] throws `PdfInputException(OutOfMemory)` once exceeded. */
-    class Budget(private val maxRefs: Int = MAX_REFERENCES, maxMillis: Long = MAX_WALK_MILLIS) {
-        private val deadline = System.nanoTime() + maxMillis * 1_000_000
+    class Budget(private val maxRefs: Int = MAX_REFERENCES, private val maxMillis: Long = MAX_WALK_MILLIS) {
+        private var deadline = System.nanoTime() + maxMillis * 1_000_000
+
+        /**
+         * Starts a new walk on this budget: the reference count carries on (one count for all inputs
+         * of a Merge, SR3-4), the time allowance restarts, so later inputs are not charged for the
+         * opening and pre-scan of earlier ones.
+         */
+        fun newWalk() {
+            deadline = System.nanoTime() + maxMillis * 1_000_000
+        }
         var spent = 0
             private set
 

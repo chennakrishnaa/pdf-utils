@@ -31,12 +31,15 @@ class MergeOp {
             return@toResult PdfResult.Err(PdfError.Io(IllegalArgumentException("merge needs at least one PDF")))
         }
 
+        // SR3-4: one reference budget for the whole job (the copies accumulate in one document).
+        val budget = ObjectGraph.Budget()
         val pageCounts = pdfs.map { file ->
             if (job.isCancelled()) return@toResult PdfResult.Err(PdfError.Cancelled)
             val doc = PdfInputs.open(file)
             try {
                 // SA-11 / SR2-3: bound what grafting this input's pages will touch.
-                PdfInputs.checkGraph { ObjectGraph.checkPages(doc) }
+                budget.newWalk()
+                PdfInputs.checkGraph { ObjectGraph.checkPages(doc, budget) }
                 doc.countPages()
             } finally {
                 doc.destroy()
@@ -71,7 +74,7 @@ class MergeOp {
             }
             if (job.isCancelled()) return@toResult PdfResult.Err(PdfError.Cancelled)
             val pages = dst.countPages()
-            dst.save(out.absolutePath, PdfInputs.SAVE_OPTIONS)
+            dst.save(out.absolutePath, saveOptions(dst.countObjects()))
             PdfInputs.validateOutput(out, pages, job)?.let { return@toResult it }
             PdfResult.Ok(pages = pages, bytes = out.length())
         } finally {
@@ -113,6 +116,19 @@ class MergeOp {
     }
 
     internal companion object {
+        /**
+         * Largest merged document saved with `garbage=deduplicate` (SR3-4). MuPDF's duplicate removal
+         * compares every object with every earlier one, in one uncancellable call: measured on the
+         * host, 2,000 distinct small streams 0.2 s, 5,000 1.2 s, 40,000 107 s. Above this the merged
+         * document is saved with `garbage=compact` (unused objects still removed, renumbered, 20,000
+         * streams in 0.5 s), so identical objects from different inputs are no longer shared.
+         */
+        const val MAX_DEDUP_OBJECTS = 5_000
+
+        /** Save options for Merge's new document of [objects] objects. */
+        fun saveOptions(objects: Int): String =
+            if (objects <= MAX_DEDUP_OBJECTS) PdfInputs.SAVE_OPTIONS else "garbage=compact,compress,objstms"
+
         /** Most external links copied per page (SR3-3); real pages have tens. */
         const val MAX_LINKS_PER_PAGE = 1_000
 
