@@ -226,11 +226,9 @@ class ImagesToPdfScreenTest {
         assertTrue(state() is JobUiState.Failed)
     }
 
-    private fun dest(sink: OutputStream): Uri {
-        val uri = Uri.parse("content://dest.test/${System.nanoTime()}/images.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(uri, sink)
-        return uri
-    }
+    /** A save destination whose provider reports "images.pdf" as its display name. */
+    private fun dest(sink: OutputStream): Uri =
+        CoreTestSupport.saveDestination(app, sink, displayName = "images.pdf")
 
     private fun saveTo(sink: OutputStream) {
         rule.runOnUiThread { vm.save(dest(sink)) }
@@ -669,8 +667,8 @@ class ImagesToPdfScreenTest {
         val sink = ByteArrayOutputStream()
         saveTo(sink)
         assertArrayEquals(content, sink.toByteArray())
-        val saved = state() as JobUiState.Done
-        rule.onNodeWithText(str(R.string.result_saved_as, saved.savedName ?: saved.suggestedName)).assertExists()
+        assertEquals("images.pdf", (state() as JobUiState.Done).savedName)
+        rule.onNodeWithText(str(R.string.result_saved_as, "images.pdf")).assertExists()
         rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_copy))
         rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
         rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pages(3))

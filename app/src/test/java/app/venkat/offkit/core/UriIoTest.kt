@@ -63,9 +63,9 @@ class UriIoTest {
     fun describeReadsNameAndSizeFromProvider() {
         Robolectric.setupContentProvider(NamedProvider::class.java, "named.test")
         val uri = Uri.parse("content://named.test/doc/42")
-        assertEquals(PickedFile(uri, "Holiday photo.jpg", 12345L), UriIo.describe(context, uri))
+        assertEquals(PickedFile(uri, "Holiday photo.jpg", 12345L, nameReported = true), UriIo.describe(context, uri))
         val noSize = Uri.parse("content://named.test/doc/nosize")
-        assertEquals(PickedFile(noSize, "Report.pdf", null), UriIo.describe(context, noSize))
+        assertEquals(PickedFile(noSize, "Report.pdf", null, nameReported = true), UriIo.describe(context, noSize))
     }
 
     @Test
@@ -74,15 +74,18 @@ class UriIoTest {
         val picked = UriIo.describe(context, uri)
         assertEquals("scan.pdf", picked.name)
         assertNull(picked.sizeBytes)
+        assertFalse("a name guessed from the Uri is not reported", picked.nameReported)
 
         val bare = Uri.parse("content://unknown.authority")
         assertEquals(UriIo.FALLBACK_NAME, UriIo.describe(context, bare).name)
+        assertFalse(UriIo.describe(context, bare).nameReported)
 
         // A file: Uri is never touched on disk: name from the Uri only, size unknown.
         val file = tmp.newFile("local.pdf").apply { writeBytes(ByteArray(7)) }
         val fromFile = UriIo.describe(context, Uri.fromFile(file))
         assertEquals("local.pdf", fromFile.name)
         assertNull(fromFile.sizeBytes)
+        assertTrue("a file: Uri's own name counts as reported", fromFile.nameReported)
     }
 
     @Test
@@ -98,6 +101,8 @@ class UriIoTest {
         // Only control characters: falls back to the (sanitised) last path segment.
         val blank = UriIo.describe(context, Uri.parse("content://hostile.test/doc/blank"))
         assertEquals("blank", blank.name)
+        assertFalse(blank.nameReported)
+        assertTrue(spoof.nameReported)
     }
 
     @Test

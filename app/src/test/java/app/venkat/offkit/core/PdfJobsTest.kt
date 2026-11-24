@@ -573,13 +573,22 @@ class PdfJobsTest {
         val third = runBlocking { jobs.prepareShare(output, "r.pdf") }
         assertFalse(third.uri == first.uri)
         assertArrayEquals(fake.outputContent, jobs.sharedRoot.walk().single { it.isFile }.readBytes())
+        assertEquals("stale directory removed", 1, jobs.sharedRoot.listFiles()!!.size)
 
-        // Copy truncated: recreated too.
-        jobs.sharedRoot.walk().single { it.isFile }.writeBytes(ByteArray(1))
+        // Copy truncated: recreated too, and the stale copy's directory is gone.
+        val truncated = jobs.sharedRoot.walk().single { it.isFile }.apply { writeBytes(ByteArray(1)) }
         val fourth = runBlocking { jobs.prepareShare(output, "r.pdf") }
         assertFalse(fourth.uri == third.uri)
-        assertTrue(jobs.sharedRoot.walk().filter { it.isFile }.any { it.readBytes().contentEquals(fake.outputContent) })
+        assertEquals(1, jobs.sharedRoot.listFiles()!!.size)
+        assertFalse(truncated.parentFile!!.exists())
+        assertArrayEquals(fake.outputContent, jobs.sharedRoot.walk().single { it.isFile }.readBytes())
         assertEquals(fourth, runBlocking { jobs.prepareShare(output, "r.pdf") })
+
+        // A different suggested name: recreated, old name's directory deleted.
+        val renamed = runBlocking { jobs.prepareShare(output, "s.pdf") }
+        assertEquals(1, jobs.sharedRoot.listFiles()!!.size)
+        assertEquals("s.pdf", jobs.sharedRoot.walk().single { it.isFile }.name)
+        assertFalse(renamed.uri == fourth.uri)
 
         // A different output gets its own copy.
         val other = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "b.pdf", ByteArray(3))))) as JobOutcome.Ready).output

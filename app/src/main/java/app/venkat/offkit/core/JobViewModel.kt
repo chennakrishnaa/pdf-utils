@@ -276,7 +276,8 @@ open class JobViewModel(
 
     /**
      * Records a successful save in [RecentFilesStore] and returns the display name the provider
-     * reports for [dest] (null if it cannot be read). Never throws: recording must not fail a save.
+     * reports for [dest]: null if it cannot be read or the provider reports none (no guessed name;
+     * the Recent entry still gets the fallback name). Never throws: recording must not fail a save.
      */
     private suspend fun recordRecent(dest: Uri, output: PendingOutput): String? {
         val app = getApplication<Application>()
@@ -295,7 +296,7 @@ open class JobViewModel(
         } catch (e: Exception) {
             // Ignore: the file is saved; it just will not appear in the recent list.
         }
-        return described.name
+        return described.name.takeIf { described.nameReported }
     }
 
     /** Clears [saveError] after the UI has shown it. */

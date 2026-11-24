@@ -96,6 +96,86 @@ class LicenceReflowTest {
         )
     }
 
+    private fun notices() = reflowLicenceText(asset("THIRD_PARTY_NOTICES.md").readText())
+
+    private fun List<LicenceBlock>.startingWith(prefix: String) = single { it.text.startsWith(prefix) }
+
+    @Test
+    fun headingsAloneOnALineStayOnTheirOwnLine() {
+        val blocks = notices()
+        // SIL Open Font License 1.1 (URW++ fonts, Manrope).
+        assertTrue(blocks.none { it.text.startsWith("PREAMBLE The goals") })
+        val preamble = blocks.filter { it.text.startsWith("PREAMBLE\nThe goals of the Open Font License (OFL) are to stimulate worldwide development") }
+        assertEquals(1, preamble.size)
+        preamble.forEach { assertEquals(it.text, 1, it.text.count { c -> c == '\n' }) }
+        assertTrue(blocks.none { it.text.startsWith("DEFINITIONS \"Font Software\"") })
+        blocks.startingWith("DEFINITIONS\n\"Font Software\" refers to the set of files released by the Copyright Holder(s)")
+        // MPL 1.1: a numbered heading on its own line.
+        val grant = blocks.startingWith("2.1. The Initial Developer Grant.")
+        assertTrue(grant.text, grant.text.startsWith("2.1. The Initial Developer Grant.\nThe Initial Developer hereby grants You a world-wide"))
+        assertTrue(blocks.startingWith("3.4. Intellectual Property Matters").text.startsWith("3.4. Intellectual Property Matters\n(a) Third Party Claims.\nIf Contributor"))
+    }
+
+    @Test
+    fun copyrightLinesKeepTheirOwnLines() {
+        val source = asset("THIRD_PARTY_NOTICES.md").readText()
+        val harfBuzz = source.lines().filter { it.startsWith("Copyright © ") }
+        assertEquals(17, harfBuzz.size)
+        assertTrue(LicenceBlock(harfBuzz.joinToString("\n")) in notices())
+        assertTrue(
+            LicenceBlock(
+                "Copyright 2016 by (URW)++ Design & Development.\n" +
+                    "Copyright 2018 The Manrope Project Authors (https://github.com/googlefonts/manrope)",
+            ) in notices(),
+        )
+        val agpl = reflowLicenceText(asset("LICENSE").readText())
+        assertTrue(
+            LicenceBlock(
+                "Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>\n" +
+                    "Everyone is permitted to copy and distribute verbatim copies of this license document, " +
+                    "but changing it is not allowed.",
+            ) in agpl,
+        )
+        // GPL 2: a copyright line ending in ',' continues on the next line.
+        assertTrue(
+            notices().startingWith("Copyright (C) 1989, 1991").text
+                .startsWith("Copyright (C) 1989, 1991 Free Software Foundation, Inc., <https://fsf.org/>\nEveryone is permitted"),
+        )
+    }
+
+    @Test
+    fun copyrightWordsInsideProseOrListItemsDoNotBreak() {
+        val blocks = notices()
+        // Apache 4(c): a list item labelled "(c)", not a copyright line.
+        val apache = blocks.startingWith("(c) You must retain, in the Source form of any Derivative Works")
+        assertTrue(apache.text, '\n' !in apache.text)
+        // OFL 3): "Copyright Holder" wrapped to the start of a line.
+        val ofl = blocks.first { it.text.startsWith("3) No Modified Version of the Font Software") }
+        assertTrue(ofl.text, ofl.text.contains("by the corresponding Copyright Holder. This restriction") && '\n' !in ofl.text)
+    }
+
+    @Test
+    fun commentBlockKeepsItsLines() {
+        val source = asset("THIRD_PARTY_NOTICES.md").readText().lines()
+        val start = source.indexOfFirst { it.startsWith(" * The copyright in this software is being made available") } - 1
+        val end = source.indexOfFirst { it == " */" }
+        val original = source.subList(start, end + 1).map { it.trimEnd() }
+        val block = notices().startingWith("/*")
+        assertEquals(original.joinToString("\n"), block.text)
+        // No "*" lands inside a sentence: each display line has at most its own leading "*".
+        block.text.lines().forEach { assertTrue(it, " * " !in it.trim().drop(1)) }
+    }
+
+    @Test
+    fun shortParagraphsAreJoinedByLongestLine() {
+        assertTrue(
+            LicenceBlock("The Corresponding Source for a work in source code form is that same work.") in
+                reflowLicenceText(asset("LICENSE").readText()),
+        )
+        assertTrue(LicenceBlock("Please replace <year> with the value from the FreeType version you actually use.") in notices())
+        assertTrue(LicenceBlock("TERMINATION\nThis license becomes null and void if any of the above conditions are not met.") in notices())
+    }
+
     @Test
     fun shortLinesKeepTheirBreaks() {
         val text = "MuPDF 1.28.5\nFreeType 2.14.3\nHarfBuzz 13.0.1"

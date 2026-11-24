@@ -363,7 +363,8 @@ class PdfJobs @VisibleForTesting internal constructor(
      *
      * One copy per output: if [output] was shared before under the same name and that copy
      * still exists with the output's length, the same [ShareRequest] is returned without copying
-     * again; otherwise a fresh copy is made and remembered in its place.
+     * again; otherwise the old copy's directory (if under `cacheDir/shared/`) is deleted and a
+     * fresh copy is made and remembered in its place.
      */
     suspend fun prepareShare(output: PendingOutput, suggestedName: String): ShareRequest = withContext(ioDispatcher) {
         val name = shareFileName(suggestedName)
@@ -372,6 +373,12 @@ class PdfJobs @VisibleForTesting internal constructor(
                 copy.file.length() == output.file.length()
             ) {
                 return@withContext copy.request
+            }
+            // Not reusable: drop the stale copy's directory (only one under shared/) before recreating.
+            output.sharedCopy = null
+            val staleDir = copy.file.parentFile
+            if (staleDir != null && staleDir.parentFile?.canonicalFile == sharedRoot.canonicalFile) {
+                withContext(NonCancellable) { staleDir.deleteRecursively() }
             }
         }
         val dir = File(sharedRoot, UUID.randomUUID().toString())

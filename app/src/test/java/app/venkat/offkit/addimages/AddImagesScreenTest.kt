@@ -71,7 +71,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -140,11 +139,9 @@ class AddImagesScreenTest {
         override fun write(b: ByteArray, off: Int, len: Int) = throw IOException("disk full")
     }
 
-    private fun dest(sink: OutputStream): Uri {
-        val uri = Uri.parse("content://dest.test/${System.nanoTime()}/out.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(uri, sink)
-        return uri
-    }
+    /** A save destination whose provider reports "report-with-images.pdf" as its display name. */
+    private fun dest(sink: OutputStream): Uri =
+        CoreTestSupport.saveDestination(app, sink, displayName = "report-with-images.pdf")
 
     private fun runToReady() {
         tap(TAG_JOB_RUN)
@@ -426,8 +423,8 @@ class AddImagesScreenTest {
         rule.waitForIdle()
 
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        val savedName = (state() as JobUiState.Done).let { it.savedName ?: it.suggestedName }
-        rule.onNodeWithText(str(R.string.result_saved_as, savedName)).assertIsDisplayed()
+        assertEquals("report-with-images.pdf", (state() as JobUiState.Done).savedName)
+        rule.onNodeWithText(str(R.string.result_saved_as, "report-with-images.pdf")).assertIsDisplayed()
         rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pagesText(5))
         rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
     }
