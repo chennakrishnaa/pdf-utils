@@ -48,6 +48,10 @@ class EngineOnDeviceTest {
     fun setUp() {
         assertTrue("application is ${context.applicationContext}", context.applicationContext is PdfUtilApp)
         dir = File(context.cacheDir, "ondevice-${System.nanoTime()}").apply { mkdirs() }
+        // Start every test from an empty jobs directory, whatever an earlier test (or class) left,
+        // so one failure cannot cascade into every later assertJobsEmpty().
+        jobs.wipeAll()
+        assertJobsEmpty()
     }
 
     @After
@@ -71,19 +75,37 @@ class EngineOnDeviceTest {
         jobs.run(inputs, { d, t -> progress += d to t }, block)
     }
 
-    /** Asserts Ready, saves the output to a cache file via a file Uri and returns it. */
+    /**
+     * Asserts Ready, saves the output to a cache file via a file Uri and returns it. A successful
+     * save keeps the pending output (so it can be saved again or shared); this asserts that, then
+     * discards it and asserts nothing is left under `cacheDir/jobs`.
+     */
     private fun saveReady(outcome: JobOutcome, expectedPages: Int): File {
         if (outcome !is JobOutcome.Ready) fail("expected Ready, got $outcome")
         val ready = outcome as JobOutcome.Ready
-        assertEquals("reported pages", expectedPages, ready.output.pages)
-        assertTrue("output exists in cache", ready.output.file.isFile)
-        assertEquals("reported bytes", ready.output.file.length(), ready.output.bytes)
         val dest = File(dir, "saved-${System.nanoTime()}.pdf")
-        val saved = runBlocking { jobs.save(ready.output, uri(dest)) }
-        assertTrue("save failed: ${saved.exceptionOrNull()}", saved.isSuccess)
-        assertTrue(dest.isFile)
-        assertEquals(ready.output.bytes, dest.length())
-        assertJobsEmpty()
+        try {
+            assertEquals("reported pages", expectedPages, ready.output.pages)
+            assertTrue("output exists in cache", ready.output.file.isFile)
+            assertEquals("reported bytes", ready.output.file.length(), ready.output.bytes)
+            val saved = runBlocking { jobs.save(ready.output, uri(dest)) }
+            assertTrue("save failed: ${saved.exceptionOrNull()}", saved.isSuccess)
+            assertTrue(dest.isFile)
+            assertEquals(ready.output.bytes, dest.length())
+            // Save keeps the output; the input copies are already gone, so only the output is left.
+            val jobDir = ready.output.file.parentFile!!
+            assertTrue("output kept after save", ready.output.file.isFile)
+            assertEquals("output unchanged by save", ready.output.bytes, ready.output.file.length())
+            assertEquals("only this job is in cacheDir/jobs", listOf(jobDir), jobsRoot.listFiles()?.toList().orEmpty())
+            assertEquals("only the output is left in the job dir", listOf(ready.output.file), jobDir.listFiles()?.toList().orEmpty())
+            jobs.discard(ready.output)
+            assertFalse("output deleted by discard", ready.output.file.exists())
+            assertJobsEmpty()
+        } finally {
+            // Already discarded on success (discard is idempotent); after a failed assertion this
+            // keeps the job directory from leaking into later tests and classes.
+            jobs.discard(ready.output)
+        }
         assertEquals("page count read back", expectedPages, Fixtures.pageCount(dest))
         return dest
     }
