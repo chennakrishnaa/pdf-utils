@@ -147,7 +147,18 @@ class RemoteEngine(
         }
     }
 
+    /**
+     * Sends [request] and waits for its reply. If the request could not even be handed to the
+     * engine (the binder was already dead, e.g. the engine was killed while idle and its death
+     * notification had not arrived yet), it was never started, so it is sent once more on a
+     * freshly bound engine.
+     */
     private fun call(request: EngineRequest, job: JobControl): Reply = synchronized(lock) {
+        attempt(request, job) ?: attempt(request, job) ?: Reply.Crashed
+    }
+
+    /** One send-and-wait; null if the request never reached the engine. Holds [lock]. */
+    private fun attempt(request: EngineRequest, job: JobControl): Reply? {
         val s = connected() ?: return Reply.Crashed
         val service = s.service!!
         val id = nextId++
@@ -155,7 +166,7 @@ class RemoteEngine(
         s.events = events
         if (s.lost) {
             drop(s)
-            return Reply.Crashed
+            return null
         }
         val callback = object : IEngineCallback.Stub() {
             override fun progress(requestId: Long, done: Int, total: Int) {
@@ -170,7 +181,7 @@ class RemoteEngine(
             service.run(id, EngineWire.encodeRequest(request), callback)
         } catch (e: RemoteException) {
             drop(s)
-            return Reply.Crashed
+            return null
         }
 
         var cancelDeadline = 0L

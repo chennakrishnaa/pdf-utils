@@ -187,6 +187,30 @@ class ImageNormalizeProtocolTest {
         assertEquals(2, conn.connects)
     }
 
+    /** An engine killed while idle: the stale binder throws on send; the request goes to a new engine. */
+    @Test
+    fun requestThatNeverReachedADeadEngineIsResentOnce() {
+        val dir = inDir()
+        val dead = object : IEngineService.Stub() {
+            override fun pid() = 1
+            override fun run(requestId: Long, request: Bundle?, callback: IEngineCallback?) =
+                throw android.os.DeadObjectException()
+            override fun cancel(requestId: Long) = Unit
+        }
+        var n = 0
+        val conn = Connector { if (n++ == 0) dead else EngineServer(noEngine, root, myPid = { 2 }) }
+        val engine = RemoteEngine(conn)
+        assertEquals(PreparedImage.Ok(File(dir, "img_000.png")), engine.prepareImage(raw(dir, 0, pngMagic), dir, 0))
+        assertEquals(2, conn.connects)
+        // A dead engine on both attempts is EngineCrashed, not a loop.
+        val alwaysDead = Connector { dead }
+        assertEquals(
+            PreparedImage.Err(PdfError.EngineCrashed),
+            RemoteEngine(alwaysDead).prepareImage(raw(dir, 1, pngMagic), dir, 1),
+        )
+        assertEquals(2, alwaysDead.connects)
+    }
+
     @Test
     fun fakeEngineNormalisesInProcessForRobolectricTests() {
         val dir = inDir()
