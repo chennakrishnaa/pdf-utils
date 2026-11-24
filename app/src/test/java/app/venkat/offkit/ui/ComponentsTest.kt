@@ -28,6 +28,10 @@ import app.venkat.offkit.ui.components.hasUnsavedWork
 import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.components.launchOrExplain
 import app.venkat.offkit.ui.components.rememberPdfPicker
+import app.venkat.offkit.ui.components.openSavedPdf
+import app.venkat.offkit.ui.components.ShareRequestEffect
+import app.venkat.offkit.core.ShareRequest
+import android.net.Uri
 import android.content.ActivityNotFoundException
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
@@ -129,5 +133,37 @@ class ComponentsTest {
         assertEquals(rule.activity.getString(R.string.core_no_picker), ShadowToast.getTextOfLatestToast())
         rule.onNodeWithTag("pick").assertIsDisplayed()
     }
-}
 
+    @Test
+    fun launchOrExplainShowsGivenMessage() {
+        rule.runOnUiThread {
+            assertFalse(launchOrExplain(rule.activity, R.string.core_no_pdf_viewer) { throw ActivityNotFoundException() })
+        }
+        assertEquals(rule.activity.getString(R.string.core_no_pdf_viewer), ShadowToast.getTextOfLatestToast())
+    }
+
+    @Test
+    fun openWithoutPdfViewerSaysSoNotFilePicker() {
+        shadowOf(rule.activity.application).checkActivities(true)
+        val uri = Uri.parse("content://app.venkat.offkit.test/doc.pdf")
+        var launched = true
+        rule.runOnUiThread { launched = openSavedPdf(rule.activity, uri) }
+        assertFalse(launched)
+        val msg = rule.activity.getString(R.string.core_no_pdf_viewer)
+        assertEquals("No app on this device can open PDFs.", msg)
+        assertEquals(msg, ShadowToast.getTextOfLatestToast())
+    }
+
+    @Test
+    fun shareWithoutTargetSaysSoNotFilePicker() {
+        shadowOf(rule.activity.application).checkActivities(true)
+        val request = ShareRequest(Uri.parse("content://app.venkat.offkit.test/doc.pdf"), "doc.pdf")
+        var handled: Boolean? = null
+        show { ShareRequestEffect(request) { handled = it } }
+        rule.waitForIdle()
+        assertEquals(false, handled)
+        val msg = rule.activity.getString(R.string.core_no_share_target)
+        assertEquals("No app on this device can share this file.", msg)
+        assertEquals(msg, ShadowToast.getTextOfLatestToast())
+    }
+}

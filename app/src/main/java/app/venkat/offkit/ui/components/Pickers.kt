@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.Context
 import android.net.Uri
 import android.widget.Toast
+import androidx.annotation.StringRes
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,15 +30,19 @@ const val MIME_PDF = "application/pdf"
  */
 
 /**
- * Runs [launch] (an `ActivityResultLauncher.launch` call). If no activity can handle the
- * request ([ActivityNotFoundException]), shows a short "no file picker" Toast instead of
- * crashing. Returns true if [launch] completed normally.
+ * Runs [launch] (an `ActivityResultLauncher.launch` call or `startActivity`). If no activity can
+ * handle the request ([ActivityNotFoundException]), shows [message] (by default "no file picker")
+ * as a short Toast instead of crashing. Returns true if [launch] completed normally.
  */
-internal fun launchOrExplain(context: Context, launch: () -> Unit): Boolean = try {
+internal fun launchOrExplain(
+    context: Context,
+    @StringRes message: Int = R.string.core_no_picker,
+    launch: () -> Unit,
+): Boolean = try {
     launch()
     true
 } catch (_: ActivityNotFoundException) {
-    Toast.makeText(context, R.string.core_no_picker, Toast.LENGTH_SHORT).show()
+    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     false
 }
 
@@ -70,7 +75,7 @@ fun openPdfIntent(uri: Uri): Intent = Intent(Intent.ACTION_VIEW).apply {
  * device without a PDF viewer shows a short message instead of crashing. Returns true if launched.
  */
 fun openSavedPdf(context: Context, uri: Uri): Boolean =
-    launchOrExplain(context) { context.startActivity(openPdfIntent(uri)) }
+    launchOrExplain(context, R.string.core_no_pdf_viewer) { context.startActivity(openPdfIntent(uri)) }
 
 /**
  * Launches the share sheet for each new [request] (guarded by [launchOrExplain]) and reports
@@ -82,7 +87,11 @@ fun ShareRequestEffect(request: ShareRequest?, onHandled: (launched: Boolean) ->
     val callback by rememberUpdatedState(onHandled)
     LaunchedEffect(request) {
         if (request != null) {
-            callback(launchOrExplain(context) { context.startActivity(sharePdfIntent(request.uri, request.name)) })
+            callback(
+                launchOrExplain(context, R.string.core_no_share_target) {
+                    context.startActivity(sharePdfIntent(request.uri, request.name))
+                },
+            )
         }
     }
 }

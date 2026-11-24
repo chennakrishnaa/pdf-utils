@@ -199,7 +199,11 @@ open class JobViewModel(
                 _jobState.value = current.copy(saving = false)
                 // Let screens observe the restored state before the error.
                 yield()
-                _saveError.value = app.getString(R.string.core_save_failed)
+                _saveError.value = app.getString(
+                    R.string.error_save_message,
+                    app.getString(R.string.error_save_title),
+                    app.getString(R.string.error_save_body),
+                )
             }
         }
     }
