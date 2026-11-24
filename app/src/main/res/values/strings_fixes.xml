@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Result screen: the file was saved but its name is not known (never guess the name). -->
+    <string name="result_saved">Saved</string>
+</resources>
