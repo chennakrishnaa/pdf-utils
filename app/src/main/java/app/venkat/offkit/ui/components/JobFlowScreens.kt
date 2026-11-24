@@ -47,7 +47,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
 import app.venkat.offkit.engine.PdfError
-import app.venkat.offkit.feature.compress.CompressViewModel
 import app.venkat.offkit.ui.theme.OffkitDimens
 import app.venkat.offkit.ui.theme.OffkitTheme
 import app.venkat.offkit.ui.theme.OffkitTool
@@ -262,7 +261,7 @@ fun OffkitResultScreen(
                 val original = state.knownOriginalBytes
                 val smaller = original != null && state.bytes < original
                 val headline = if (smaller) {
-                    stringResource(R.string.result_smaller, CompressViewModel.savingPercent(original, state.bytes))
+                    stringResource(R.string.result_smaller, savingPercent(original, state.bytes))
                 } else {
                     pluralStringResource(R.plurals.pages_count, state.pages, state.pages)
                 }
