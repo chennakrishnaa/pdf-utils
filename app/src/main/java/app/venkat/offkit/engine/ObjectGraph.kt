@@ -40,7 +40,12 @@ internal object ObjectGraph {
      */
     const val MAX_OBJECTS = 200_000
 
-    /** Most references/entries a walk may visit before the input is "too large" (~110 MB of parsed objects). */
+    /**
+     * Most references/entries a walk may visit before the input is "too large". Measured (SR3, host
+     * MuPDF 1.28.5, `bipseq-objstm.pdf`): a walk that reaches this bound peaks at ~285 MB RSS, because
+     * resolving one object parses its whole object stream before anything is counted; [ObjStmScan]
+     * now bounds that per-stream parse before the file is opened.
+     */
     const val MAX_REFERENCES = 2_000_000
 
     /** Wall-clock budget of one walk. */
