@@ -4,7 +4,13 @@ import android.app.Application
 import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsSelected
@@ -31,7 +37,6 @@ import app.venkat.offkit.ui.theme.OffkitDimens
 import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -73,16 +78,30 @@ class AddImagesSmallScreenTest {
     private fun bottomBarTop(): Float =
         bounds(rule.onNodeWithTag(TAG_JOB_RUN)).top - (OffkitDimens.bottomBarPaddingTop + Dp(1f)).value
 
+    /**
+     * Brings [tag] fully into view in both scrollers and checks it ends above the bottom bar.
+     * `performScrollTo()` only scrolls the closest scrollable parent, which for a tile is the
+     * horizontal thumbnail row, so the screen column is then scrolled by the overflow with a
+     * `ScrollBy` action, as a user's swipe would.
+     */
     private fun assertAboveBottomBar(tag: String) {
         val node = rule.onNodeWithTag(tag).performScrollTo()
         rule.waitForIdle()
+        val column = rule.onNode(
+            SemanticsMatcher.keyIsDefined(SemanticsProperties.VerticalScrollAxisRange) and hasAnyDescendant(hasTestTag(tag)),
+        )
+        val viewportBottom = column.fetchSemanticsNode().boundsInRoot.bottom / rule.density.density
+        val overflow = bounds(node).bottom - viewportBottom
+        if (overflow > 0f) {
+            column.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, overflow * rule.density.density) }
+            rule.waitForIdle()
+        }
         val b = bounds(node)
         val barTop = bottomBarTop()
         assertTrue("$tag bottom ${b.bottom} is not above the bottom bar at $barTop", b.bottom <= barTop + 0.5f)
         node.assertIsDisplayed()
     }
 
-    @Ignore("T10 item 5 finding, not yet fixed: after performScrollTo() thumb_2 ends at 437dp while the bottom bar starts at 399dp (content hidden behind the bottom bar at w320dp-h480dp)")
     @Test
     fun tilesAndToolbarAreAboveTheBottomBarAndClickable() {
         rule.runOnUiThread { vm.choosePdf(listOf(content("doc.pdf", "%PDF-1.7 doc".toByteArray()))) }

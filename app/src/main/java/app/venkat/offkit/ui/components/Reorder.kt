@@ -82,7 +82,10 @@ private val TileContentShape = RoundedCornerShape(12.dp)
  *
  * The row and the toolbar get [horizontalPadding] on both sides (pass 0.dp inside
  * [OffkitScaffold]'s padded column). [key] gives each tile a stable identity across moves.
- * Built from a plain Row, so every tile is in the tree (call `performScrollTo()` in tests).
+ * Built from a plain Row, so every tile is in the tree. In tests, `performScrollTo()` on a tile
+ * scrolls only this horizontal row (its closest scrollable parent); inside [OffkitScaffold] also
+ * scroll the screen column (e.g. a `ScrollBy` action on it) before tapping a tile that may sit
+ * below the visible area.
  *
  * Semantics: each tile is `selectable` (sets `selected`), its content description is
  * `cd_image_n`, wrapped in `cd_selected` when selected; the picture and the badge have no
