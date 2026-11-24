@@ -249,7 +249,7 @@ class ImagesToPdfScreenTest {
         rule.onNodeWithText(str(R.string.screen_images)).assertIsDisplayed()
         rule.onNodeWithText(str(R.string.imagestopdf_section_count, 0)).assertIsDisplayed()
         rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).assertIsDisplayed().assertIsEnabled().assertTextEquals(str(R.string.add))
-        rule.onNodeWithText(str(R.string.images_hint)).assertDoesNotExist()
+        rule.onNodeWithText(str(R.string.images_hint)).performScrollTo().assertIsDisplayed()
         rule.onNodeWithTag(thumbTag(0)).assertDoesNotExist()
         rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled().assertTextEquals(str(R.string.add_images_first))
         rule.onNodeWithText(pages(0)).assertExists()

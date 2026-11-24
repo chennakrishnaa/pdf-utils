@@ -224,13 +224,14 @@ private fun ImagesToPdfOptions(
             actionIcon = AppIcons.add,
             actionTestTag = TAG_IMAGESTOPDF_ADD,
         )
+        // Shown with or without images (design 07c), so the header is never followed by a gap.
+        Text(
+            text = stringResource(R.string.images_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+        )
         if (hasImages) {
-            Text(
-                text = stringResource(R.string.images_hint),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-            )
             OffkitThumbnailRow(
                 count = imageCount,
                 selectedIndex = selectedIndex,

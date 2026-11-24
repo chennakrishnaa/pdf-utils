@@ -257,7 +257,7 @@ class AddImagesScreenTest {
         rule.onNodeWithText(str(R.string.addimages_section_count, 0)).assertIsDisplayed()
         rule.onNodeWithTag(TAG_ADDIMAGES_ADD_IMAGES).performScrollTo().assertIsEnabled()
             .assertTextEquals(str(R.string.add))
-        rule.onNodeWithText(str(R.string.add_pages_hint)).assertDoesNotExist()
+        rule.onNodeWithText(str(R.string.add_pages_hint)).performScrollTo().assertIsDisplayed()
         rule.onNodeWithTag(thumbTag(0)).assertDoesNotExist()
         rule.onNodeWithTag(TAG_ADDIMAGES_NOTE).performScrollTo().assertTextEquals(str(R.string.add_pages_note))
         rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled().assertTextEquals(str(R.string.choose_pdf_first))
