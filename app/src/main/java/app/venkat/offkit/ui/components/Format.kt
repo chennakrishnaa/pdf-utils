@@ -15,6 +15,7 @@ fun pdfErrorMessage(error: PdfError): Int = when (error) {
     PdfError.ImageTooLarge -> R.string.core_error_image_too_large
     PdfError.Cancelled -> R.string.error_cancelled
     PdfError.NotImplemented -> R.string.error_not_implemented
+    PdfError.EngineCrashed -> R.string.error_engine_crashed
     is PdfError.Io -> R.string.error_generic
 }
 

@@ -161,6 +161,15 @@ sealed interface PdfError {
     /** The operation is not implemented yet. */
     data object NotImplemented : PdfError
 
-    /** Any other failure, typically file I/O; [cause] is the original throwable. */
+    /**
+     * The separate engine process died (native crash, out of memory, killed by the system) or
+     * could not be started while it was working on this call; any partial output was deleted.
+     */
+    data object EngineCrashed : PdfError
+
+    /**
+     * Any other failure, typically file I/O; [cause] is the original throwable. When the error
+     * crossed the engine process boundary, [cause] is an `IOException("<class>: <message>")`.
+     */
     data class Io(val cause: Throwable) : PdfError
 }
