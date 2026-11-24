@@ -1,5 +1,8 @@
 package app.venkat.offkit
 
+import app.venkat.offkit.core.ImagePreparer
+import app.venkat.offkit.core.InProcessImagePreparer
+import app.venkat.offkit.core.PreparedImage
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageSize
@@ -22,9 +25,13 @@ import java.util.concurrent.CopyOnWriteArrayList
  * - an `Ok`: writes [outputContent] to `out` and returns that `Ok` unchanged;
  * - an `Err`: deletes `out` and returns that `Err`.
  *
+ * As an [ImagePreparer] it normalises images in the test process ([InProcessImagePreparer]), as
+ * the `:engine` process does in the app, unless [prepare] is scripted. Every call is recorded in
+ * [prepareCalls].
+ *
  * Safe to configure from the test thread while the engine runs on another thread.
  */
-class FakePdfEngine : PdfEngine {
+class FakePdfEngine : PdfEngine, ImagePreparer {
     enum class Op { IMAGES_TO_PDF, COMPRESS, MERGE, APPEND_IMAGES }
 
     /**
@@ -76,6 +83,23 @@ class FakePdfEngine : PdfEngine {
      */
     @Volatile
     var estimate: ((File) -> PdfEstimate)? = null
+
+    /** Every [prepareImage] raw file, in order. */
+    val prepareCalls: MutableList<File> = CopyOnWriteArrayList()
+
+    /** Scripted [prepareImage]; null means normalise in-process. The raw file is deleted afterwards. */
+    @Volatile
+    var prepare: ((raw: File, destDir: File, index: Int) -> PreparedImage)? = null
+
+    override fun prepareImage(raw: File, destDir: File, index: Int, job: JobControl): PreparedImage {
+        prepareCalls += raw
+        val scripted = prepare ?: return InProcessImagePreparer.prepareImage(raw, destDir, index, job)
+        return try {
+            scripted(raw, destDir, index)
+        } finally {
+            raw.delete()
+        }
+    }
 
     fun setResult(op: Op, result: PdfResult) {
         results[op] = result

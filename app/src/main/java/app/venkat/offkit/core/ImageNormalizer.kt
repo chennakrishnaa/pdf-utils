@@ -41,13 +41,19 @@ object ImageNormalizer {
     const val JPEG_QUALITY = 92
 
     /**
-     * Normalises the image at [uri] into a new file in [destDir] named after [index] (e.g.
-     * `img_003.jpg` / `img_003.png`) and returns it. [isCancelled] is polled while copying.
-     *
-     * @throws UnsupportedImageException if the content cannot be decoded as an image.
-     * @throws IOException if [uri] cannot be read or [destDir] cannot be written.
-     * @throws kotlin.coroutines.cancellation.CancellationException if [isCancelled] became true.
+     * Number of transcodes (non-JPEG/PNG decodes) performed in THIS process. Lets on-device tests
+     * show that decoding happens in the `:engine` process and never in the UI process.
      */
+    private val transcodes = java.util.concurrent.atomic.AtomicInteger()
+
+    val transcodeCountInThisProcess: Int get() = transcodes.get()
+
+    /**
+     * Copies [uri] and normalises it in THIS process. Production code must not call this in the
+     * UI process: `PdfJobs` copies the raw bytes and lets the `:engine` process run [normalizeFile]
+     * (through `ImagePreparer`). Kept for in-process tests.
+     */
+    @VisibleForTesting
     @Throws(IOException::class, UnsupportedImageException::class)
     fun normalize(
         context: Context,
@@ -57,18 +63,39 @@ object ImageNormalizer {
         isCancelled: () -> Boolean = { false },
     ): File {
         destDir.mkdirs()
-        val base = String.format(Locale.ROOT, "img_%03d", index)
-        val raw = File(destDir, "$base.raw")
+        val raw = rawFile(destDir, index)
         UriIo.copyToFile(context, uri, raw, isCancelled)
+        return normalizeFile(raw, destDir, index)
+    }
+
+    /** `img_NNN.raw` in [destDir]: where the raw bytes of image input [index] are copied. */
+    fun rawFile(destDir: File, index: Int): File = File(destDir, "${baseName(index)}.raw")
+
+    /** The normalised file name of image input [index] for [kind] ("jpg" or "png"). */
+    fun normalizedFile(destDir: File, index: Int, kind: String): File = File(destDir, "${baseName(index)}.$kind")
+
+    private fun baseName(index: Int) = String.format(Locale.ROOT, "img_%03d", index)
+
+    /**
+     * Normalises the raw image bytes in [raw] into [destDir] (`img_NNN.jpg` or `img_NNN.png`, see
+     * [normalizedFile]) and returns that file. [raw] is always deleted. Decodes with platform
+     * codecs when the content is neither JPEG nor PNG: run it in the `:engine` process only.
+     *
+     * @throws UnsupportedImageException if the content cannot be decoded as an image.
+     * @throws IOException if [raw] cannot be read or [destDir] cannot be written.
+     */
+    @Throws(IOException::class, UnsupportedImageException::class)
+    fun normalizeFile(raw: File, destDir: File, index: Int): File {
         try {
             val kind = sniff(raw)
             if (kind != null) {
-                val dest = File(destDir, "$base.$kind")
+                val dest = normalizedFile(destDir, index, kind)
                 dest.delete()
                 if (!raw.renameTo(dest)) throw IOException("Cannot rename $raw")
                 return dest
             }
-            val dest = File(destDir, "$base.jpg")
+            val dest = normalizedFile(destDir, index, "jpg")
+            transcodes.incrementAndGet()
             transcode(raw, dest)
             return dest
         } finally {
@@ -77,8 +104,7 @@ object ImageNormalizer {
     }
 
     /** Returns "jpg" or "png" if [file] starts with that format's magic bytes, else null. */
-    @VisibleForTesting
-    internal fun sniff(file: File): String? {
+    fun sniff(file: File): String? {
         val head = ByteArray(8)
         val n = FileInputStream(file).use { input ->
             var read = 0

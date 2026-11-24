@@ -147,11 +147,26 @@ class EngineOnDeviceTest {
         webp.outputStream().use { assertTrue(bmp.compress(format, 100, it)) }
         bmp.recycle()
 
+        val transcodesBefore = app.venkat.offkit.core.ImageNormalizer.transcodeCountInThisProcess
         val out = saveReady(
             run(listOf(image(webp))) { e, files, o, j -> e.imagesToPdf(files, PageSize.FIT_IMAGE, o, j) },
             expectedPages = 1,
         )
         assertSize(320f, 240f, Fixtures.pageSizes(out)[0], "webp page")
+
+        // PI2: the WebP was decoded in the :engine process, not in this (UI) process.
+        assertEquals(
+            "WebP decoded in the UI process",
+            transcodesBefore,
+            app.venkat.offkit.core.ImageNormalizer.transcodeCountInThisProcess,
+        )
+        val remote = (context.applicationContext as PdfUtilApp).engine as RemoteEngine
+        val am = context.getSystemService(ActivityManager::class.java)
+        val enginePid = am.runningAppProcesses.orEmpty()
+            .firstOrNull { it.processName == "${context.packageName}:engine" }?.pid
+        assertTrue("prepared by ${remote.lastImagePreparedByPid}, test pid ${Process.myPid()}",
+            remote.lastImagePreparedByPid != 0 && remote.lastImagePreparedByPid != Process.myPid())
+        assertEquals("normalised by the :engine process", enginePid, remote.lastImagePreparedByPid)
     }
 
     @Test
