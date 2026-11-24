@@ -11,6 +11,7 @@ import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.remote.EngineProcess
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -346,6 +347,8 @@ class PdfJobs @VisibleForTesting internal constructor(
         fun get(context: Context): PdfJobs {
             val app = context.applicationContext ?: context
             instance?.let { if (it.appContext === app) return it }
+            // The engine process shares cacheDir/jobs with the UI process: it must never wipe it.
+            EngineProcess.checkNotEngineProcess("PdfJobs")
             return synchronized(this) {
                 instance?.takeIf { it.appContext === app }
                     ?: PdfJobs(app).also {
