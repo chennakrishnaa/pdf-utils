@@ -37,4 +37,6 @@
     <string name="about_no_browser">No app on this device can open web links.</string>
     <!-- TODO(owner): replace with the real public source URL before distribution -->
     <string name="source_code_url" translatable="false">https://github.com/chennakrishnaa/pdf-utils</string>
+    <!-- Joins the parts of a spoken content description (e.g. name and size). -->
+    <string name="cd_list_separator">", "</string>
 </resources>

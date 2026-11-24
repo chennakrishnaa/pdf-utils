@@ -265,7 +265,7 @@ fun OffkitSelectableFileList(
             key(row.key) {
                 val isSelected = index == selectedIndex
                 val name = if (isSelected) stringResource(R.string.cd_selected, row.title) else row.title
-                val description = listOfNotNull(name, row.subtitle).joinToString(", ")
+                val description = listOfNotNull(name, row.subtitle).joinToString(stringResource(R.string.cd_list_separator))
                 Column {
                     Row(
                         modifier = Modifier
