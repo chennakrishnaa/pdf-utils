@@ -273,3 +273,13 @@ Sentences that are now inaccurate or incomplete:
 
 ### Verdict (FR)
 All three gates pass. The process-isolation design is sound for binder trust, paths, request ids and the resend, and I found no High defect in `engine/remote/**`. The build is fit for a Play **closed** test. Before a **public** release, fix FR-1 (the watchdog counts frozen background time, so a good job can end as "taking too long" when the user leaves the app) and FR-2 (an orphan engine job runs with no limit after the UI dies, and shares its process with the next one). Part C on the emulator (done in the FR retry) found no new problem: every SR3 input either failed safely or completed, and in every case the UI survived and the next job succeeded. Repeat it on at least one real ARM phone. Apply the doc corrections in Part D.
+
+### FR follow-up (PI4)
+
+- **FR-1 fixed.** The wait loop discounts gaps of more than 2 s between wake-ups (a frozen app) from the stall, total, image and cancel deadlines, up to 1 hour per call; the clock stays `CLOCK_MONOTONIC` (stops in deep sleep), documented in `RemoteEngine`. JVM tests with an injected clock. Not reproduced with a real freezer.
+- **FR-2 fixed.** The engine kills itself (after deleting pending outputs) when a request's callback binder dies or the service is unbound or destroyed while busy; one `EngineServer` per process. JVM tests and an on-device unbind test.
+- **FR-3 fixed.** New `PdfError.EngineUnavailable` ("Processing was interrupted. Please try again.") for bind failure or timeout and for a death after a freeze or while the app is cached.
+- **FR-4 fixed.** `BoundServiceConnector.disconnect` unlinks the death recipient.
+- **FR-5, FR-6, FR-7, FR-8:** not changed (Info, no fix needed).
+- **FR-9 fixed.** The request lock is taken with `tryLock(pollMs)`; a waiting call returns `Cancelled` when its job is cancelled.
+- **Part D fixed:** Play listing bullets, platform-audit process-isolation text.

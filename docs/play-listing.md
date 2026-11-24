@@ -34,7 +34,8 @@ GOOD TO KNOW
 • Works on Android 8.0 and newer, on 64-bit devices.
 • Password-protected PDFs are not supported.
 • Compression reduces the images in a PDF. A PDF that is mostly text will not get much smaller.
-• Merging keeps page content and web links. Form fields, comments and bookmarks are not carried over.
+• Merging keeps page content and web links (up to 1,000 per page). Form fields, comments and bookmarks are not carried over.
+• Very large or unusually complex files are stopped if they take too long or need too much memory.
 
 OPEN SOURCE
 
