@@ -390,3 +390,16 @@ Note on removing the recursion (by reading `pdf-write.c` 1.28.5): `markobj` (`:1
   - `a-icc-bomb` through append.
 - **Not proven:** that dropping `garbage` from Compress/Add images removes every recursion. This is from reading `pdf-write.c` only.
 - **No ASan run and no coverage-guided fuzzing.** The fuzz ran 150 s per target.
+
+## SR3 — re-check of SF5
+
+Re-checker: SR3, independent of the fix authors. Code at `main` `b938777` (merged ff-only), compiled in this worktree (`:app:compileDebugKotlin`). Harness: `scratchpad/sr3/SR.java` (SR2's probe plus `walk objects|pages <file>` = `PdfInputs.open` + one `ObjectGraph` walk alone, and `open`), never committed. Every hostile input ran in its own child JVM: `-Xmx256m -XX:+UseSerialGC`, `ulimit -v 3000000`, `timeout -s KILL`, host MuPDF 1.28.5. Peak RSS is `/usr/bin/time %M`; times are wall-clock for the whole JVM (about 0.25 s of it is JVM start-up). Generators: `scratchpad/sr3/gen3.py`; inputs in `scratchpad/sr3/c/`; raw result lines in `scratchpad/sr3/results.txt`.
+
+### Status of SR2-1 … SR2-4
+
+| ID | Verdict | Evidence (original reproducers, current code) |
+|---|---|---|
+| SR2-1 (ICC profile bomb in Compress) | **Fixed** for the reproducers (see the new findings for what the gate does not cover) | `a-icc-bomb.pdf` compress: `Ok`, image skipped, **75 MB**, 0.33 s (SR2: 963 MB, `realloc` failure). `a-icc-bomb-alt.pdf`: `Ok`, 72 MB, 0.28 s. Double-Flate `a-icc-bomb2.pdf`: `Ok`, 72 MB. `a-icc-bomb` append: `Ok`, 75 MB. `icc-lie.pdf`: `Ok`, 73 MB. |
+| SR2-2 (113 s uncancellable Compress) | **Fixed** | `shortcut-rev-490000` compress: `Err(OutOfMemory)` (object cap) in 0.48 s, 89 MB (SR2: 113.5 s, 471 MB). `shortcut-rev-200000` compress and merge: `Err(OutOfMemory)`, 0.3 s, 77 MB. Just under the cap, `shortcut-rev-190000`: compress `Ok` in 2.5 s, 256 MB; merge `Err(Corrupt)` (nesting) in 0.3 s. |
+| SR2-3 (guard walk is a memory/CPU bomb) | **Fixed** (bounded; the bound is about 2.5x looser than documented) | `bipseq-objstm.pdf` (2.0 MB): `checkObjects` alone stops with `OutOfMemory` after 1.76 s at **287 MB** (SR2: 18.6 s, 1,092 MB). Compress and Add images: `Err(OutOfMemory)`, 2.1-2.2 s, 285-286 MB (SR2: 23-27 s, 1.1 GB). Merge: `Ok`, 0.63 s, 79 MB (SR2: 72 s, 1,130 MB; the page does not reach the arrays). The `ObjectGraph` KDoc says 2 M references are "~110 MB of parsed objects"; measured 285 MB, because resolving one object parses its whole object stream before the budget counts anything (see SR3-1). |
+| SR2-4 (depth guard only safe on the 128 MB stack) | **Fixed** for Compress and Add images | Internal op class run directly on a **256 KB** thread (`rawop`, no `EngineStack`): `chain-2990` compress/append `Ok` (SR2: SIGSEGV); `chain-20000` compress/append `Ok`, 0.5 s, 89 MB; `chain-100000` compress `Ok` 1.5 s / append `Ok` 1.2 s, 175 MB. No crash: the save no longer recurses over references. Merge on 256 KB: `chain-2990` and `chain-100000` `Err(Corrupt)` (nesting > 200), 0.3 s. |
