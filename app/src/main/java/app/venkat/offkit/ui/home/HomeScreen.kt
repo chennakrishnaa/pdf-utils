@@ -3,7 +3,6 @@ package app.venkat.offkit.ui.home
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -63,9 +62,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -74,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
@@ -242,8 +245,9 @@ private fun HomeContent(
 
 @Composable
 private fun HomeTopBar(onOpenAbout: () -> Unit) {
+    val appName = stringResource(R.string.app_name)
     val wordmark = buildAnnotatedString {
-        append(stringResource(R.string.app_name))
+        append(appName)
         withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
             append(stringResource(R.string.home_wordmark_dot))
         }
@@ -261,7 +265,11 @@ private fun HomeTopBar(onOpenAbout: () -> Unit) {
             text = wordmark,
             style = MaterialTheme.typography.displaySmall,
             color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f).semantics { heading() },
+            // The brand dot is decoration: accessibility services and tests see just the name.
+            modifier = Modifier.weight(1f).clearAndSetSemantics {
+                heading()
+                text = AnnotatedString(appName)
+            },
         )
         IconButton(
             onClick = onOpenAbout,
@@ -540,10 +548,10 @@ private fun RecentRow(
 }
 
 private fun previewRecents(now: Long): List<RecentFile> = listOf(
-    RecentFile(Uri.parse("content://preview/a"), "merged-compressed-with-images.pdf", 1_200_000, now - 60_000, "add_images"),
-    RecentFile(Uri.parse("content://preview/b"), "airtel-Nov-Dec-compressed.pdf", 565_500, now - 120_000, "compress"),
-    RecentFile(Uri.parse("content://preview/c"), "merged.pdf", 2_300_000, now - 120_000, "merge"),
-    RecentFile(Uri.parse("content://preview/d"), "Photos-24-Nov.pdf", 405_200, now - 86_400_000, "images_to_pdf"),
+    RecentFile("content://preview/a".toUri(), "merged-compressed-with-images.pdf", 1_200_000, now - 60_000, "add_images"),
+    RecentFile("content://preview/b".toUri(), "airtel-Nov-Dec-compressed.pdf", 565_500, now - 120_000, "compress"),
+    RecentFile("content://preview/c".toUri(), "merged.pdf", 2_300_000, now - 120_000, "merge"),
+    RecentFile("content://preview/d".toUri(), "Photos-24-Nov.pdf", 405_200, now - 86_400_000, "images_to_pdf"),
 )
 
 @Composable
