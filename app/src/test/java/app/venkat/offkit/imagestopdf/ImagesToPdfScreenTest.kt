@@ -117,6 +117,8 @@ class ImagesToPdfScreenTest {
     @Before
     fun setUp() {
         app = ApplicationProvider.getApplicationContext()
+        // A share in an earlier test cached its own data dir; without this the share copy fails.
+        CoreTestSupport.clearFileProviderCache()
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         resetRecents()
@@ -851,7 +853,7 @@ class ImagesToPdfScreenTest {
         } finally {
             release.countDown()
         }
-        val failed = str(R.string.core_save_failed)
+        val failed = str(R.string.error_save_message, str(R.string.error_save_title), str(R.string.error_save_body))
         CoreTestSupport.idleUntil(rule, message = "save error shown") {
             rule.onAllNodesWithText(failed).fetchSemanticsNodes().isNotEmpty()
         }

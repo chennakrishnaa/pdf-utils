@@ -101,6 +101,8 @@ class CompressScreenTest {
     @Before
     fun setUp() {
         app = ApplicationProvider.getApplicationContext()
+        // A share in an earlier test cached its own data dir; without this the share copy fails.
+        CoreTestSupport.clearFileProviderCache()
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         resetRecents()
@@ -595,7 +597,7 @@ class CompressScreenTest {
     fun failedSaveShowsSnackbarAndKeepsResult() {
         choose(pdf("a.pdf"))
         runToReady()
-        val failed = str(R.string.core_save_failed)
+        val failed = str(R.string.error_save_message, str(R.string.error_save_title), str(R.string.error_save_body))
         rule.runOnUiThread { vm.save(dest(FailingSink)) }
         CoreTestSupport.idleUntil(rule, message = "save error shown") {
             rule.onAllNodesWithText(failed).fetchSemanticsNodes().isNotEmpty()

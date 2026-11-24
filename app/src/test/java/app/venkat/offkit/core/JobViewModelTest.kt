@@ -192,7 +192,7 @@ class JobViewModelTest {
             ),
         )
         CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
-        assertEquals(app.getString(R.string.core_save_failed), vm.saveError.value)
+        assertEquals("Couldn't save. There may not be enough space. Your result is still here, so try another folder.", vm.saveError.value)
         assertEquals(ready, state())
         vm.clearSaveError()
         assertNull(vm.saveError.value)
