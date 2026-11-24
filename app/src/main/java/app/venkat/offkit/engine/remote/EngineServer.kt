@@ -54,9 +54,11 @@ class EngineServer(
 
     private fun handle(id: Long, bundle: Bundle?, callback: IEngineCallback, trusted: Boolean) {
         var clientGone = false
+        var decoded: EngineRequest? = null
         val reply: Bundle = try {
             if (!trusted) throw SecurityException("caller is not this app")
             val request = EngineWire.decodeRequest(bundle ?: throw IllegalArgumentException("no request"))
+            decoded = request
             checkPaths(jobsRoot, request.paths)
             val job = object : JobControl {
                 override fun progress(done: Int, total: Int) {
@@ -81,7 +83,7 @@ class EngineServer(
                 errorFor(request, PdfError.Io(e))
             }
         } catch (e: Exception) {
-            EngineWire.encodeResult(PdfResult.Err(PdfError.Io(e)))
+            decoded?.let { errorFor(it, PdfError.Io(e)) } ?: EngineWire.encodeResult(PdfResult.Err(PdfError.Io(e)))
         }
         try {
             callback.result(id, reply)

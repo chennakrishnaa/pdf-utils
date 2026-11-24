@@ -115,6 +115,9 @@ class RemoteEngineTest {
         val r = engine.merge(listOf(tmp.newFile("x.pdf")), File(root, "j/output.pdf"), JobControl.None)
         assertTrue(((r as PdfResult.Err).error as PdfError.Io).cause.message!!.contains("SecurityException"))
         assertTrue(fake.calls.isEmpty())
+        val e = engine.estimateImage(tmp.newFile("x.jpg"))
+        assertTrue("$e", ((e as PdfEstimate.Err).error as PdfError.Io).cause.message!!.contains("SecurityException"))
+        assertTrue(fake.estimateCalls.isEmpty())
     }
 
     @Test
