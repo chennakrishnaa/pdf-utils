@@ -32,4 +32,11 @@ object AppIcons {
     val heart: Painter @Composable get() = painterResource(R.drawable.ic_heart)
     val feedback: Painter @Composable get() = painterResource(R.drawable.ic_feedback)
     val code: Painter @Composable get() = painterResource(R.drawable.ic_code)
+    val back: Painter @Composable get() = painterResource(R.drawable.ic_back)
+    val pdfFile: Painter @Composable get() = painterResource(R.drawable.ic_pdf_file)
+    val dragHandle: Painter @Composable get() = painterResource(R.drawable.ic_drag_handle)
+    val moveUp: Painter @Composable get() = painterResource(R.drawable.ic_move_up)
+    val moveDown: Painter @Composable get() = painterResource(R.drawable.ic_move_down)
+    val moveLeft: Painter @Composable get() = painterResource(R.drawable.ic_move_left)
+    val moveRight: Painter @Composable get() = painterResource(R.drawable.ic_move_right)
 }
