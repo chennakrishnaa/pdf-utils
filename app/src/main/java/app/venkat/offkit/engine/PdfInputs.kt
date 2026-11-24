@@ -74,7 +74,8 @@ internal object PdfInputs {
             val pages = try {
                 pdf.countPages()
             } catch (e: RuntimeException) {
-                throw PdfInputException(PdfError.Corrupt, e)
+                // SR3-5: a native allocation failure while loading the page tree is "too large".
+                throw PdfInputException(if (isOutOfMemoryFailure(e)) PdfError.OutOfMemory else PdfError.Corrupt, e)
             }
             if (pages <= 0) throw PdfInputException(PdfError.Corrupt)
             if (pdf.countObjects() > ObjectGraph.MAX_OBJECTS) throw PdfInputException(PdfError.OutOfMemory)
@@ -119,9 +120,11 @@ internal object PdfInputs {
         }
     }
 
-    private fun classifyOpenFailure(e: RuntimeException): PdfInputException {
+    internal fun classifyOpenFailure(e: RuntimeException): PdfInputException {
         val msg = e.message.orEmpty()
-        return if (msg.startsWith("cannot open")) {
+        return if (isOutOfMemoryFailure(e)) {
+            PdfInputException(PdfError.OutOfMemory, e) // SR3-5
+        } else if (msg.startsWith("cannot open")) {
             PdfInputException(PdfError.Io(e), e)
         } else {
             PdfInputException(PdfError.Corrupt, e)
