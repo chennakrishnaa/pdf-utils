@@ -23,6 +23,16 @@ internal object CoreTestSupport {
     fun jobFiles(context: Context): List<File> =
         File(context.cacheDir, "jobs").walkTopDown().filter { it.isFile }.toList()
 
+    /**
+     * Forgets `FileProvider`'s static per-authority path cache. Robolectric gives each test a new
+     * data directory, so a root cached by an earlier test would not match this test's cacheDir.
+     */
+    fun clearFileProviderCache() {
+        val field = androidx.core.content.FileProvider::class.java.getDeclaredField("sCache")
+        field.isAccessible = true
+        synchronized(field.get(null)!!) { (field.get(null) as MutableMap<*, *>).clear() }
+    }
+
     /** True if `cacheDir/jobs` holds nothing (directories included). */
     fun jobsEmpty(context: Context): Boolean =
         File(context.cacheDir, "jobs").listFiles().isNullOrEmpty()

@@ -203,8 +203,9 @@ class ComponentsTest {
 
     @Test
     fun jobPanelReadyToSave() {
-        val c = showPanel(JobUiState.ReadyToSave("3 pages, 1.2 MB"))
-        rule.onNodeWithText("3 pages, 1.2 MB").assertIsDisplayed()
+        val c = showPanel(JobUiState.Done(3, 1_200_000, null, "merged.pdf"))
+        rule.onNodeWithTag("job_summary").assertIsDisplayed()
+        rule.onNodeWithTag("job_share").assertIsDisplayed()
         rule.onNodeWithTag("job_save").performClick()
         rule.onNodeWithTag("job_reset").assertTextEquals(rule.activity.getString(R.string.job_discard)).performClick()
         assertAbsent("job_run", "job_cancel", "job_error")
@@ -214,25 +215,27 @@ class ComponentsTest {
 
     @Test
     fun jobPanelSaving() {
-        showPanel(JobUiState.Saving("3 pages, 1.2 MB"))
-        rule.onNodeWithText("3 pages, 1.2 MB").assertIsDisplayed()
+        showPanel(JobUiState.Done(3, 1_200_000, null, "merged.pdf", saving = true))
+        rule.onNodeWithTag("job_summary").assertIsDisplayed()
         rule.onNodeWithTag("job_saving").assertTextEquals(rule.activity.getString(R.string.core_saving))
-        assertAbsent("job_run", "job_cancel", "job_save", "job_reset", "job_error")
+        assertAbsent("job_run", "job_cancel", "job_save", "job_reset", "job_error", "job_share")
     }
 
     @Test
     fun jobPanelSaved() {
-        val c = showPanel(JobUiState.Saved("Saved merged.pdf"))
-        rule.onNodeWithText("Saved merged.pdf").assertIsDisplayed()
+        val c = showPanel(JobUiState.Done(3, 1_200_000, null, "merged.pdf", savedName = "merged.pdf", savedUri = android.net.Uri.parse("content://x/1")))
+        rule.onNodeWithText(rule.activity.getString(R.string.job_saved_title)).assertIsDisplayed()
+        // Saving another copy stays possible.
+        rule.onNodeWithTag("job_save").assertIsDisplayed()
         rule.onNodeWithTag("job_reset").assertTextEquals(rule.activity.getString(R.string.job_start_over)).performClick()
-        assertAbsent("job_run", "job_cancel", "job_save", "job_error")
+        assertAbsent("job_run", "job_cancel", "job_error")
         assertEquals(1, c.reset)
     }
 
     @Test
     fun jobPanelFailed() {
-        val c = showPanel(JobUiState.Failed("Boom"))
-        rule.onNodeWithTag("job_error").assertTextEquals("Boom")
+        val c = showPanel(JobUiState.Failed(app.venkat.offkit.engine.PdfError.Encrypted))
+        rule.onNodeWithTag("job_error").assertTextEquals(rule.activity.getString(R.string.error_encrypted))
         rule.onNodeWithTag("job_reset").assertTextEquals(rule.activity.getString(R.string.job_try_again)).performClick()
         assertAbsent("job_run", "job_cancel", "job_save")
         assertEquals(1, c.reset)
@@ -244,10 +247,13 @@ class ComponentsTest {
     fun hasUnsavedWorkTruthTable() {
         assertEquals(false, JobUiState.Idle.hasUnsavedWork())
         assertEquals(true, JobUiState.Running(0, 0).hasUnsavedWork())
-        assertEquals(true, JobUiState.ReadyToSave("s").hasUnsavedWork())
-        assertEquals(true, JobUiState.Saving("s").hasUnsavedWork())
-        assertEquals(false, JobUiState.Saved("s").hasUnsavedWork())
-        assertEquals(false, JobUiState.Failed("m").hasUnsavedWork())
+        val done = JobUiState.Done(1, 10, null, "a.pdf")
+        assertEquals(true, done.hasUnsavedWork())
+        assertEquals(true, done.copy(saving = true).hasUnsavedWork())
+        assertEquals(true, done.copy(saving = true, savedUri = android.net.Uri.parse("content://x/1")).hasUnsavedWork())
+        assertEquals(false, done.copy(savedName = "a.pdf", savedUri = android.net.Uri.parse("content://x/1")).hasUnsavedWork())
+        assertEquals(false, done.copy(shared = true).hasUnsavedWork())
+        assertEquals(false, JobUiState.Failed(app.venkat.offkit.engine.PdfError.Encrypted).hasUnsavedWork())
     }
 
     private fun showScaffold(confirmLeave: Boolean): IntArray {

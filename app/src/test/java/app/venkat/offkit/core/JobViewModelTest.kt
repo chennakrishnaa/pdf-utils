@@ -1,5 +1,8 @@
 package app.venkat.offkit.core
 
+import app.venkat.offkit.ui.components.isSaving
+import app.venkat.offkit.ui.components.hasUnsavedWork
+import java.io.File
 import android.app.Application
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
@@ -15,6 +18,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -38,7 +42,6 @@ class JobViewModelTest {
     class TestVm(app: Application, jobs: PdfJobs) : JobViewModel(app, jobs) {
         fun merge(uris: List<Uri>) = startJob(
             inputs = uris.map { JobInput.Pdf(it) },
-            summarize = { "pages=${it.pages} bytes=${it.bytes}" },
         ) { engine, files, out, job -> engine.merge(files, out, job) }
 
         fun clear() = onCleared()
@@ -58,6 +61,7 @@ class JobViewModelTest {
     @Before
     fun setUp() {
         app = ApplicationProvider.getApplicationContext()
+        CoreTestSupport.clearFileProviderCache()
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         engineDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -84,7 +88,7 @@ class JobViewModelTest {
 
     private fun runToReady() {
         vm.merge(listOf(input()))
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
     }
 
     @Test
@@ -108,19 +112,24 @@ class JobViewModelTest {
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         val size = fake.outputContent.size.toLong()
-        assertEquals(JobUiState.ReadyToSave("pages=1 bytes=$size"), state())
+        assertEquals(JobUiState.Done(1, size, null, "merged.pdf"), state())
         assertEquals(PdfResult.Ok(1, size), vm.lastResult)
         assertEquals(1, fake.calls.size)
         assertEquals("merged.pdf", vm.suggestedFileName())
 
         val sink = ByteArrayOutputStream()
         vm.save(dest(sink))
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
-        assertEquals(JobUiState.Saved("pages=1 bytes=$size"), state())
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        val saved = state() as JobUiState.Done
+        assertEquals(1, saved.pages)
+        assertEquals(size, saved.bytes)
+        assertFalse(saved.saving)
+        assertNotNull(saved.savedUri)
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        assertTrue(CoreTestSupport.jobsEmpty(app))
+        // The output survives a successful save.
+        assertFalse(CoreTestSupport.jobsEmpty(app))
         assertNull(vm.saveError.value)
     }
 
@@ -129,7 +138,7 @@ class JobViewModelTest {
         fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Err(PdfError.Encrypted))
         vm.merge(listOf(input()))
         CoreTestSupport.idleUntil(message = "Failed") { state() is JobUiState.Failed }
-        assertEquals(JobUiState.Failed(app.getString(R.string.error_encrypted)), state())
+        assertEquals(JobUiState.Failed(PdfError.Encrypted), state())
         assertTrue(CoreTestSupport.jobsEmpty(app))
         assertNull(vm.lastResult)
 
@@ -190,7 +199,7 @@ class JobViewModelTest {
 
         val sink = ByteArrayOutputStream()
         vm.save(dest(sink))
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         assertArrayEquals(fake.outputContent, sink.toByteArray())
     }
 
@@ -208,13 +217,13 @@ class JobViewModelTest {
     fun scriptedOkReachesSummarizeAndLastResult() {
         fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Ok(pages = 3, bytes = 123_456))
         runToReady()
-        assertEquals(JobUiState.ReadyToSave("pages=3 bytes=123456"), state())
+        assertEquals(JobUiState.Done(3, 123_456, null, "merged.pdf"), state())
         assertEquals(PdfResult.Ok(3, 123_456), vm.lastResult)
     }
 
     /** How feature ViewModel tests will run: default constructor, process-wide PdfJobs. */
     class DefaultVm(app: Application) : JobViewModel(app) {
-        fun merge(uris: List<Uri>) = startJob(uris.map { JobInput.Pdf(it) }, { "ok" }) { e, f, o, j -> e.merge(f, o, j) }
+        fun merge(uris: List<Uri>) = startJob(uris.map { JobInput.Pdf(it) }) { e, f, o, j -> e.merge(f, o, j) }
     }
 
     @Test
@@ -222,7 +231,7 @@ class JobViewModelTest {
         val defaultVm = DefaultVm(app)
         assertEquals("document.pdf", defaultVm.suggestedFileName())
         defaultVm.merge(listOf(input()))
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { defaultVm.jobState.value == JobUiState.ReadyToSave("ok") }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { defaultVm.jobState.value.isReadyToSave }
         defaultVm.reset()
         assertTrue(CoreTestSupport.jobsEmpty(app))
     }
@@ -249,28 +258,28 @@ class JobViewModelTest {
     @Test
     fun savingStateIgnoresResetStartCancelAndSave() {
         runToReady()
-        val ready = state() as JobUiState.ReadyToSave
+        val ready = state() as JobUiState.Done
         val release = CountDownLatch(1)
         val sink = BlockingSink(release)
         try {
             vm.save(dest(sink))
-            assertEquals(JobUiState.Saving(ready.summary), state())
+            assertEquals(ready.copy(saving = true), state())
             CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
             vm.reset()
             vm.cancel()
             vm.merge(listOf(input()))
             vm.save(dest(ByteArrayOutputStream()))
             shadowOf(android.os.Looper.getMainLooper()).idle()
-            assertEquals(JobUiState.Saving(ready.summary), state())
+            assertEquals(ready.copy(saving = true), state())
             assertEquals(1, fake.calls.size)
             assertFalse(vm.isRunning)
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
-        assertEquals(JobUiState.Saved(ready.summary), state())
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        assertTrue(state().isSaved)
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
-        assertTrue(CoreTestSupport.jobsEmpty(app))
+        assertFalse(CoreTestSupport.jobsEmpty(app))
     }
 
     @Test
@@ -283,7 +292,7 @@ class JobViewModelTest {
         }))
         seen += state()
         CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
-        assertTrue(seen.single() is JobUiState.Saving)
+        assertTrue(seen.single().isSavingNow)
         assertEquals(ready, state())
         assertFalse(CoreTestSupport.jobsEmpty(app))
     }
@@ -301,9 +310,9 @@ class JobViewModelTest {
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
-        assertTrue(CoreTestSupport.jobsEmpty(app))
+        assertTrue("a cleared ViewModel discards the output once the save ends", CoreTestSupport.jobsEmpty(app))
     }
 
     @Test
@@ -365,7 +374,7 @@ class JobViewModelTest {
     fun invalidateResultFromSaved() {
         runToReady()
         vm.save(dest(ByteArrayOutputStream()))
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         vm.invalidate()
         assertEquals(JobUiState.Idle, state())
         assertTrue(CoreTestSupport.jobsEmpty(app))
@@ -400,7 +409,7 @@ class JobViewModelTest {
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         fake.beforeStep = null
 
         val saveRelease = CountDownLatch(1)
@@ -409,11 +418,11 @@ class JobViewModelTest {
             vm.save(dest(sink))
             CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
             vm.invalidate()
-            assertTrue(state() is JobUiState.Saving)
+            assertTrue(state().isSavingNow)
         } finally {
             saveRelease.countDown()
         }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
     }
 
@@ -423,7 +432,7 @@ class JobViewModelTest {
         val target = java.io.File(app.filesDir, "result.pdf").apply { writeBytes(ByteArray(0)) }
         val before = System.currentTimeMillis()
         vm.save(Uri.fromFile(target))
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         val recent = RecentFilesStore.get(app).recents.value.single()
         assertEquals(Uri.fromFile(target), recent.uri)
         assertEquals("result.pdf", recent.name)
@@ -450,5 +459,113 @@ class JobViewModelTest {
         assertEquals(app.getString(R.string.core_result_unavailable), vm.saveError.value)
         repeat(20) { shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(5) }
         assertEquals(9L, existing.length())
+    }
+
+    private fun sharedRoot() = File(app.cacheDir, "shared")
+
+    private fun sharedFiles() = sharedRoot().walk().filter { it.isFile }.toList()
+
+    private fun fileDest(name: String): Uri = Uri.fromFile(File(app.filesDir, "${System.nanoTime()}/$name").apply { parentFile!!.mkdirs() })
+
+    @Test
+    fun outputSurvivesSaveAndSecondSaveUpdatesSavedName() {
+        runToReady()
+        assertTrue(state().hasUnsavedWork())
+        val first = fileDest("first.pdf")
+        vm.save(first)
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        val saved1 = state() as JobUiState.Done
+        assertEquals(first, saved1.savedUri)
+        assertEquals(UriIo.describe(app, first).name, saved1.savedName)
+        assertFalse(state().hasUnsavedWork())
+        assertFalse(CoreTestSupport.jobsEmpty(app))
+
+        val second = fileDest("second.pdf")
+        vm.save(second)
+        CoreTestSupport.idleUntil(message = "Saved again") { (state() as JobUiState.Done).savedUri == second && !state().isSaving }
+        val saved2 = state() as JobUiState.Done
+        assertEquals(UriIo.describe(app, second).name, saved2.savedName)
+        assertTrue(saved2.savedName != saved1.savedName)
+        assertArrayEquals(fake.outputContent, File(second.path!!).readBytes())
+        assertEquals(2, RecentFilesStore.get(app).recents.value.size)
+    }
+
+    @Test
+    fun shareCopiesUnderSharedWithSuggestedNameAndShareAuthority() {
+        runToReady()
+        vm.share()
+        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        val request = vm.shareRequest.value!!
+        assertEquals("merged.pdf", request.name)
+        assertEquals("content", request.uri.scheme)
+        assertEquals(app.packageName + ".share", request.uri.authority)
+        val copy = sharedFiles().single()
+        assertEquals("merged.pdf", copy.name)
+        assertEquals(sharedRoot(), copy.parentFile!!.parentFile)
+        assertArrayEquals(fake.outputContent, copy.readBytes())
+        assertTrue(state().hasUnsavedWork())
+
+        vm.onShareHandled(launched = true)
+        assertNull(vm.shareRequest.value)
+        assertTrue((state() as JobUiState.Done).shared)
+        assertFalse(state().hasUnsavedWork())
+        // Not wiped right after sharing: the receiving app may still be reading it.
+        assertEquals(1, sharedFiles().size)
+    }
+
+    @Test
+    fun shareNotLaunchedDoesNotMarkShared() {
+        runToReady()
+        vm.share()
+        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        vm.onShareHandled(launched = false)
+        assertFalse((state() as JobUiState.Done).shared)
+        assertTrue(state().hasUnsavedWork())
+    }
+
+    @Test
+    fun sharedCopiesAreWipedByTheNextJob() {
+        runToReady()
+        vm.share()
+        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        vm.onShareHandled(launched = true)
+        assertEquals(1, sharedFiles().size)
+        vm.merge(listOf(input()))
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
+        assertTrue(sharedFiles().isEmpty())
+    }
+
+    @Test
+    fun failedShareCopySetsErrorAndKeepsState() {
+        runToReady()
+        val before = state()
+        File(app.cacheDir, "jobs").walk().filter { it.name == "output.pdf" }.forEach { it.delete() }
+        vm.share()
+        CoreTestSupport.idleUntil(message = "share error") { vm.saveError.value != null }
+        assertEquals(app.getString(R.string.result_share_failed), vm.saveError.value)
+        assertNull(vm.shareRequest.value)
+        assertEquals(before, state())
+        assertTrue(sharedFiles().isEmpty())
+    }
+
+    @Test
+    fun outputDeletedOnResetAfterSave() {
+        runToReady()
+        vm.save(fileDest("a.pdf"))
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        assertFalse(CoreTestSupport.jobsEmpty(app))
+        vm.reset()
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun outputDeletedOnClearedAfterSave() {
+        runToReady()
+        vm.save(fileDest("a.pdf"))
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        assertFalse(CoreTestSupport.jobsEmpty(app))
+        vm.clear()
+        assertTrue(CoreTestSupport.jobsEmpty(app))
     }
 }

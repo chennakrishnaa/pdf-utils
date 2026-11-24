@@ -17,6 +17,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
+import androidx.compose.ui.res.pluralStringResource
+import app.venkat.offkit.ui.components.isSaving
+import app.venkat.offkit.ui.components.ShareRequestEffect
 import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.FileList
 import app.venkat.offkit.ui.components.FileRow
@@ -65,8 +68,10 @@ fun AddImagesScreen(onBack: () -> Unit) {
     val images by vm.images.collectAsState()
     val state by vm.jobState.collectAsState()
     val saveError by vm.saveError.collectAsState()
+    val shareRequest by vm.shareRequest.collectAsState()
+    ShareRequestEffect(shareRequest, vm::onShareHandled)
     // Inputs are locked while the job runs and while its result is being saved.
-    val locked = state is JobUiState.Running || state is JobUiState.Saving
+    val locked = state is JobUiState.Running || state.isSaving
 
     val pdfPicker = rememberPdfPicker(multiple = false) { uris -> vm.choosePdf(uris) }
     val imagePicker = rememberImagePicker { uris -> vm.addImages(uris) }
@@ -131,6 +136,8 @@ fun AddImagesScreen(onBack: () -> Unit) {
                 onCancel = vm::cancel,
                 onSave = { saver(vm.suggestedFileName()) },
                 onReset = vm::reset,
+                onShare = vm::share,
+                summary = { addImagesSummary(it) },
                 runIcon = AppIcons.addToPdf,
                 modifier = Modifier.padding(top = 8.dp),
             )
@@ -147,3 +154,8 @@ fun AddImagesScreen(onBack: () -> Unit) {
         }
     }
 }
+
+/** Result summary: "N pages · size". */
+@Composable
+private fun addImagesSummary(done: JobUiState.Done): String =
+    pluralStringResource(R.plurals.addimages_summary, done.pages, done.pages, formatBytes(done.bytes))

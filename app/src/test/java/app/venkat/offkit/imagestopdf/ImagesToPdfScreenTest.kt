@@ -1,5 +1,8 @@
 package app.venkat.offkit.imagestopdf
 
+import app.venkat.offkit.core.isReadyToSave
+import app.venkat.offkit.core.isSaved
+import app.venkat.offkit.core.isSavingNow
 import android.app.Application
 import android.net.Uri
 import androidx.activity.compose.setContent
@@ -265,7 +268,7 @@ class ImagesToPdfScreenTest {
         assertEquals(3, vm.images.value.size)
 
         release.countDown()
-        CoreTestSupport.idleUntil(message = "ready") { vm.jobState.value is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ready") { vm.jobState.value.isReadyToSave }
         rule.waitForIdle()
         val summary = "3 pages · ${formatBytes(1_258_291)}"
         assertEquals("3 pages · 1.2 MB", summary)
@@ -277,7 +280,7 @@ class ImagesToPdfScreenTest {
         val dest = Uri.parse("content://dest.test/${System.nanoTime()}/images.pdf")
         shadowOf(app.contentResolver).registerOutputStream(dest, sink)
         rule.runOnUiThread { vm.save(dest) }
-        CoreTestSupport.idleUntil(message = "saved") { vm.jobState.value is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "saved") { vm.jobState.value.isSaved }
         rule.waitForIdle()
         assertArrayEquals(content, sink.toByteArray())
         rule.onNodeWithText(app.getString(R.string.job_saved_title)).performScrollTo().assertIsDisplayed()
@@ -492,7 +495,7 @@ class ImagesToPdfScreenTest {
         // Added while running: ignored (inputs are locked).
         rule.runOnUiThread { vm.add(listOf(image("x.jpg"))) }
         gate.countDown()
-        CoreTestSupport.idleUntil(message = "done") { vm.jobState.value is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "done") { vm.jobState.value.isReadyToSave }
         rule.waitForIdle()
         assertEquals(1, vm.images.value.size)
         assertEquals(1, fake.estimateCalls.size)
@@ -528,7 +531,7 @@ class ImagesToPdfScreenTest {
             releaseAll.countDown()
             gate.countDown()
         }
-        CoreTestSupport.idleUntil(message = "ready") { vm.jobState.value is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ready") { vm.jobState.value.isReadyToSave }
         awaitEstimates()
         assertEquals(3, fake.estimateCalls.size)
         allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 2)) }
@@ -538,7 +541,7 @@ class ImagesToPdfScreenTest {
 
     private fun readyResult() {
         runAndAwait()
-        assertTrue(vm.jobState.value is JobUiState.ReadyToSave)
+        assertTrue(vm.jobState.value.isReadyToSave)
         assertTrue(CoreTestSupport.jobFiles(app).isNotEmpty())
     }
 
@@ -587,7 +590,7 @@ class ImagesToPdfScreenTest {
         fake.results.clear()
         readyResult()
         click(imagesToPdfQualityTag(CompressionLevel.HIGH))
-        assertTrue(vm.jobState.value is JobUiState.ReadyToSave)
+        assertTrue(vm.jobState.value.isReadyToSave)
     }
 
     @Test
@@ -611,7 +614,7 @@ class ImagesToPdfScreenTest {
         )
         try {
             rule.runOnUiThread { vm.save(dest) }
-            CoreTestSupport.idleUntil(message = "saving") { writing.count == 0L && vm.jobState.value is JobUiState.Saving }
+            CoreTestSupport.idleUntil(message = "saving") { writing.count == 0L && vm.jobState.value.isSavingNow }
             rule.waitForIdle()
             rule.onNodeWithTag(TAG_JOB_SAVING).performScrollTo().assertExists()
             rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo().assertIsNotEnabled()
@@ -629,14 +632,14 @@ class ImagesToPdfScreenTest {
             assertEquals(null, vm.quality.value)
             assertEquals(PageSize.FIT_IMAGE, vm.pageSize.value)
             assertEquals(2, vm.images.value.size)
-            assertTrue(vm.jobState.value is JobUiState.Saving)
+            assertTrue(vm.jobState.value.isSavingNow)
         } finally {
             release.countDown()
         }
         CoreTestSupport.idleUntil(message = "save failed") { vm.saveError.value != null }
         rule.waitForIdle()
         // The error stays visible in ReadyToSave (not wiped by a state change).
-        assertTrue(vm.jobState.value is JobUiState.ReadyToSave)
+        assertTrue(vm.jobState.value.isReadyToSave)
         rule.onNodeWithTag(TAG_IMAGESTOPDF_SAVE_ERROR).performScrollTo()
             .assertTextEquals(app.getString(R.string.core_save_failed))
         // Changing an input clears it together with the stale result.

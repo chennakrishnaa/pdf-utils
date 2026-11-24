@@ -17,6 +17,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
+import app.venkat.offkit.ui.components.isSaving
+import app.venkat.offkit.ui.components.ShareRequestEffect
 import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.FileList
 import app.venkat.offkit.ui.components.FileRow
@@ -53,8 +55,10 @@ fun MergeScreen(onBack: () -> Unit) {
     val items by vm.items.collectAsState()
     val state by vm.jobState.collectAsState()
     val saveError by vm.saveError.collectAsState()
+    val shareRequest by vm.shareRequest.collectAsState()
+    ShareRequestEffect(shareRequest, vm::onShareHandled)
     // The list is locked while the job runs and while its result is being saved.
-    val locked = state is JobUiState.Running || state is JobUiState.Saving
+    val locked = state is JobUiState.Running || state.isSaving
 
     val picker = rememberPdfPicker(multiple = true) { uris -> vm.add(uris) }
     val saver = rememberPdfSaver { uri -> vm.save(uri) }
@@ -103,6 +107,7 @@ fun MergeScreen(onBack: () -> Unit) {
                 onCancel = vm::cancel,
                 onSave = { saver(vm.suggestedFileName()) },
                 onReset = vm::reset,
+                onShare = vm::share,
                 runIcon = AppIcons.merge,
                 modifier = Modifier.padding(top = 8.dp),
             )

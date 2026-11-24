@@ -1,5 +1,8 @@
 package app.venkat.offkit.compress
 
+import app.venkat.offkit.core.isReadyToSave
+import app.venkat.offkit.core.isSaved
+import app.venkat.offkit.core.isSavingNow
 import android.app.Application
 import android.content.Context
 import android.net.Uri
@@ -151,7 +154,7 @@ class CompressScreenTest {
 
     private fun runToReady() {
         click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         rule.waitForIdle()
     }
 
@@ -239,7 +242,7 @@ class CompressScreenTest {
         rule.onNodeWithTag(compressLevelTag(CompressionLevel.HIGH)).performScrollTo().assertIsNotEnabled()
 
         release.countDown()
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         rule.waitForIdle()
         assertEquals(10_000L, inputSize)
         val summary = "9.8 KB → 1000 B (90% smaller)"
@@ -252,7 +255,7 @@ class CompressScreenTest {
         val dest = Uri.parse("content://dest.test/${System.nanoTime()}/report-compressed.pdf")
         shadowOf(app.contentResolver).registerOutputStream(dest, sink)
         rule.runOnUiThread { vm.save(dest) }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
 
         assertArrayEquals(fake.outputContent, sink.toByteArray())
@@ -366,7 +369,7 @@ class CompressScreenTest {
         // Choosing the level that is already selected changes nothing.
         runToReady()
         click(compressLevelTag(CompressionLevel.HIGH))
-        assertTrue(state() is JobUiState.ReadyToSave)
+        assertTrue(state().isReadyToSave)
     }
 
     @Test
@@ -380,7 +383,7 @@ class CompressScreenTest {
             rule.runOnUiThread { vm.save(dest(sink)) }
             CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
             rule.waitForIdle()
-            assertTrue(state() is JobUiState.Saving)
+            assertTrue(state().isSavingNow)
             rule.onNodeWithTag(TAG_JOB_SAVING).performScrollTo().assertIsDisplayed()
             rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).performScrollTo().assertIsNotEnabled()
             CompressionLevel.entries.forEach { rule.onNodeWithTag(compressLevelTag(it)).assertIsNotEnabled() }
@@ -392,11 +395,11 @@ class CompressScreenTest {
             rule.waitForIdle()
             assertEquals(CompressionLevel.MEDIUM, vm.level.value)
             assertEquals("a.pdf", vm.file.value?.name)
-            assertTrue(state() is JobUiState.Saving)
+            assertTrue(state().isSavingNow)
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
         rule.onNodeWithTag(TAG_COMPRESS_CHOOSE).performScrollTo().assertIsEnabled()
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
@@ -417,7 +420,7 @@ class CompressScreenTest {
         rule.waitForIdle()
         assertEquals(1, backCalls)
         rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
-        assertTrue(state() is JobUiState.ReadyToSave)
+        assertTrue(state().isReadyToSave)
         rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
 
         // System back asks as well; confirming leaves.
@@ -433,7 +436,7 @@ class CompressScreenTest {
         choose(pdf("report.pdf"))
         runToReady()
         rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         val recents = RecentFilesStore.get(app).recents.value
         assertEquals(1, recents.size)
         assertEquals("compress", recents.single().tool)
@@ -451,7 +454,7 @@ class CompressScreenTest {
         rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
         rule.waitForIdle()
         rule.onNodeWithTag(TAG_COMPRESS_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
-        assertTrue(state() is JobUiState.ReadyToSave)
+        assertTrue(state().isReadyToSave)
 
         // A save after the result is gone explains it, in Idle, and the message stays.
         click(TAG_JOB_RESET)

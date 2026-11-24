@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.annotation.VisibleForTesting
+import androidx.core.content.FileProvider
 import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PdfEngine
@@ -48,8 +49,9 @@ sealed interface JobInput {
 }
 
 /**
- * A finished output waiting in the app cache for the user to pick a destination. Hand it to
- * [PdfJobs.save] or [PdfJobs.discard]; both remove it from the cache (save only on success).
+ * A finished output kept in the app cache until the caller discards it. It can be saved
+ * ([PdfJobs.save]) and shared ([PdfJobs.prepareShare]) any number of times; only
+ * [PdfJobs.discard] (or [PdfJobs.wipeAll]) removes it.
  *
  * @property file the output PDF (inside `cacheDir/jobs/<id>/`).
  * @property pages page count reported by the engine.
@@ -270,14 +272,13 @@ class PdfJobs @VisibleForTesting internal constructor(
 
     /**
      * Copies [output] to [dest] (truncating it) on the IO dispatcher. Success is reported only
-     * after the data has been written, flushed and the destination closed without error; the
-     * job directory is then deleted.
+     * after the data has been written, flushed and the destination closed without error. [output]
+     * is kept in every case (the caller discards it), so it can be saved again or shared.
      *
      * On any failure after the destination was opened (including a cancellation of the caller)
      * the destination document is deleted best-effort (see [deleteDestination]) so no truncated
      * file is left behind; a failure before that deletes it only if it is empty
-     * ([deleteDestinationIfEmpty]). [output] is kept
-     * so the caller can retry with another [dest]. Failures are returned as
+     * ([deleteDestinationIfEmpty]). Failures are returned as
      * `Result.failure`; a cancellation is rethrown after the cleanup.
      */
     suspend fun save(output: PendingOutput, dest: Uri): Result<Unit> = withContext(ioDispatcher) {
@@ -297,7 +298,6 @@ class PdfJobs @VisibleForTesting internal constructor(
                     }
                 }
             }
-            output.jobDir.deleteRecursively()
             Result.success(Unit)
         } catch (e: Throwable) {
             // Once opened with "wt" the destination holds our partial data: always delete it.
@@ -346,6 +346,47 @@ class PdfJobs @VisibleForTesting internal constructor(
         if (empty) deleteDestination(dest)
     }
 
+    /**
+     * Copies [output] to `cacheDir/shared/<random id>/<name>`, where name is [suggestedName]
+     * sanitised ([shareFileName]), on the IO dispatcher, and returns a `content://` Uri for it from
+     * the app's share provider (authority `<applicationId>.share`, which exposes only
+     * `cacheDir/shared/`). Throws [IOException] (the partial copy is deleted) or
+     * [CancellationException]. The copy stays until [wipeShared].
+     */
+    suspend fun prepareShare(output: PendingOutput, suggestedName: String): ShareRequest = withContext(ioDispatcher) {
+        val name = shareFileName(suggestedName)
+        val dir = File(sharedRoot, UUID.randomUUID().toString())
+        try {
+            if (!output.file.isFile) throw IOException("Output no longer exists")
+            if (!dir.mkdirs()) throw IOException("Cannot create share directory")
+            val target = File(dir, name)
+            val ctx = currentCoroutineContext()
+            target.outputStream().use { UriIo.copyToStream(output.file, it) { !ctx.isActive } }
+            ShareRequest(FileProvider.getUriForFile(appContext, shareAuthority(appContext), target), name)
+        } catch (e: Throwable) {
+            withContext(NonCancellable) { dir.deleteRecursively() }
+            if (e is IllegalArgumentException) throw IOException("Cannot share file", e)
+            throw e
+        }
+    }
+
+    /** Deletes everything under `cacheDir/shared/` on the IO dispatcher. Never throws. */
+    suspend fun wipeShared() {
+        withContext(NonCancellable + ioDispatcher) { deleteShared() }
+    }
+
+    private fun deleteShared() {
+        try {
+            sharedRoot.listFiles()?.forEach { it.deleteRecursively() }
+        } catch (e: Exception) {
+            // Best effort.
+        }
+    }
+
+    /** `cacheDir/shared`, the only directory the share provider exposes. */
+    @VisibleForTesting
+    internal val sharedRoot: File get() = File(appContext.cacheDir, SHARED_DIR)
+
     /** Deletes [output] and its job directory. Safe to call more than once. */
     fun discard(output: PendingOutput) {
         output.jobDir.deleteRecursively()
@@ -359,6 +400,21 @@ class PdfJobs @VisibleForTesting internal constructor(
     companion object {
         private const val JOBS_DIR = "jobs"
         private const val OUTPUT_NAME = "output.pdf"
+        private const val SHARED_DIR = "shared"
+        private const val PDF_EXTENSION = ".pdf"
+        private const val DEFAULT_SHARE_NAME = "document.pdf"
+
+        /** Authority of the app's non-exported share `FileProvider` (see the manifest). */
+        fun shareAuthority(context: Context): String = context.packageName + ".share"
+
+        /**
+         * File name for a shared copy: [suggestedName] through [sanitizeDisplayName] (no path
+         * separators), with a `.pdf` extension added if missing.
+         */
+        fun shareFileName(suggestedName: String): String {
+            val clean = sanitizeDisplayName(suggestedName, DEFAULT_SHARE_NAME)
+            return if (clean.endsWith(PDF_EXTENSION, ignoreCase = true)) clean else clean + PDF_EXTENSION
+        }
 
         /** The single thread on which every engine call in the process runs. */
         private val ENGINE_DISPATCHER: CoroutineDispatcher = Executors.newSingleThreadExecutor { r ->
@@ -370,7 +426,7 @@ class PdfJobs @VisibleForTesting internal constructor(
 
         /**
          * The process-wide instance, bound to the application context. The first call wipes
-         * `cacheDir/jobs/` (leftovers of a previous process). Cheap; may be called on any thread.
+         * `cacheDir/jobs/` and `cacheDir/shared/` (leftovers of a previous process). Cheap; may be called on any thread.
          */
         fun get(context: Context): PdfJobs {
             val app = context.applicationContext ?: context
@@ -381,6 +437,7 @@ class PdfJobs @VisibleForTesting internal constructor(
                 instance?.takeIf { it.appContext === app }
                     ?: PdfJobs(app).also {
                         it.wipeAll()
+                        it.deleteShared()
                         instance = it
                     }
             }

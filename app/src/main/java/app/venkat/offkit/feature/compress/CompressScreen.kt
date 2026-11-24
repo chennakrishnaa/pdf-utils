@@ -18,6 +18,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
+import androidx.compose.ui.res.pluralStringResource
+import app.venkat.offkit.ui.components.isSaving
+import app.venkat.offkit.ui.components.ShareRequestEffect
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.ChoiceCard
@@ -78,8 +81,10 @@ fun CompressScreen(onBack: () -> Unit) {
     val level by vm.level.collectAsState()
     val state by vm.jobState.collectAsState()
     val saveError by vm.saveError.collectAsState()
+    val shareRequest by vm.shareRequest.collectAsState()
+    ShareRequestEffect(shareRequest, vm::onShareHandled)
     // Inputs and options are locked while the job runs and while its result is being saved.
-    val editable = state !is JobUiState.Running && state !is JobUiState.Saving
+    val editable = state !is JobUiState.Running && !state.isSaving
 
     val picker = rememberPdfPicker(multiple = false) { uris -> uris.firstOrNull()?.let(vm::choose) }
     val saver = rememberPdfSaver { uri -> vm.save(uri) }
@@ -135,6 +140,8 @@ fun CompressScreen(onBack: () -> Unit) {
                 onCancel = vm::cancel,
                 onSave = { saver(vm.suggestedFileName()) },
                 onReset = vm::reset,
+                onShare = vm::share,
+                summary = { compressSummary(it) },
                 runIcon = AppIcons.compress,
                 modifier = Modifier.padding(top = 8.dp),
             )
@@ -149,5 +156,21 @@ fun CompressScreen(onBack: () -> Unit) {
                 )
             }
         }
+    }
+}
+
+/** Result summary: original size, new size and the saving, or a fallback when unknown or no gain. */
+@Composable
+private fun compressSummary(done: JobUiState.Done): String {
+    val original = done.originalBytes
+    return when {
+        original == null || original <= 0 -> stringResource(R.string.compress_summary_size_only, formatBytes(done.bytes))
+        done.bytes >= original -> stringResource(R.string.compress_summary_no_gain)
+        else -> stringResource(
+            R.string.compress_summary,
+            formatBytes(original),
+            formatBytes(done.bytes),
+            CompressViewModel.savingPercent(original, done.bytes),
+        )
     }
 }

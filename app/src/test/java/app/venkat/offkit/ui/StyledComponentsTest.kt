@@ -178,8 +178,8 @@ class StyledComponentsTest {
 
     @Test
     fun jobPanelReadyToSaveSaveAndDiscard() {
-        val c = showPanel(JobUiState.ReadyToSave("2 pages"))
-        rule.onNodeWithTag("job_summary").assertTextEquals("2 pages")
+        val c = showPanel(JobUiState.Done(2, 1000, null, "a.pdf"))
+        rule.onNodeWithTag("job_summary").assertIsDisplayed()
         rule.onNodeWithTag("job_save").assertTextEquals(rule.activity.getString(R.string.job_save)).performClick()
         rule.onNodeWithTag("job_reset").performClick()
         assertEquals(listOf(0, 0, 1, 1), c.counts())
@@ -187,7 +187,7 @@ class StyledComponentsTest {
 
     @Test
     fun jobPanelSavingHasNoButtons() {
-        val c = showPanel(JobUiState.Saving("2 pages"))
+        val c = showPanel(JobUiState.Done(2, 1000, null, "a.pdf", saving = true))
         listOf("job_run", "job_cancel", "job_save", "job_reset").forEach { rule.onNodeWithTag(it).assertDoesNotExist() }
         rule.onNodeWithTag("job_saving").assertIsDisplayed()
         assertEquals(listOf(0, 0, 0, 0), c.counts())
@@ -195,7 +195,7 @@ class StyledComponentsTest {
 
     @Test
     fun jobPanelSavedStartOver() {
-        val c = showPanel(JobUiState.Saved("Saved out.pdf"))
+        val c = showPanel(JobUiState.Done(2, 1000, null, "out.pdf", savedName = "out.pdf", savedUri = android.net.Uri.parse("content://x/1")))
         rule.onNode(hasText(rule.activity.getString(R.string.job_saved_title))).assertIsDisplayed()
         rule.onNodeWithTag("job_reset").performClick()
         assertEquals(listOf(0, 0, 0, 1), c.counts())
@@ -205,9 +205,9 @@ class StyledComponentsTest {
     fun jobPanelFailedTryAgain() {
         val c = Calls()
         show {
-            JobPanel(JobUiState.Failed("Boom"), "Go", true, { c.run++ }, { c.cancel++ }, { c.save++ }, { c.reset++ })
+            JobPanel(JobUiState.Failed(app.venkat.offkit.engine.PdfError.Encrypted), "Go", true, { c.run++ }, { c.cancel++ }, { c.save++ }, { c.reset++ })
         }
-        rule.onNodeWithTag("job_error").assertTextEquals("Boom")
+        rule.onNodeWithTag("job_error").assertTextEquals(rule.activity.getString(R.string.error_encrypted))
         rule.onNodeWithTag("job_reset").assertTextEquals(rule.activity.getString(R.string.job_try_again)).performClick()
         assertEquals(listOf(0, 0, 0, 1), c.counts())
     }
