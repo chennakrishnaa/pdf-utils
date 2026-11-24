@@ -126,7 +126,8 @@ private fun CompressOptions(
                 text = stringResource(if (file != null) R.string.action_compress else R.string.choose_pdf_first),
                 onClick = onRun,
                 enabled = file != null,
-                icon = painterResource(OffkitTool.COMPRESS.icon),
+                // A disabled primary button shows only its label (designs 02, 07c, 08b).
+                icon = if (file != null) painterResource(OffkitTool.COMPRESS.icon) else null,
                 modifier = Modifier.fillMaxWidth(),
                 testTag = TAG_JOB_RUN,
             )

@@ -165,7 +165,8 @@ private fun AddImagesOptions(
                 text = runLabel,
                 onClick = onRun,
                 enabled = pdf != null && count > 0,
-                icon = painterResource(OffkitTool.ADD_PAGES.icon),
+                // A disabled primary button shows only its label (designs 02, 07c, 08b).
+                icon = if (pdf != null && count > 0) painterResource(OffkitTool.ADD_PAGES.icon) else null,
                 modifier = Modifier.fillMaxWidth(),
                 testTag = TAG_JOB_RUN,
             )

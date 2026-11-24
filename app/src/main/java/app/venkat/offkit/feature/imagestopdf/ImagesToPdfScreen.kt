@@ -210,7 +210,8 @@ private fun ImagesToPdfOptions(
                     onClick = onRun,
                     modifier = modifier,
                     enabled = hasImages,
-                    icon = painterResource(OffkitTool.IMAGES.icon),
+                    // A disabled primary button shows only its label (designs 02, 07c, 08b).
+                    icon = if (hasImages) painterResource(OffkitTool.IMAGES.icon) else null,
                     testTag = TAG_JOB_RUN,
                 )
             }
