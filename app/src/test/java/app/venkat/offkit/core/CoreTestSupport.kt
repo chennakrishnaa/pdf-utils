@@ -12,12 +12,6 @@ import java.io.File
 
 /** Shared helpers for core tests. */
 internal object CoreTestSupport {
-    /**
-     * Bound for waits on a share: a real file copy plus first-time `FileProvider` set-up, which
-     * can be slow when a whole test batch runs (the 5 s default timed out there).
-     */
-    const val SHARE_TIMEOUT_MS = 30_000L
-
     /** Registers [bytes] as the (re-readable) content of a fresh `content://` Uri. */
     fun contentUri(context: Context, name: String, bytes: ByteArray): Uri {
         val uri = Uri.parse("content://app.venkat.offkit.test/${System.nanoTime()}/$name")

@@ -101,6 +101,8 @@ class CompressScreenTest {
     @Before
     fun setUp() {
         app = ApplicationProvider.getApplicationContext()
+        // A share in an earlier test cached its own data dir; without this the share copy fails.
+        CoreTestSupport.clearFileProviderCache()
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         resetRecents()
@@ -527,7 +529,7 @@ class CompressScreenTest {
         runToReady()
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_JOB_SHARE)
-        CoreTestSupport.idleUntil(rule, timeoutMs = CoreTestSupport.SHARE_TIMEOUT_MS, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
+        CoreTestSupport.idleUntil(rule, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
         rule.waitForIdle()
         assertNotNull(shadowOf(rule.activity).nextStartedActivity)
         assertNull(vm.shareRequest.value)
