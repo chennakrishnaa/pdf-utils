@@ -21,7 +21,7 @@ internal class HostilePdf {
     }
 
     /** One object stream [num] holding [members] (object number to body); [dictExtra] is added to its dictionary. */
-    fun objStm(num: Int, members: List<Pair<Int, ByteArray>>, dictExtra: String = "/Type/ObjStm", flate: Boolean = true) = apply {
+    fun objStm(num: Int, members: List<Pair<Int, ByteArray>>, dictExtra: String = "/Type/ObjStm", flate: Boolean = true, nKey: String = "N") = apply {
         val header = StringBuilder()
         var off = 0
         for ((n, b) in members) {
@@ -35,7 +35,7 @@ internal class HostilePdf {
             body.write(b)
             body.write('\n'.code)
         }
-        stream(num, "$dictExtra/N ${members.size}/First ${header.length}", body.toByteArray(), flate)
+        stream(num, "$dictExtra/$nKey ${members.size}/First ${header.length}", body.toByteArray(), flate)
         members.forEachIndexed { i, (n, _) -> inStm[n] = num to i }
     }
 

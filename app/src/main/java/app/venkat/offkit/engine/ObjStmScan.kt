@@ -1,0 +1,280 @@
+package app.venkat.offkit.engine
+
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.util.zip.DataFormatException
+import java.util.zip.Inflater
+
+/**
+ * Raw-file pre-scan for object-stream bombs (security re-check SR3-1), run before MuPDF opens an
+ * input.
+ *
+ * Why: resolving ANY object that lives in an object stream makes MuPDF (`pdf-xref.c`
+ * `pdf_load_obj_stm`) parse every object of that stream in one native call, before the
+ * [ObjectGraph] budget can count anything. A 175 KB file whose object stream inflates to 120 MB of
+ * `1 0 R` costs ~900 MB; if the catalog lives in that stream, `Document.openDocument` /
+ * `countPages` pays it. Parsed size grows with decoded size, so the decoded size is bounded here.
+ *
+ * What: one forward pass over the file (fixed 64 KiB buffer, positional reads; no whole-file array),
+ * tokenising it roughly as MuPDF's lexer does (names with `#xx` escapes decoded, literal strings with
+ * nesting and escapes, comments, hex strings; strings/comments longer than 64 KiB are cut there).
+ * Every stream whose preceding dictionary (tokens since the last `obj`, `endobj`, `stream` or
+ * `endstream` keyword) contains the name `/ObjStm` OR `/N` is a candidate: MuPDF loads any type-2
+ * xref target as an object stream reading only `/N` and `/First` (no `/Type` check), so the `/N`
+ * test catches a dictionary without `/Type`. ICC profile streams also carry `/N`; they are small and
+ * pass. Per candidate:
+ * - `/Filter` absent: its raw extent (to the next `endstream`) counts as decoded bytes;
+ * - `/Filter` exactly `/FlateDecode` or `/Fl` (a name or a one-element array): inflated with a
+ *   bounded [Inflater] into a scratch buffer, stopping at the bound. A stream that is not valid
+ *   zlib (e.g. encrypted) counts what it yielded and is otherwise ignored, so encrypted files still
+ *   reach the Encrypted check; `/DecodeParms` predictors only shrink the output, so they are ignored;
+ * - any other filter, a chain, or an indirect / non-name `/Filter`: the file is refused. MuPDF would
+ *   decode them (LZW, RunLength, ASCII chains), and their expansion cannot be bounded here without
+ *   reimplementing them; legitimate writers use Flate alone for object streams.
+ * Refused (`OutOfMemory`, "too large") when one candidate decodes to more than [maxStream] bytes
+ * (16 MiB) or all candidates together to more than [maxTotal] bytes (64 MiB). Compressed bytes
+ * consumed by the inflater are charged against the same bounds, so overlapping candidates (a stream
+ * keyword inside another stream's data; scanning resumes right after each `stream` keyword, the
+ * data is tokenised too) keep the total work linear in the file size plus the bounds.
+ *
+ * This is a MITIGATION, not a guarantee. MuPDF reaches objects through xref offsets, not by scanning,
+ * and xref repair can find streams anywhere; an object stream can evade the scan if, for example,
+ * its dictionary hides a reset keyword inside a string or comment longer than 64 KiB, or the scan's
+ * tokenisation of preceding binary data diverges from MuPDF's view at that offset. The `:engine`
+ * process (killed on cancel, its death reported as an error) remains the backstop.
+ */
+internal object ObjStmScan {
+    /** Largest decoded size of one object stream: 16 MiB (real ones are tens to hundreds of KB). */
+    const val MAX_STREAM_BYTES = 16L shl 20
+
+    /** Largest decoded size of all object streams of one file together: 64 MiB. */
+    const val MAX_TOTAL_BYTES = 64L shl 20
+
+    /**
+     * @throws PdfInputException `OutOfMemory` when [file] has an object stream over the bounds or one
+     *   whose filter cannot be bounded.
+     * @throws java.io.IOException when [file] cannot be read.
+     */
+    fun check(file: File, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES) {
+        RandomAccessFile(file, "r").use { raf -> Scanner(raf.channel, maxStream, maxTotal).run() }
+    }
+
+    private const val CHUNK = 64 * 1024
+    private const val MAX_SPAN = 64 * 1024
+    private const val MAX_KEPT = 64
+
+    private class Scanner(private val ch: FileChannel, private val maxStream: Long, private val maxTotal: Long) {
+        private val size = ch.size()
+        private val buf = ByteBuffer.allocate(CHUNK)
+        private var bufStart = 0L
+        private var bufLen = 0
+
+        private var candidate = false
+        private val filters = ArrayList<String>()
+        private var filterUnknown = false
+        private var filterState = 0 // 0 none, 1 after /Filter, 2 inside its array
+        private var rawStart = -1L
+        private var totalOut = 0L
+        private var totalIn = 0L
+        private val word = StringBuilder()
+
+        /** Byte at [p] (0..255), or -1 at end of file. */
+        private fun at(p: Long): Int {
+            if (p >= size) return -1
+            if (p < bufStart || p >= bufStart + bufLen) {
+                buf.clear()
+                val r = ch.read(buf, p)
+                if (r <= 0) return -1
+                bufStart = p
+                bufLen = r
+            }
+            return buf.get((p - bufStart).toInt()).toInt() and 0xFF
+        }
+
+        fun run() {
+            var p = 0L
+            while (true) {
+                val c = at(p)
+                if (c < 0) break
+                p = when {
+                    isWhite(c) -> p + 1
+                    c == '%'.code -> skipUntil(p + 1) { it == '\n'.code || it == '\r'.code }
+                    c == '('.code -> skipString(p + 1).also { otherValue() }
+                    c == '<'.code -> if (at(p + 1) == '<'.code) p + 2 else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
+                    c == '['.code -> { if (filterState == 1) filterState = 2 else otherValue(); p + 1 }
+                    c == ']'.code -> { if (filterState == 2) filterState = 0; p + 1 }
+                    c == '/'.code -> readName(p + 1)
+                    isDelim(c) -> p + 1
+                    else -> readWord(p)
+                }
+            }
+            finishRaw(size)
+        }
+
+        private fun otherValue() {
+            if (filterState != 0) {
+                filterUnknown = true
+                if (filterState == 1) filterState = 0
+            }
+        }
+
+        private inline fun skipUntil(from: Long, stop: (Int) -> Boolean): Long {
+            var p = from
+            val end = from + MAX_SPAN
+            while (p < end) {
+                val c = at(p)
+                if (c < 0) return p
+                p++
+                if (stop(c)) return p
+            }
+            return p
+        }
+
+        private fun skipString(from: Long): Long {
+            var p = from
+            var depth = 1
+            val end = from + MAX_SPAN
+            while (p < end) {
+                val c = at(p++)
+                when (c) {
+                    -1 -> return p - 1
+                    '\\'.code -> p++
+                    '('.code -> depth++
+                    ')'.code -> if (--depth == 0) return p
+                }
+            }
+            return p
+        }
+
+        private fun readName(from: Long): Long {
+            word.setLength(0)
+            var p = from
+            while (true) {
+                val c = at(p)
+                if (c < 0 || isWhite(c) || isDelim(c)) break
+                p++
+                var ch = c
+                if (c == '#'.code) {
+                    val h = hex(at(p))
+                    val l = hex(at(p + 1))
+                    if (h >= 0 && l >= 0) {
+                        ch = h * 16 + l
+                        p += 2
+                    }
+                }
+                if (word.length < MAX_KEPT) word.append(ch.toChar())
+            }
+            onName(word.toString())
+            return p
+        }
+
+        private fun readWord(from: Long): Long {
+            word.setLength(0)
+            var p = from
+            while (true) {
+                val c = at(p)
+                if (c < 0 || isWhite(c) || isDelim(c)) break
+                p++
+                if (word.length < MAX_KEPT) word.append(c.toChar())
+            }
+            when (word.toString()) {
+                "stream" -> { onStream(p); reset() }
+                "endstream" -> { finishRaw(from); reset() }
+                "obj", "endobj" -> reset()
+                else -> otherValue()
+            }
+            return p
+        }
+
+        private fun onName(n: String) {
+            when (filterState) {
+                1 -> { filters.add(n); filterState = 0; return }
+                2 -> { filters.add(n); return }
+            }
+            when (n) {
+                "Filter" -> { filterState = 1; filters.clear() }
+                "ObjStm", "N" -> candidate = true
+            }
+        }
+
+        private fun reset() {
+            candidate = false
+            filters.clear()
+            filterUnknown = false
+            filterState = 0
+        }
+
+        /** `stream` keyword ending at [after]: checks the stream if its dictionary made it a candidate. */
+        private fun onStream(after: Long) {
+            finishRaw(after)
+            if (!candidate) return
+            var d = after
+            if (at(d) == '\r'.code) d++
+            if (at(d) == '\n'.code) d++
+            when {
+                filterUnknown || filters.size > 1 -> tooLarge()
+                filters.isEmpty() -> rawStart = d
+                filters[0] == "FlateDecode" || filters[0] == "Fl" -> inflate(d)
+                else -> tooLarge()
+            }
+        }
+
+        private fun finishRaw(end: Long) {
+            if (rawStart < 0) return
+            val n = maxOf(0L, end - rawStart)
+            rawStart = -1
+            if (n > maxStream || totalOut + n > maxTotal) tooLarge()
+            totalOut += n
+        }
+
+        private fun inflate(from: Long) {
+            val inf = Inflater()
+            try {
+                val scratch = ByteArray(CHUNK)
+                val input = ByteBuffer.allocate(CHUNK)
+                var pos = from
+                var out = 0L
+                while (true) {
+                    if (inf.needsInput()) {
+                        if (pos >= size) break
+                        input.clear()
+                        val r = ch.read(input, pos)
+                        if (r <= 0) break
+                        pos += r
+                        inf.setInput(input.array(), 0, r)
+                    }
+                    val got = try {
+                        inf.inflate(scratch)
+                    } catch (e: DataFormatException) {
+                        break
+                    }
+                    out += got
+                    val read = inf.bytesRead
+                    if (out > maxStream || read > maxStream) tooLarge()
+                    if (totalOut + out > maxTotal || totalIn + read > maxTotal) tooLarge()
+                    if (inf.finished() || (got == 0 && inf.needsDictionary())) break
+                }
+                totalOut += out
+                totalIn += inf.bytesRead
+            } finally {
+                inf.end()
+            }
+        }
+
+        private fun tooLarge(): Nothing = throw PdfInputException(PdfError.OutOfMemory)
+
+        private fun isWhite(c: Int) = c == 0 || c == 9 || c == 10 || c == 12 || c == 13 || c == 32
+
+        private fun isDelim(c: Int) = c == '('.code || c == ')'.code || c == '<'.code || c == '>'.code ||
+            c == '['.code || c == ']'.code || c == '{'.code || c == '}'.code || c == '/'.code || c == '%'.code
+
+        private fun hex(c: Int): Int = when (c) {
+            in '0'.code..'9'.code -> c - '0'.code
+            in 'a'.code..'f'.code -> c - 'a'.code + 10
+            in 'A'.code..'F'.code -> c - 'A'.code + 10
+            else -> -1
+        }
+    }
+}
