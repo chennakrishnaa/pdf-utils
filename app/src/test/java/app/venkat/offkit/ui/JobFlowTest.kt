@@ -243,6 +243,15 @@ class JobFlowTest {
         rule.onNodeWithText(str(R.string.result_not_saved)).assertDoesNotExist()
     }
 
+    /** RD-7: without a reported name the row says "Saved", never the suggested name. */
+    @Test
+    fun savedWithoutNameDoesNotGuessIt() {
+        flow(unsaved.copy(savedName = null, savedUri = Uri.parse("content://x/1")))
+        rule.onNodeWithText(str(R.string.result_saved)).assertExists()
+        rule.onNodeWithText(str(R.string.result_saved_as, unsaved.suggestedName)).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_OPEN).assertExists()
+    }
+
     @Test
     fun discardOnUnsavedAsksKeepStaysConfirmLeaves() {
         flow(unsaved)

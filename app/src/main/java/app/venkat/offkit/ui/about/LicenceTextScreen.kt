@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.venkat.offkit.ui.components.OffkitNavIcon
@@ -35,7 +36,7 @@ const val TAG_LICENCE_TEXT = "licence_text"
 
 /**
  * Full-screen, scrollable and selectable view of a bundled plain-text [asset] (licence texts).
- * The asset is read off the main thread and shown paragraph by paragraph on one white panel in a
+ * The asset is read off the main thread, reflowed for the screen width ([reflowLicenceText]) and shown block by block on one white panel in a
  * [LazyColumn] (tag [TAG_LICENCE_TEXT]) inside [OffkitLazyScaffold], so only the visible
  * paragraphs of a long text (the notices are ~200 KB) are laid out. The navigation-bar inset is
  * part of the list's content padding.
@@ -43,7 +44,7 @@ const val TAG_LICENCE_TEXT = "licence_text"
 @Composable
 fun LicenceTextScreen(title: String, asset: String, onBack: () -> Unit) {
     val context = LocalContext.current
-    val paragraphs by produceState<List<String>?>(initialValue = null, asset) {
+    val paragraphs by produceState<List<LicenceBlock>?>(initialValue = null, asset) {
         value = withContext(Dispatchers.IO) { readParagraphs(context, asset) }
     }
     LicenceTextContent(title = title, paragraphs = paragraphs, onBack = onBack)
@@ -51,7 +52,7 @@ fun LicenceTextScreen(title: String, asset: String, onBack: () -> Unit) {
 
 /** The frame of [LicenceTextScreen]: a spinner while [paragraphs] is null, then the text. */
 @Composable
-private fun LicenceTextContent(title: String, paragraphs: List<String>?, onBack: () -> Unit) {
+private fun LicenceTextContent(title: String, paragraphs: List<LicenceBlock>?, onBack: () -> Unit) {
     OffkitLazyScaffold(title = title, navIcon = OffkitNavIcon.Back, onNavigate = onBack) { padding ->
         if (paragraphs == null) {
             Box(Modifier.fillMaxWidth().padding(padding).padding(vertical = 48.dp), contentAlignment = Alignment.Center) {
@@ -67,7 +68,8 @@ private fun LicenceTextContent(title: String, paragraphs: List<String>?, onBack:
                         val first = index == 0
                         val last = index == paragraphs.lastIndex
                         Text(
-                            text = paragraph,
+                            text = paragraph.text,
+                            textAlign = if (paragraph.centred) TextAlign.Center else TextAlign.Start,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
@@ -94,13 +96,9 @@ private fun paragraphShape(first: Boolean, last: Boolean): Shape {
     )
 }
 
-/** Reads [asset] and splits it at blank lines; an unreadable asset yields an empty list. */
-internal fun readParagraphs(context: Context, asset: String): List<String> = try {
-    context.assets.open(asset).bufferedReader(Charsets.UTF_8).use { it.readText() }
-        .replace("\r\n", "\n")
-        .split(Regex("\n[ \t]*\n"))
-        .map { it.trimEnd() }
-        .filter { it.isNotBlank() }
+/** Reads [asset] and reflows it into display blocks ([reflowLicenceText]); an unreadable asset yields an empty list. */
+internal fun readParagraphs(context: Context, asset: String): List<LicenceBlock> = try {
+    reflowLicenceText(context.assets.open(asset).bufferedReader(Charsets.UTF_8).use { it.readText() })
 } catch (_: IOException) {
     emptyList()
 }
@@ -112,8 +110,8 @@ private fun LicenceTextPreview() {
         LicenceTextContent(
             title = "GNU AGPL v3",
             paragraphs = listOf(
-                "GNU AFFERO GENERAL PUBLIC LICENSE\nVersion 3, 19 November 2007",
-                "Everyone is permitted to copy and distribute verbatim copies of this license document, but changing it is not allowed.",
+                LicenceBlock("GNU AFFERO GENERAL PUBLIC LICENSE\nVersion 3, 19 November 2007", centred = true),
+                LicenceBlock("Everyone is permitted to copy and distribute verbatim copies of this license document, but changing it is not allowed."),
             ),
             onBack = {},
         )

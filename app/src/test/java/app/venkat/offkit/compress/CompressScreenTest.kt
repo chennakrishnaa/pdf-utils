@@ -496,6 +496,31 @@ class CompressScreenTest {
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
     }
 
+    /** RD-4: a fast double tap on Save opens one system dialog; the guard resets when it returns. */
+    @Test
+    fun doubleTapOnSaveOpensOneDialogUntilItReturns() {
+        choose(pdf("a.pdf"))
+        runToReady()
+        shadowOf(rule.activity).clearNextStartedActivities()
+        rule.onNodeWithTag(TAG_JOB_SAVE).performClick()
+        rule.onNodeWithTag(TAG_JOB_SAVE).performClick()
+        rule.waitForIdle()
+        val dialog = shadowOf(rule.activity).nextStartedActivityForResult
+        assertEquals(Intent.ACTION_CREATE_DOCUMENT, dialog?.intent?.action)
+        // Robolectric records a launch for result in both lists: the first entry is the same launch.
+        assertEquals(Intent.ACTION_CREATE_DOCUMENT, shadowOf(rule.activity).nextStartedActivity?.action)
+        assertNull("a second save dialog was opened", shadowOf(rule.activity).nextStartedActivity)
+
+        // The dialog is cancelled: Save opens it again.
+        rule.runOnUiThread {
+            shadowOf(rule.activity).receiveResult(dialog!!.intent, android.app.Activity.RESULT_CANCELED, null)
+        }
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_JOB_SAVE).performClick()
+        rule.waitForIdle()
+        assertEquals(Intent.ACTION_CREATE_DOCUMENT, shadowOf(rule.activity).nextStartedActivity?.action)
+    }
+
     @Test
     fun shareButtonRequestsShare() {
         choose(pdf("a.pdf"))

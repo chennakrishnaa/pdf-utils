@@ -165,7 +165,8 @@ private fun AddImagesOptions(
                 text = runLabel,
                 onClick = onRun,
                 enabled = pdf != null && count > 0,
-                icon = painterResource(OffkitTool.ADD_PAGES.icon),
+                // A disabled primary button shows only its label (designs 02, 07c, 08b).
+                icon = if (pdf != null && count > 0) painterResource(OffkitTool.ADD_PAGES.icon) else null,
                 modifier = Modifier.fillMaxWidth(),
                 testTag = TAG_JOB_RUN,
             )
@@ -197,13 +198,14 @@ private fun AddImagesOptions(
             actionIcon = AppIcons.add,
             actionTestTag = TAG_ADDIMAGES_ADD_IMAGES,
         )
+        // Shown with or without images (design 07c), so the header is never followed by a gap.
+        Text(
+            text = stringResource(R.string.add_pages_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+        )
         if (count > 0) {
-            Text(
-                text = stringResource(R.string.add_pages_hint),
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-            )
             OffkitThumbnailRow(
                 count = count,
                 selectedIndex = selectedIndex,

@@ -293,7 +293,8 @@ fun OffkitResultScreen(
             ) {
                 Icon(AppIcons.check, contentDescription = null, tint = onSuccess, modifier = Modifier.size(OffkitDimens.iconSize))
                 Text(
-                    stringResource(R.string.result_saved_as, state.savedName ?: state.suggestedName),
+                    // No guess when the provider did not report the name: the user may have renamed the file.
+                    state.savedName?.let { stringResource(R.string.result_saved_as, it) } ?: stringResource(R.string.result_saved),
                     style = MaterialTheme.typography.labelMedium,
                     color = onSuccess,
                     modifier = Modifier.weight(1f),

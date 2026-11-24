@@ -210,7 +210,8 @@ private fun ImagesToPdfOptions(
                     onClick = onRun,
                     modifier = modifier,
                     enabled = hasImages,
-                    icon = painterResource(OffkitTool.IMAGES.icon),
+                    // A disabled primary button shows only its label (designs 02, 07c, 08b).
+                    icon = if (hasImages) painterResource(OffkitTool.IMAGES.icon) else null,
                     testTag = TAG_JOB_RUN,
                 )
             }
@@ -224,13 +225,14 @@ private fun ImagesToPdfOptions(
             actionIcon = AppIcons.add,
             actionTestTag = TAG_IMAGESTOPDF_ADD,
         )
+        // Shown with or without images (design 07c), so the header is never followed by a gap.
+        Text(
+            text = stringResource(R.string.images_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+        )
         if (hasImages) {
-            Text(
-                text = stringResource(R.string.images_hint),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-            )
             OffkitThumbnailRow(
                 count = imageCount,
                 selectedIndex = selectedIndex,

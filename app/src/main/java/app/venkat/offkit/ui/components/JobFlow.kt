@@ -90,7 +90,13 @@ fun OffkitJobFlow(
     options: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
-    val launchSaver = rememberPdfSaver(onSave)
+    // True while the system save dialog is open: a fast double tap on Save must not open a second
+    // one. Cleared when the dialog returns (a Uri or null) or could not be opened.
+    var saverOpen by rememberSaveable { mutableStateOf(false) }
+    val launchSaver = rememberPdfSaver { uri ->
+        saverOpen = false
+        onSave(uri)
+    }
     ShareRequestEffect(shareRequest, onShareHandled)
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -132,7 +138,11 @@ fun OffkitJobFlow(
                     title = title,
                     state = done,
                     onClose = requestLeave,
-                    onSave = { if (!done.saving) launchSaver(done.suggestedName) },
+                    onSave = {
+                        if (!done.saving && !saverOpen) {
+                            saverOpen = launchSaver(done.suggestedName)
+                        }
+                    },
                     onShare = onShare,
                     onFinish = requestLeave,
                     onOpen = { uri -> openSavedPdf(context, uri) },

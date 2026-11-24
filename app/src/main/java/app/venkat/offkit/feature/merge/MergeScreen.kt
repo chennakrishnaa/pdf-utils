@@ -149,7 +149,8 @@ private fun MergeOptions(
                     onClick = onRun,
                     modifier = modifier,
                     enabled = canRun,
-                    icon = painterResource(R.drawable.ic_tool_merge),
+                    // A disabled primary button shows only its label (designs 02, 07c, 08b).
+                    icon = if (canRun) painterResource(R.drawable.ic_tool_merge) else null,
                     testTag = TAG_JOB_RUN,
                 )
             }

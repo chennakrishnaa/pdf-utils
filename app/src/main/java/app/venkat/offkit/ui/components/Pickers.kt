@@ -136,10 +136,11 @@ fun rememberImagePicker(onPicked: (List<Uri>) -> Unit): () -> Unit {
  * Returns a function that opens the system "create document" dialog for a PDF
  * ([ActivityResultContracts.CreateDocument] with [MIME_PDF]), pre-filled with the given
  * suggested file name. [onChosen] receives the new document's Uri (writable via
- * `ContentResolver.openOutputStream`), or null if the user cancelled.
+ * `ContentResolver.openOutputStream`), or null if the user cancelled. The function returns false
+ * when no app can handle the request (a toast explains it), so no result will arrive.
  */
 @Composable
-fun rememberPdfSaver(onChosen: (Uri?) -> Unit): (suggestedName: String) -> Unit {
+fun rememberPdfSaver(onChosen: (Uri?) -> Unit): (suggestedName: String) -> Boolean {
     val callback by rememberUpdatedState(onChosen)
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(MIME_PDF)) { uri ->
         callback(uri)
