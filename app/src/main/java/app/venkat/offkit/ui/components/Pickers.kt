@@ -57,6 +57,22 @@ fun sharePdfIntent(uri: Uri, name: String): Intent {
 }
 
 /**
+ * An `ACTION_VIEW` intent that opens the saved PDF at [uri] in another app: data [uri], type
+ * `application/pdf`, with `FLAG_GRANT_READ_URI_PERMISSION`.
+ */
+fun openPdfIntent(uri: Uri): Intent = Intent(Intent.ACTION_VIEW).apply {
+    setDataAndType(uri, MIME_PDF)
+    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+}
+
+/**
+ * Opens the PDF at [uri] in a viewer app ([openPdfIntent]), guarded by [launchOrExplain] so a
+ * device without a PDF viewer shows a short message instead of crashing. Returns true if launched.
+ */
+fun openSavedPdf(context: Context, uri: Uri): Boolean =
+    launchOrExplain(context) { context.startActivity(openPdfIntent(uri)) }
+
+/**
  * Launches the share sheet for each new [request] (guarded by [launchOrExplain]) and reports
  * whether it launched through [onHandled] (e.g. `JobViewModel.onShareHandled`).
  */

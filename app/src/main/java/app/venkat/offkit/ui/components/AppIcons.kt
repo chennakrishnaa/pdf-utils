@@ -38,5 +38,7 @@ object AppIcons {
     val moveUp: Painter @Composable get() = painterResource(R.drawable.ic_move_up)
     val moveDown: Painter @Composable get() = painterResource(R.drawable.ic_move_down)
     val moveLeft: Painter @Composable get() = painterResource(R.drawable.ic_move_left)
+    val lock: Painter @Composable get() = painterResource(R.drawable.ic_lock)
+    val warning: Painter @Composable get() = painterResource(R.drawable.ic_warning)
     val moveRight: Painter @Composable get() = painterResource(R.drawable.ic_move_right)
 }

@@ -515,6 +515,16 @@ class PdfJobsTest {
     }
 
     @Test
+    fun singletonWipesSharedCopiesOnCreation() {
+        PdfJobs.resetForTesting()
+        val stale = File(context.cacheDir, "shared/old-share").apply { mkdirs() }.resolve("z.pdf")
+        stale.writeBytes(ByteArray(5))
+        PdfJobs.get(context)
+        assertFalse(stale.exists())
+        assertTrue(File(context.cacheDir, "shared").listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
     fun shareProviderIsNotExportedAndGrantsUriPermissions() {
         val info = context.packageManager.getProviderInfo(ComponentName(context, FileProvider::class.java), 0)
         assertFalse(info.exported)
