@@ -4,8 +4,11 @@ import app.venkat.offkit.core.isReadyToSave
 import app.venkat.offkit.core.isSaved
 import app.venkat.offkit.core.isSavingNow
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.setContent
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
@@ -13,10 +16,10 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
-import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -33,40 +36,44 @@ import app.venkat.offkit.core.RecentFilesStore
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.PDF_DOCUMENT_OVERHEAD_BYTES
 import app.venkat.offkit.engine.PDF_PAGE_OVERHEAD_BYTES
-import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.feature.imagestopdf.ImagesToPdfScreen
 import app.venkat.offkit.feature.imagestopdf.ImagesToPdfViewModel
 import app.venkat.offkit.feature.imagestopdf.TAG_IMAGESTOPDF_ADD
 import app.venkat.offkit.feature.imagestopdf.TAG_IMAGESTOPDF_QUALITY_NOTE
-import app.venkat.offkit.feature.imagestopdf.TAG_IMAGESTOPDF_SAVE_ERROR
+import app.venkat.offkit.feature.imagestopdf.TAG_IMAGESTOPDF_ROOT
 import app.venkat.offkit.feature.imagestopdf.imagesToPdfQualityTag
 import app.venkat.offkit.feature.imagestopdf.imagesToPdfSizeTag
 import app.venkat.offkit.ui.components.JobUiState
-import app.venkat.offkit.ui.components.TAG_FILE_LIST_EMPTY
+import app.venkat.offkit.ui.components.TAG_ACTION_BACK
+import app.venkat.offkit.ui.components.TAG_ACTION_CLOSE
 import app.venkat.offkit.ui.components.TAG_JOB_CANCEL
 import app.venkat.offkit.ui.components.TAG_JOB_ERROR
 import app.venkat.offkit.ui.components.TAG_JOB_PROGRESS
 import app.venkat.offkit.ui.components.TAG_JOB_RESET
 import app.venkat.offkit.ui.components.TAG_JOB_RUN
 import app.venkat.offkit.ui.components.TAG_JOB_SAVE
-import app.venkat.offkit.ui.components.TAG_ACTION_BACK
 import app.venkat.offkit.ui.components.TAG_JOB_SAVING
+import app.venkat.offkit.ui.components.TAG_JOB_SHARE
 import app.venkat.offkit.ui.components.TAG_JOB_SUMMARY
 import app.venkat.offkit.ui.components.TAG_LEAVE_CONFIRM
 import app.venkat.offkit.ui.components.TAG_LEAVE_STAY
-import app.venkat.offkit.ui.components.fileRowDownTag
-import app.venkat.offkit.ui.components.fileRowRemoveTag
-import app.venkat.offkit.ui.components.fileRowTag
-import app.venkat.offkit.ui.components.fileRowUpTag
+import app.venkat.offkit.ui.components.TAG_THUMB_MOVE_EARLIER
+import app.venkat.offkit.ui.components.TAG_THUMB_MOVE_LATER
+import app.venkat.offkit.ui.components.TAG_THUMB_REMOVE
 import app.venkat.offkit.ui.components.formatBytes
-import app.venkat.offkit.ui.components.pdfErrorMessage
+import app.venkat.offkit.ui.components.pdfErrorBody
+import app.venkat.offkit.ui.components.pdfErrorTitle
+import app.venkat.offkit.ui.components.thumbTag
 import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -112,13 +119,8 @@ class ImagesToPdfScreenTest {
         app = ApplicationProvider.getApplicationContext()
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
-        RecentFilesStore.resetForTesting()
-        fake.beforeStep = { _, step ->
-            if (step == 1) {
-                received.clear()
-                fake.calls.last().images!!.forEach { received += it.readBytes().copyOfRange(3, it.length().toInt()).decodeToString() }
-            }
-        }
+        resetRecents()
+        fake.beforeStep = { _, step -> if (step == 1) captureInputs() }
         rule.runOnUiThread { rule.activity.setContent { OffkitTheme { ImagesToPdfScreen(onBack = { backs.incrementAndGet() }) } } }
         rule.waitForIdle()
         // Same instance the screen created (through its explicit initializer, bound to this test's Application).
@@ -131,7 +133,18 @@ class ImagesToPdfScreenTest {
         releaseAll.countDown()
         fake.beforeStep = null
         fake.estimate = null
+        resetRecents()
+    }
+
+    private fun resetRecents() {
         RecentFilesStore.resetForTesting()
+        app.getSharedPreferences("recent_files", Context.MODE_PRIVATE).edit().clear().commit()
+    }
+
+    /** Records the markers of the images the engine received for the current job, in order. */
+    private fun captureInputs() {
+        received.clear()
+        fake.calls.last().images!!.forEach { received += it.readBytes().copyOfRange(3, it.length().toInt()).decodeToString() }
     }
 
     /** A content Uri whose bytes sniff as JPEG (so they are passed through unchanged) followed by [marker]. */
@@ -145,56 +158,194 @@ class ImagesToPdfScreenTest {
         rule.waitForIdle()
     }
 
+    private fun names(): List<String> = vm.images.value.map { it.name }
+
+    private fun str(id: Int, vararg args: Any): String = app.getString(id, *args)
+
+    private fun pages(n: Int): String = app.resources.getQuantityString(R.plurals.pages_count, n, n)
+
+    private fun state() = vm.jobState.value
+
+    /** Clicks [tag], scrolling to it first when it is in the scrolling content (not the fixed bottom bar). */
     private fun click(tag: String) {
-        rule.onNodeWithTag(tag).performScrollTo().performClick()
+        val node = rule.onNodeWithTag(tag)
+        if (node.hasScrollableAncestor()) node.performScrollTo()
+        node.performClick()
+        rule.waitForIdle()
+    }
+
+    private fun SemanticsNodeInteraction.hasScrollableAncestor(): Boolean {
+        var parent = fetchSemanticsNode().parent
+        while (parent != null) {
+            if (SemanticsActions.ScrollBy in parent.config) return true
+            parent = parent.parent
+        }
+        return false
+    }
+
+    /** Selects tile [index] (if not selected yet) and clicks the toolbar button [tag]. */
+    private fun onTile(index: Int, tag: String) {
+        if (!rule.onNodeWithTag(thumbTag(index)).fetchSemanticsNode().config.getOrElse(androidx.compose.ui.semantics.SemanticsProperties.Selected) { false }) {
+            click(thumbTag(index))
+        }
+        click(tag)
+    }
+
+    /** Back to the options with the inputs kept (what the error screen's button does). */
+    private fun resetToOptions() {
+        rule.runOnUiThread { vm.reset() }
         rule.waitForIdle()
     }
 
     private fun runAndAwait(): FakePdfEngine.Call {
-        if (vm.jobState.value != JobUiState.Idle) click(TAG_JOB_RESET)
+        if (state() != JobUiState.Idle) resetToOptions()
         val n = fake.calls.size
         click(TAG_JOB_RUN)
         CoreTestSupport.idleUntil(message = "job finished") {
-            fake.calls.size == n + 1 && vm.jobState.value !is JobUiState.Running
+            fake.calls.size == n + 1 && state() !is JobUiState.Running
         }
         rule.waitForIdle()
         return fake.calls.last()
     }
 
-    private fun assertRowTitle(index: Int, name: String) {
-        rule.onNode(hasTestTag(fileRowTag(index)) and hasAnyDescendant(hasText(name))).performScrollTo().assertExists()
+    private fun runToFailure(error: PdfError) {
+        fake.setResult(FakePdfEngine.Op.IMAGES_TO_PDF, PdfResult.Err(error))
+        runAndAwait()
+        assertTrue(state() is JobUiState.Failed)
+    }
+
+    private fun dest(sink: OutputStream): Uri {
+        val uri = Uri.parse("content://dest.test/${System.nanoTime()}/images.pdf")
+        shadowOf(app.contentResolver).registerOutputStream(uri, sink)
+        return uri
+    }
+
+    private fun saveTo(sink: OutputStream) {
+        rule.runOnUiThread { vm.save(dest(sink)) }
+        CoreTestSupport.idleUntil(message = "saved") { state().isSaved }
+        rule.waitForIdle()
+    }
+
+    private fun systemBack() {
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+    }
+
+    // ---- Images: empty, add, select, move, remove ----
+
+    @Test
+    fun noImages_buttonDisabledWithAddImagesFirst() {
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ROOT).assertExists()
+        rule.onNodeWithText(str(R.string.screen_images)).assertIsDisplayed()
+        rule.onNodeWithText(str(R.string.imagestopdf_section_count, 0)).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).assertIsDisplayed().assertIsEnabled().assertTextEquals(str(R.string.add))
+        rule.onNodeWithText(str(R.string.images_hint)).assertDoesNotExist()
+        rule.onNodeWithTag(thumbTag(0)).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled().assertTextEquals(str(R.string.add_images_first))
+        rule.onNodeWithText(pages(0)).assertExists()
+        rule.onNodeWithText("≈", substring = true).assertDoesNotExist()
+        allQualities.forEach(::assertNoTrailing)
+        assertTrue(fake.estimateCalls.isEmpty())
+
+        // Clicking the disabled button does nothing.
+        rule.onNodeWithTag(TAG_JOB_RUN).performClick()
+        rule.waitForIdle()
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(fake.calls.isEmpty())
     }
 
     @Test
-    fun runEnabledOnlyWithImagesAndRowsInOrder() {
-        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo().assertIsDisplayed().assertIsEnabled()
-        rule.onNodeWithTag(TAG_FILE_LIST_EMPTY).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
-            .assertTextEquals(app.getString(R.string.imagestopdf_run))
+    fun addOpensTheImagePicker() {
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_IMAGESTOPDF_ADD)
+        assertNotNull(shadowOf(rule.activity).nextStartedActivity)
+    }
 
+    @Test
+    fun addShowsTilesCountAndEnablesTheButton() {
         addImages("a.jpg", "b.jpg")
         addImages("c.jpg") // a second pick appends
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsEnabled()
-        assertRowTitle(0, "a.jpg")
-        assertRowTitle(1, "b.jpg")
-        assertRowTitle(2, "c.jpg")
+        rule.onNodeWithText(str(R.string.imagestopdf_section_count, 3)).assertIsDisplayed()
+        rule.onNodeWithText(str(R.string.images_hint)).assertIsDisplayed()
+        (0..2).forEach { rule.onNodeWithTag(thumbTag(it)).performScrollTo().assertIsDisplayed().assertIsNotSelected() }
+        rule.onNodeWithTag(thumbTag(3)).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_THUMB_REMOVE).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled().assertTextEquals(str(R.string.action_create_pdf))
+        rule.onNodeWithText(pages(3)).assertExists()
+        assertEquals(listOf("a.jpg", "b.jpg", "c.jpg"), names())
 
-        click(fileRowRemoveTag(0))
-        click(fileRowRemoveTag(0))
-        click(fileRowRemoveTag(0))
-        rule.onNodeWithTag(TAG_FILE_LIST_EMPTY).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
+        // Removing every image returns to the empty state.
+        repeat(3) { onTile(0, TAG_THUMB_REMOVE) }
+        rule.onNodeWithTag(thumbTag(0)).assertDoesNotExist()
+        rule.onNodeWithText(str(R.string.imagestopdf_section_count, 0)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled().assertTextEquals(str(R.string.add_images_first))
+    }
+
+    @Test
+    fun tapSelectsAndTapAgainDeselects() {
+        addImages("a.jpg", "b.jpg")
+        click(thumbTag(1))
+        rule.onNodeWithTag(thumbTag(1)).assertIsSelected()
+        rule.onNodeWithTag(thumbTag(0)).assertIsNotSelected()
+        rule.onNodeWithText(str(R.string.cd_image_n, 2)).assertExists()
+        rule.onNodeWithTag(TAG_THUMB_REMOVE).assertExists()
+
+        click(thumbTag(0))
+        rule.onNodeWithTag(thumbTag(0)).assertIsSelected()
+        rule.onNodeWithTag(thumbTag(1)).assertIsNotSelected()
+
+        click(thumbTag(0))
+        rule.onNodeWithTag(thumbTag(0)).assertIsNotSelected()
+        rule.onNodeWithTag(TAG_THUMB_MOVE_EARLIER).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_THUMB_REMOVE).assertDoesNotExist()
+    }
+
+    @Test
+    fun moveEarlierAndLater_selectionFollows_endsDisabled() {
+        addImages("a.jpg", "b.jpg", "c.jpg")
+        click(thumbTag(0))
+        rule.onNodeWithTag(TAG_THUMB_MOVE_EARLIER).assertIsNotEnabled()
+        rule.onNodeWithTag(TAG_THUMB_MOVE_LATER).assertIsEnabled()
+
+        click(TAG_THUMB_MOVE_LATER)
+        assertEquals(listOf("b.jpg", "a.jpg", "c.jpg"), names())
+        rule.onNodeWithTag(thumbTag(1)).assertIsSelected()
+        click(TAG_THUMB_MOVE_LATER)
+        assertEquals(listOf("b.jpg", "c.jpg", "a.jpg"), names())
+        rule.onNodeWithTag(thumbTag(2)).assertIsSelected()
+        rule.onNodeWithTag(TAG_THUMB_MOVE_LATER).assertIsNotEnabled()
+        rule.onNodeWithTag(TAG_THUMB_MOVE_EARLIER).assertIsEnabled()
+
+        click(TAG_THUMB_MOVE_EARLIER)
+        assertEquals(listOf("b.jpg", "a.jpg", "c.jpg"), names())
+        rule.onNodeWithTag(thumbTag(1)).assertIsSelected()
+        rule.onNodeWithTag(thumbTag(2)).assertIsNotSelected()
+        rule.onNodeWithText(str(R.string.cd_image_n, 2)).assertExists()
+    }
+
+    @Test
+    fun removeClearsSelection_andAddingClearsIt() {
+        addImages("a.jpg", "b.jpg", "c.jpg")
+        onTile(1, TAG_THUMB_REMOVE)
+        assertEquals(listOf("a.jpg", "c.jpg"), names())
+        rule.onNodeWithTag(TAG_THUMB_REMOVE).assertDoesNotExist()
+        (0..1).forEach { rule.onNodeWithTag(thumbTag(it)).assertIsNotSelected() }
+        rule.onNodeWithText(str(R.string.imagestopdf_section_count, 2)).assertExists()
+
+        click(thumbTag(1))
+        rule.onNodeWithTag(thumbTag(1)).assertIsSelected()
+        addImages("d.jpg")
+        (0..2).forEach { rule.onNodeWithTag(thumbTag(it)).assertIsNotSelected() }
+        rule.onNodeWithTag(TAG_THUMB_REMOVE).assertDoesNotExist()
     }
 
     @Test
     fun reorderAndRemoveChangeWhatTheEngineReceives() {
         addImages("a.jpg", "b.jpg", "c.jpg", "d.jpg")
-        click(fileRowDownTag(0)) // b a c d
-        click(fileRowUpTag(3)) // b a d c
-        click(fileRowRemoveTag(1)) // b d c
-        assertRowTitle(0, "b.jpg")
-        assertRowTitle(1, "d.jpg")
-        assertRowTitle(2, "c.jpg")
+        onTile(0, TAG_THUMB_MOVE_LATER) // b a c d
+        onTile(3, TAG_THUMB_MOVE_EARLIER) // b a d c
+        onTile(1, TAG_THUMB_REMOVE) // b d c
+        assertEquals(listOf("b.jpg", "d.jpg", "c.jpg"), names())
 
         val call = runAndAwait()
         assertEquals(FakePdfEngine.Op.IMAGES_TO_PDF, call.op)
@@ -207,137 +358,61 @@ class ImagesToPdfScreenTest {
         rule.runOnUiThread { vm.add(listOf(uri, uri)) }
         CoreTestSupport.idleUntil { vm.images.value.size == 2 }
         rule.waitForIdle()
-        assertRowTitle(0, "same.jpg")
-        assertRowTitle(1, "same.jpg")
+        rule.onNodeWithTag(thumbTag(1)).performScrollTo().assertExists()
+        assertEquals(listOf("same.jpg", "same.jpg"), names())
         runAndAwait()
         assertEquals(listOf("same.jpg", "same.jpg"), received.toList())
     }
+
+    // ---- Options ----
 
     @Test
     fun selectedPageSizeReachesEngine() {
         addImages("a.jpg")
         rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.FIT_IMAGE)).performScrollTo().assertIsSelected()
-        rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.A4)).assertIsNotSelected()
+            .assertTextEquals(str(R.string.page_size_fit))
+        rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.A4)).assertIsNotSelected().assertTextEquals(str(R.string.page_size_a4))
+        rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.LETTER)).assertIsNotSelected().assertTextEquals(str(R.string.page_size_letter))
         assertEquals(PageSize.FIT_IMAGE, runAndAwait().pageSize)
 
+        resetToOptions()
         click(imagesToPdfSizeTag(PageSize.A4))
         rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.A4)).assertIsSelected()
         rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.FIT_IMAGE)).assertIsNotSelected()
         assertEquals(PageSize.A4, runAndAwait().pageSize)
 
+        resetToOptions()
         click(imagesToPdfSizeTag(PageSize.LETTER))
         assertEquals(PageSize.LETTER, runAndAwait().pageSize)
     }
 
     @Test
-    fun progressThenSummaryThenSave() {
-        addImages("a.jpg", "b.jpg", "c.jpg")
-        val content = "%PDF-1.7\n% three pages\n".toByteArray()
-        fake.outputContent = content
-        fake.setResult(FakePdfEngine.Op.IMAGES_TO_PDF, PdfResult.Ok(pages = 3, bytes = 1_258_291))
-        val reached = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val capture = fake.beforeStep!!
-        fake.beforeStep = { op, step ->
-            capture(op, step)
-            if (step == 2) {
-                reached.countDown()
-                release.await(5, TimeUnit.SECONDS)
-            }
-        }
-
-        click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "held at step 2") {
-            reached.count == 0L && vm.jobState.value == JobUiState.Running(1, 3)
-        }
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_JOB_PROGRESS).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText(app.getString(R.string.job_progress, 1, 3)).assertExists()
-        rule.onNodeWithTag(TAG_JOB_CANCEL).assertExists()
-        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo().assertIsNotEnabled()
-        rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.A4)).assertIsNotEnabled()
-        rule.onNodeWithTag(imagesToPdfQualityTag(CompressionLevel.LOW)).assertIsNotEnabled()
-        rule.onNodeWithTag(fileRowRemoveTag(0)).assertDoesNotExist()
-        rule.runOnUiThread {
-            vm.setQuality(CompressionLevel.HIGH)
-            vm.setPageSize(PageSize.A4)
-            vm.remove(0)
-        }
-        assertEquals(null, vm.quality.value)
-        assertEquals(PageSize.FIT_IMAGE, vm.pageSize.value)
-        assertEquals(3, vm.images.value.size)
-
-        release.countDown()
-        CoreTestSupport.idleUntil(message = "ready") { vm.jobState.value.isReadyToSave }
-        rule.waitForIdle()
-        val summary = "3 pages · ${formatBytes(1_258_291)}"
-        assertEquals("3 pages · 1.2 MB", summary)
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo().assertTextEquals(summary)
-        rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
-        assertEquals("images.pdf", vm.suggestedFileName())
-
-        val sink = ByteArrayOutputStream()
-        val dest = Uri.parse("content://dest.test/${System.nanoTime()}/images.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(dest, sink)
-        rule.runOnUiThread { vm.save(dest) }
-        CoreTestSupport.idleUntil(message = "saved") { vm.jobState.value.isSaved }
-        rule.waitForIdle()
-        assertArrayEquals(content, sink.toByteArray())
-        rule.onNodeWithText(app.getString(R.string.job_saved_title)).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(summary)
-        CoreTestSupport.idleUntil(message = "recorded") { RecentFilesStore.get(app).recents.value.isNotEmpty() }
-        val recents = RecentFilesStore.get(app).recents.value
-        assertEquals(1, recents.size)
-        assertEquals("images_to_pdf", recents.single().tool)
-
-        // Changing an option after saving clears the Saved panel.
-        click(imagesToPdfQualityTag(CompressionLevel.LOW))
-        assertEquals(JobUiState.Idle, vm.jobState.value)
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsEnabled()
-    }
-
-    @Test
-    fun singlePageSummaryUsesSingular() {
+    fun qualityDefaultsToOriginalAndSelectedLevelReachesEngine() {
         addImages("a.jpg")
-        fake.setResult(FakePdfEngine.Op.IMAGES_TO_PDF, PdfResult.Ok(pages = 1, bytes = 500))
-        runAndAwait()
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo().assertTextEquals("1 page · 500 B")
-    }
+        rule.onNodeWithTag(imagesToPdfQualityTag(null)).performScrollTo().assertIsSelected()
+            .assert(hasText(str(R.string.quality_original)))
+            .assert(hasText(str(R.string.quality_original_desc)))
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_QUALITY_NOTE).performScrollTo().assertTextEquals(str(R.string.estimate_note))
+        assertEquals(null, runAndAwait().compression)
 
-    @Test
-    fun unsupportedImageShowsError() {
-        addImages("a.jpg")
-        fake.setResult(FakePdfEngine.Op.IMAGES_TO_PDF, PdfResult.Err(PdfError.UnsupportedImage))
-        runAndAwait()
-        rule.onNodeWithTag(TAG_JOB_ERROR).performScrollTo()
-            .assertTextEquals(app.getString(pdfErrorMessage(PdfError.UnsupportedImage)))
-    }
-
-    @Test
-    fun cancelReturnsToIdle() {
-        addImages("a.jpg", "b.jpg")
-        val reached = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        fake.beforeStep = { _, step ->
-            if (step == 1) {
-                reached.countDown()
-                release.await(5, TimeUnit.SECONDS)
-            }
+        CompressionLevel.entries.forEach { level ->
+            resetToOptions()
+            click(imagesToPdfQualityTag(level))
+            rule.onNodeWithTag(imagesToPdfQualityTag(level)).assertIsSelected()
+            rule.onNodeWithTag(imagesToPdfQualityTag(null)).assertIsNotSelected()
+            assertEquals(level, runAndAwait().compression)
         }
-        click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "running") { reached.count == 0L }
-        rule.waitForIdle()
-        click(TAG_JOB_CANCEL)
-        release.countDown()
-        CoreTestSupport.idleUntil(message = "idle") { vm.jobState.value == JobUiState.Idle && !vm.isRunning }
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsEnabled()
-        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).assertIsEnabled()
-        // The list is kept for another attempt.
-        rule.onNode(hasText("a.jpg")).assertExists()
+        resetToOptions()
+        // The pack descriptions name the engine's real limits.
+        rule.onNodeWithTag(imagesToPdfQualityTag(CompressionLevel.LOW)).performScrollTo()
+            .assert(hasText("Up to ${CompressionLevel.LOW.maxLongEdgePx} px, very good quality"))
+        rule.onNodeWithTag(imagesToPdfQualityTag(CompressionLevel.MEDIUM))
+            .assert(hasText("Up to ${CompressionLevel.MEDIUM.maxLongEdgePx} px, good quality"))
+        rule.onNodeWithTag(imagesToPdfQualityTag(CompressionLevel.HIGH))
+            .assert(hasText("Up to ${CompressionLevel.HIGH.maxLongEdgePx} px, smallest file"))
     }
 
-    // ---- Image quality and size estimates ----
+    // ---- Size estimates ----
 
     private val allQualities: List<CompressionLevel?> = listOf(null) + CompressionLevel.entries
 
@@ -361,78 +436,64 @@ class ImagesToPdfScreenTest {
         rule.waitForIdle()
     }
 
-    private fun assertCardTrailing(level: CompressionLevel?, text: String) {
+    private fun assertRowTrailing(level: CompressionLevel?, text: String) {
         rule.onNodeWithTag(imagesToPdfQualityTag(level)).performScrollTo().assert(hasText(text))
     }
 
     private fun assertNoTrailing(level: CompressionLevel?) {
         val tag = imagesToPdfQualityTag(level)
         rule.onNodeWithTag(tag).performScrollTo().assertExists()
-        listOf("≈", app.getString(R.string.imagestopdf_estimating), app.getString(R.string.imagestopdf_estimate_unknown)).forEach {
-            rule.onNode(hasTestTag(tag) and hasText(it, substring = true)).assertDoesNotExist()
+        rule.onNode(hasTestTag(tag) and hasText("≈", substring = true)).assertDoesNotExist()
+    }
+
+    /** The bottom bar shows "N pages" with [estimate] under it (or nothing under it when null). */
+    private fun assertBottomSummary(images: Int, estimate: String?) {
+        if (estimate != null) {
+            rule.onNode(hasText(pages(images)) and hasText(estimate)).assertExists()
+        } else {
+            rule.onNode(hasText(pages(images)) and hasText("≈", substring = true)).assertDoesNotExist()
+            rule.onNodeWithText(pages(images)).assertExists()
         }
     }
 
     @Test
-    fun qualityDefaultsToOriginalAndSelectedLevelReachesEngine() {
-        addImages("a.jpg")
-        rule.onNodeWithTag(imagesToPdfQualityTag(null)).performScrollTo().assertIsSelected()
-            .assert(hasText(app.getString(R.string.imagestopdf_quality_original)))
-            .assert(hasText(app.getString(R.string.imagestopdf_quality_original_detail)))
-        rule.onNodeWithTag(TAG_IMAGESTOPDF_QUALITY_NOTE).performScrollTo()
-            .assertTextEquals(app.getString(R.string.imagestopdf_quality_note))
-        assertEquals(null, runAndAwait().compression)
-
-        CompressionLevel.entries.forEach { level ->
-            click(imagesToPdfQualityTag(level))
-            rule.onNodeWithTag(imagesToPdfQualityTag(level)).assertIsSelected()
-            rule.onNodeWithTag(imagesToPdfQualityTag(null)).assertIsNotSelected()
-            assertEquals(level, runAndAwait().compression)
-        }
-        rule.onNodeWithTag(imagesToPdfQualityTag(CompressionLevel.LOW))
-            .assert(hasText("Up to ${CompressionLevel.LOW.maxLongEdgePx} px, very good quality"))
-    }
-
-    @Test
-    fun noImagesShowsNoEstimatesAndRunDisabled() {
-        allQualities.forEach(::assertNoTrailing)
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
-        assertTrue(fake.estimateCalls.isEmpty())
-    }
-
-    @Test
-    fun estimatesShowTotalsAndFollowTheList() {
+    fun estimatesShowPerRowAndInTheBottomBar_andFollowTheList() {
         fake.estimate = { fixedEstimate() }
         addImages("a.jpg", "b.jpg", "c.jpg")
         awaitEstimates()
         assertEquals(3, fake.estimateCalls.size)
-        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 3)) }
+        allQualities.forEach { assertRowTrailing(it, expectedTotal(it, 3)) }
         assertEquals("≈ 2.9 MB", expectedTotal(null, 3))
+        assertBottomSummary(3, expectedTotal(null, 3))
+
+        // The bottom bar follows the selected quality.
+        click(imagesToPdfQualityTag(CompressionLevel.HIGH))
+        assertBottomSummary(3, expectedTotal(CompressionLevel.HIGH, 3))
 
         addImages("d.jpg")
         awaitEstimates()
         assertEquals(4, fake.estimateCalls.size)
-        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 4)) }
+        allQualities.forEach { assertRowTrailing(it, expectedTotal(it, 4)) }
+        assertBottomSummary(4, expectedTotal(CompressionLevel.HIGH, 4))
 
-        click(fileRowDownTag(0))
-        click(fileRowUpTag(3))
+        onTile(0, TAG_THUMB_MOVE_LATER)
+        onTile(3, TAG_THUMB_MOVE_EARLIER)
         awaitEstimates()
         assertEquals(4, fake.estimateCalls.size)
-        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 4)) }
+        allQualities.forEach { assertRowTrailing(it, expectedTotal(it, 4)) }
 
-        click(fileRowRemoveTag(1))
+        onTile(1, TAG_THUMB_REMOVE)
         awaitEstimates()
         assertEquals(4, fake.estimateCalls.size)
-        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 3)) }
+        allQualities.forEach { assertRowTrailing(it, expectedTotal(it, 3)) }
 
-        click(fileRowRemoveTag(0))
-        click(fileRowRemoveTag(0))
-        click(fileRowRemoveTag(0))
+        repeat(3) { onTile(0, TAG_THUMB_REMOVE) }
         allQualities.forEach(::assertNoTrailing)
+        assertBottomSummary(0, null)
     }
 
     @Test
-    fun heldEstimatesShowEstimatingThenTotals() {
+    fun heldEstimatesShowNothingThenTotals() {
         fake.estimate = {
             releaseAll.await(5, TimeUnit.SECONDS)
             fixedEstimate()
@@ -442,12 +503,14 @@ class ImagesToPdfScreenTest {
             CoreTestSupport.idleUntil(message = "estimate started") { fake.estimateCalls.isNotEmpty() }
             rule.waitForIdle()
             assertEquals(2, vm.estimates.value.pendingCount)
-            allQualities.forEach { assertCardTrailing(it, app.getString(R.string.imagestopdf_estimating)) }
+            allQualities.forEach(::assertNoTrailing)
+            assertBottomSummary(2, null)
         } finally {
             releaseAll.countDown()
         }
         awaitEstimates()
-        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 2)) }
+        allQualities.forEach { assertRowTrailing(it, expectedTotal(it, 2)) }
+        assertBottomSummary(2, expectedTotal(null, 2))
     }
 
     @Test
@@ -463,7 +526,8 @@ class ImagesToPdfScreenTest {
         try {
             addImages("a.jpg", "b.jpg")
             CoreTestSupport.idleUntil(message = "first estimate held") { first.count == 0L }
-            click(fileRowRemoveTag(0))
+            rule.waitForIdle()
+            onTile(0, TAG_THUMB_REMOVE)
             assertEquals(1, vm.estimates.value.pendingCount)
         } finally {
             releaseAll.countDown()
@@ -471,17 +535,19 @@ class ImagesToPdfScreenTest {
         awaitEstimates()
         // a.jpg (cancelled once in progress) and b.jpg; a.jpg is not estimated again.
         assertEquals(2, fake.estimateCalls.size)
-        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 1)) }
-        assertRowTitle(0, "b.jpg")
+        allQualities.forEach { assertRowTrailing(it, expectedTotal(it, 1)) }
+        assertEquals(listOf("b.jpg"), names())
     }
 
     @Test
-    fun failingEstimateShowsDash() {
+    fun failingEstimateShowsNoSize() {
         fake.estimate = { PdfEstimate.Err(PdfError.UnsupportedImage) }
         addImages("a.jpg", "b.jpg")
         CoreTestSupport.idleUntil(message = "failed") { vm.estimates.value.anyFailed && vm.estimates.value.pendingCount == 0 }
         rule.waitForIdle()
-        allQualities.forEach { assertCardTrailing(it, app.getString(R.string.imagestopdf_estimate_unknown)) }
+        allQualities.forEach(::assertNoTrailing)
+        assertBottomSummary(2, null)
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled()
     }
 
     @Test
@@ -495,14 +561,14 @@ class ImagesToPdfScreenTest {
         // Added while running: ignored (inputs are locked).
         rule.runOnUiThread { vm.add(listOf(image("x.jpg"))) }
         gate.countDown()
-        CoreTestSupport.idleUntil(message = "done") { vm.jobState.value.isReadyToSave }
+        CoreTestSupport.idleUntil(message = "done") { state().isReadyToSave }
         rule.waitForIdle()
         assertEquals(1, vm.images.value.size)
         assertEquals(1, fake.estimateCalls.size)
 
         // A pick while ReadyToSave discards the result and is estimated.
         addImages("b.jpg")
-        assertEquals(JobUiState.Idle, vm.jobState.value)
+        assertEquals(JobUiState.Idle, state())
         awaitEstimates()
         assertEquals(2, fake.estimateCalls.size)
     }
@@ -519,60 +585,200 @@ class ImagesToPdfScreenTest {
             CoreTestSupport.idleUntil(message = "first estimate held") { fake.estimateCalls.size == 1 }
             fake.beforeStep = { _, step -> if (step == 1) gate.await(5, TimeUnit.SECONDS) }
             click(TAG_JOB_RUN)
-            assertTrue(vm.jobState.value is JobUiState.Running)
+            assertTrue(state() is JobUiState.Running)
             // The in-flight estimate finishes; its (cancelled) result is dropped and nothing else is estimated.
             releaseAll.countDown()
             CoreTestSupport.idleUntil(message = "job on engine") { fake.calls.size == 1 }
             rule.waitForIdle()
             assertEquals(1, fake.estimateCalls.size)
             assertEquals(2, vm.estimates.value.pendingCount)
-            assertCardTrailing(null, app.getString(R.string.imagestopdf_estimating))
         } finally {
             releaseAll.countDown()
             gate.countDown()
         }
-        CoreTestSupport.idleUntil(message = "ready") { vm.jobState.value.isReadyToSave }
+        CoreTestSupport.idleUntil(message = "ready") { state().isReadyToSave }
         awaitEstimates()
         assertEquals(3, fake.estimateCalls.size)
-        allQualities.forEach { assertCardTrailing(it, expectedTotal(it, 2)) }
+        resetToOptions()
+        allQualities.forEach { assertRowTrailing(it, expectedTotal(it, 2)) }
+    }
+
+    // ---- Run, processing, result ----
+
+    @Test
+    fun runProcessingResultSaveAndSaved() {
+        addImages("a.jpg", "b.jpg", "c.jpg")
+        val content = "%PDF-1.7\n% three pages\n".toByteArray()
+        fake.outputContent = content
+        fake.setResult(FakePdfEngine.Op.IMAGES_TO_PDF, PdfResult.Ok(pages = 3, bytes = 1_258_291))
+        val reached = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        fake.beforeStep = { _, step ->
+            if (step == 1) captureInputs()
+            if (step == 2) {
+                reached.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+        }
+
+        click(TAG_JOB_RUN)
+        CoreTestSupport.idleUntil(message = "held at step 2") {
+            reached.count == 0L && state() == JobUiState.Running(1, 3)
+        }
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_JOB_PROGRESS).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_CANCEL).assertIsDisplayed()
+        // The options are gone while processing; the ViewModel ignores input changes.
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ROOT).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).assertDoesNotExist()
+        rule.onNodeWithTag(thumbTag(0)).assertDoesNotExist()
+        rule.runOnUiThread {
+            vm.setQuality(CompressionLevel.HIGH)
+            vm.setPageSize(PageSize.A4)
+            vm.remove(0)
+        }
+        assertEquals(null, vm.quality.value)
+        assertEquals(PageSize.FIT_IMAGE, vm.pageSize.value)
+        assertEquals(3, vm.images.value.size)
+
+        release.countDown()
+        CoreTestSupport.idleUntil(message = "ready") { state().isReadyToSave }
+        rule.waitForIdle()
+        assertEquals(listOf("a.jpg", "b.jpg", "c.jpg"), received.toList())
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pages(3))
+        rule.onNodeWithText(formatBytes(1_258_291)).assertExists()
+        assertEquals("1.2 MB", formatBytes(1_258_291))
+        rule.onNodeWithText("images.pdf").assertExists()
+        rule.onNodeWithText(str(R.string.result_not_saved)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_as)).assertIsEnabled()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_discard))
+        assertEquals("images.pdf", vm.suggestedFileName())
+
+        val sink = ByteArrayOutputStream()
+        saveTo(sink)
+        assertArrayEquals(content, sink.toByteArray())
+        val saved = state() as JobUiState.Done
+        rule.onNodeWithText(str(R.string.result_saved_as, saved.savedName ?: saved.suggestedName)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_copy))
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pages(3))
+        CoreTestSupport.idleUntil(message = "recorded") { RecentFilesStore.get(app).recents.value.isNotEmpty() }
+        val recents = RecentFilesStore.get(app).recents.value
+        assertEquals(1, recents.size)
+        assertEquals("images_to_pdf", recents.single().tool)
+    }
+
+    @Test
+    fun singlePageResultUsesSingular() {
+        addImages("a.jpg")
+        fake.setResult(FakePdfEngine.Op.IMAGES_TO_PDF, PdfResult.Ok(pages = 1, bytes = 500))
+        runAndAwait()
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals("1 page")
+        rule.onNodeWithText("500 B").assertExists()
+    }
+
+    private fun assertErrorScreenReturnsToOptions(error: PdfError) {
+        runToFailure(error)
+        rule.onNodeWithText(str(pdfErrorTitle(error))).assertExists()
+        rule.onNodeWithTag(TAG_JOB_ERROR).assertTextEquals(str(pdfErrorBody(error)))
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ROOT).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.job_try_again)).performClick()
+        rule.waitForIdle()
+        assertEquals(JobUiState.Idle, state())
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ROOT).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled()
+        assertEquals(listOf("a.jpg", "b.jpg"), names())
+        assertEquals(0, backs.get())
+    }
+
+    @Test
+    fun engineErrorsShowErrorScreen_buttonReturnsToOptionsWithImages() {
+        addImages("a.jpg", "b.jpg")
+        assertErrorScreenReturnsToOptions(PdfError.UnsupportedImage)
+        assertErrorScreenReturnsToOptions(PdfError.ImageTooLarge)
+        assertErrorScreenReturnsToOptions(PdfError.Corrupt)
+
+        // Back on the error screen also returns to the options.
+        runToFailure(PdfError.UnsupportedImage)
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+        assertEquals(JobUiState.Idle, state())
+        assertEquals(0, backs.get())
+        rule.onNodeWithTag(thumbTag(1)).performScrollTo().assertExists()
+    }
+
+    @Test
+    fun cancelReturnsToOptionsWithImagesKept() {
+        addImages("a.jpg", "b.jpg")
+        val reached = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        fake.beforeStep = { _, step ->
+            if (step == 1) {
+                reached.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+        }
+        click(TAG_JOB_RUN)
+        CoreTestSupport.idleUntil(message = "running") { reached.count == 0L }
+        rule.waitForIdle()
+        click(TAG_JOB_CANCEL)
+        release.countDown()
+        CoreTestSupport.idleUntil(message = "idle") { state() == JobUiState.Idle && !vm.isRunning }
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_JOB_CANCEL).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled()
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).assertIsEnabled()
+        // The list is kept for another attempt.
+        rule.onNodeWithTag(thumbTag(1)).performScrollTo().assertExists()
+        rule.onNodeWithText(str(R.string.imagestopdf_section_count, 2)).assertExists()
+        assertEquals(listOf("a.jpg", "b.jpg"), names())
+        assertEquals(0, backs.get())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
     }
 
     // ---- Invalidation, locking, leaving ----
 
     private fun readyResult() {
         runAndAwait()
-        assertTrue(vm.jobState.value.isReadyToSave)
+        assertTrue(state().isReadyToSave)
         assertTrue(CoreTestSupport.jobFiles(app).isNotEmpty())
     }
 
     private fun assertResultDiscarded() {
         rule.waitForIdle()
-        assertEquals(JobUiState.Idle, vm.jobState.value)
+        assertEquals(JobUiState.Idle, state())
         awaitEstimates()
         CoreTestSupport.idleUntil(message = "cache empty") { CoreTestSupport.jobsEmpty(app) }
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled()
         rule.onNodeWithTag(TAG_JOB_SAVE).assertDoesNotExist()
     }
 
     @Test
-    fun changingAnInputAfterAResultDiscardsIt() {
+    fun resultScreenOffersNoInputs_viewModelStillDropsStaleResult() {
         addImages("a.jpg", "b.jpg", "c.jpg")
         awaitEstimates()
 
         readyResult()
-        click(imagesToPdfQualityTag(CompressionLevel.MEDIUM))
+        // The options cannot be changed from the result screen.
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).assertDoesNotExist()
+        rule.onNodeWithTag(thumbTag(0)).assertDoesNotExist()
+        allQualities.forEach { rule.onNodeWithTag(imagesToPdfQualityTag(it)).assertDoesNotExist() }
+        PageSize.entries.forEach { rule.onNodeWithTag(imagesToPdfSizeTag(it)).assertDoesNotExist() }
+
+        // ViewModel contract (e.g. a pick delivered late): any input change drops the result.
+        rule.runOnUiThread { vm.setQuality(CompressionLevel.MEDIUM) }
         assertResultDiscarded()
 
         readyResult()
-        click(imagesToPdfSizeTag(PageSize.LETTER))
+        rule.runOnUiThread { vm.setPageSize(PageSize.LETTER) }
         assertResultDiscarded()
 
         readyResult()
-        click(fileRowDownTag(0))
+        rule.runOnUiThread { vm.moveDown(0) }
         assertResultDiscarded()
 
         readyResult()
-        click(fileRowRemoveTag(2))
+        rule.runOnUiThread { vm.remove(2) }
         assertResultDiscarded()
 
         readyResult()
@@ -580,29 +786,26 @@ class ImagesToPdfScreenTest {
         assertResultDiscarded()
 
         // A failed result is cleared too.
-        fake.setResult(FakePdfEngine.Op.IMAGES_TO_PDF, PdfResult.Err(PdfError.UnsupportedImage))
-        runAndAwait()
-        assertTrue(vm.jobState.value is JobUiState.Failed)
-        click(imagesToPdfQualityTag(CompressionLevel.HIGH))
+        runToFailure(PdfError.UnsupportedImage)
+        rule.runOnUiThread { vm.setQuality(CompressionLevel.HIGH) }
         assertResultDiscarded()
 
         // Selecting the option that is already selected changes nothing.
         fake.results.clear()
         readyResult()
-        click(imagesToPdfQualityTag(CompressionLevel.HIGH))
-        assertTrue(vm.jobState.value.isReadyToSave)
+        rule.runOnUiThread { vm.setQuality(CompressionLevel.HIGH) }
+        rule.waitForIdle()
+        assertTrue(state().isReadyToSave)
     }
 
     @Test
-    fun inputsLockedWhileSavingAndSaveErrorKept() {
+    fun inputsLockedWhileSaving_failedSaveShowsSnackbarAndKeepsResult() {
         addImages("a.jpg", "b.jpg")
         awaitEstimates()
         readyResult()
         val writing = CountDownLatch(1)
         val release = CountDownLatch(1)
-        val dest = Uri.parse("content://dest.test/${System.nanoTime()}/slow.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(
-            dest,
+        val target = dest(
             object : OutputStream() {
                 override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
                 override fun write(b: ByteArray, off: Int, len: Int) {
@@ -613,14 +816,16 @@ class ImagesToPdfScreenTest {
             },
         )
         try {
-            rule.runOnUiThread { vm.save(dest) }
-            CoreTestSupport.idleUntil(message = "saving") { writing.count == 0L && vm.jobState.value.isSavingNow }
+            rule.runOnUiThread { vm.save(target) }
+            CoreTestSupport.idleUntil(message = "saving") { writing.count == 0L && state().isSavingNow }
             rule.waitForIdle()
-            rule.onNodeWithTag(TAG_JOB_SAVING).performScrollTo().assertExists()
-            rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo().assertIsNotEnabled()
-            rule.onNodeWithTag(imagesToPdfSizeTag(PageSize.A4)).performScrollTo().assertIsNotEnabled()
-            rule.onNodeWithTag(imagesToPdfQualityTag(CompressionLevel.HIGH)).performScrollTo().assertIsNotEnabled()
-            rule.onNodeWithTag(fileRowRemoveTag(0)).assertDoesNotExist()
+            rule.onNodeWithTag(TAG_JOB_SAVING).assertExists().assertIsNotEnabled()
+            rule.onNodeWithTag(TAG_JOB_SHARE).assertIsNotEnabled()
+            rule.onNodeWithTag(TAG_JOB_RESET).assertIsNotEnabled()
+            // Leaving is ignored while saving.
+            systemBack()
+            rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertDoesNotExist()
+            assertEquals(0, backs.get())
             rule.runOnUiThread {
                 vm.setQuality(CompressionLevel.HIGH)
                 vm.setPageSize(PageSize.A4)
@@ -631,37 +836,71 @@ class ImagesToPdfScreenTest {
             rule.waitForIdle()
             assertEquals(null, vm.quality.value)
             assertEquals(PageSize.FIT_IMAGE, vm.pageSize.value)
-            assertEquals(2, vm.images.value.size)
-            assertTrue(vm.jobState.value.isSavingNow)
+            assertEquals(listOf("a.jpg", "b.jpg"), names())
+            assertTrue(state().isSavingNow)
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "save failed") { vm.saveError.value != null }
+        val failed = str(R.string.core_save_failed)
+        CoreTestSupport.idleUntil(rule, message = "save error shown") {
+            rule.onAllNodesWithText(failed).fetchSemanticsNodes().isNotEmpty()
+        }
         rule.waitForIdle()
-        // The error stays visible in ReadyToSave (not wiped by a state change).
-        assertTrue(vm.jobState.value.isReadyToSave)
-        rule.onNodeWithTag(TAG_IMAGESTOPDF_SAVE_ERROR).performScrollTo()
-            .assertTextEquals(app.getString(R.string.core_save_failed))
-        // Changing an input clears it together with the stale result.
-        click(imagesToPdfQualityTag(CompressionLevel.LOW))
-        rule.onNodeWithTag(TAG_IMAGESTOPDF_SAVE_ERROR).assertDoesNotExist()
-        assertEquals(JobUiState.Idle, vm.jobState.value)
+        rule.onNodeWithText(failed).assertExists()
+        assertTrue(state().isReadyToSave)
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsEnabled()
+        // The screen reported it as shown, so it is not shown again.
+        assertNull(vm.saveError.value)
     }
 
     @Test
-    fun backWithResultAsksBeforeLeaving() {
+    fun shareButtonRequestsShare() {
         addImages("a.jpg")
         readyResult()
-        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_JOB_SHARE)
+        CoreTestSupport.idleUntil(rule, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_LEAVE_STAY).assertExists().performClick()
+        assertNotNull(shadowOf(rule.activity).nextStartedActivity)
+        assertNull(vm.shareRequest.value)
+        rule.onNodeWithText(str(R.string.result_shared_only)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
+    }
+
+    @Test
+    fun discardOnUnsavedResultAsks_keepStays_confirmLeaves() {
+        addImages("a.jpg")
+        readyResult()
+        click(TAG_JOB_RESET)
+        rule.onNodeWithText(str(R.string.discard_title)).assertExists()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertIsDisplayed().performClick()
         rule.waitForIdle()
         assertEquals(0, backs.get())
-        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
+        assertTrue(state().isReadyToSave)
+
+        // Close and system back ask as well; confirming leaves and drops the result.
+        rule.onNodeWithTag(TAG_ACTION_CLOSE).performClick()
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertExists().performClick()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).performClick()
+        rule.waitForIdle()
+        systemBack()
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertIsDisplayed().performClick()
         rule.waitForIdle()
         assertEquals(1, backs.get())
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun doneAfterSaveLeavesWithoutDialog() {
+        addImages("a.jpg")
+        readyResult()
+        saveTo(ByteArrayOutputStream())
+        click(TAG_JOB_RESET)
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertDoesNotExist()
+        assertEquals(1, backs.get())
+        assertEquals(JobUiState.Idle, state())
     }
 
     @Test
