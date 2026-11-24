@@ -282,6 +282,54 @@ class JobViewModelTest {
         assertFalse(CoreTestSupport.jobsEmpty(app))
     }
 
+    /** Lets the main looper and the IO dispatcher run a few times (for best-effort background work). */
+    private fun settle() = repeat(20) { shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(5) }
+
+    @Test
+    fun destinationArrivingWhileSavingIsDeletedOnlyIfEmpty() {
+        runToReady()
+        val release = CountDownLatch(1)
+        val sink = BlockingSink(release)
+        val emptyExtra = File(app.filesDir, "extra-empty.pdf").apply { writeBytes(ByteArray(0)) }
+        val existing = File(app.filesDir, "extra-existing.pdf").apply { writeBytes(ByteArray(9)) }
+        try {
+            vm.save(dest(sink))
+            CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
+            vm.save(Uri.fromFile(emptyExtra))
+            vm.save(Uri.fromFile(existing))
+            CoreTestSupport.idleUntil(message = "empty extra deleted") { !emptyExtra.exists() }
+            settle()
+            assertEquals(9L, existing.length())
+            assertTrue(state().isSaving)
+        } finally {
+            release.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
+        assertNull(vm.saveError.value)
+    }
+
+    @Test
+    fun sameDestinationArrivingAgainWhileSavingIsNotDeleted() {
+        val release = CountDownLatch(1)
+        val sink = BlockingSink(release)
+        vm = TestVm(app, PdfJobs(app, engineDispatcher, Dispatchers.IO, Dispatchers.Main) { _, _ -> sink })
+        runToReady()
+        val target = File(app.filesDir, "target.pdf").apply { writeBytes(ByteArray(0)) }
+        try {
+            vm.save(Uri.fromFile(target))
+            CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
+            // Still empty on disk (the sink holds the bytes): a re-delivery must not delete it.
+            vm.save(Uri.fromFile(target))
+            settle()
+            assertTrue(target.exists())
+        } finally {
+            release.countDown()
+        }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        assertTrue(target.exists())
+    }
+
     @Test
     fun failedSaveGoesBackToReadyToSaveFromSaving() {
         runToReady()
@@ -533,6 +581,40 @@ class JobViewModelTest {
         vm.merge(listOf(input()))
         CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         assertTrue(sharedFiles().isEmpty())
+    }
+
+    private fun shareOnce(): ShareRequest {
+        vm.share()
+        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
+        val request = vm.shareRequest.value!!
+        vm.onShareHandled(launched = true)
+        return request
+    }
+
+    @Test
+    fun repeatedShareReusesOneCopyAndRecreatesItIfDeleted() {
+        runToReady()
+        val first = shareOnce()
+        val second = shareOnce()
+        assertEquals(first.uri, second.uri)
+        assertEquals(1, sharedRoot().listFiles()!!.size)
+        assertEquals(1, sharedFiles().size)
+
+        sharedFiles().single().delete()
+        val third = shareOnce()
+        assertTrue(third.uri != first.uri)
+        assertArrayEquals(fake.outputContent, sharedFiles().single().readBytes())
+    }
+
+    @Test
+    fun newResultGetsItsOwnShareCopy() {
+        runToReady()
+        val first = shareOnce()
+        vm.reset()
+        runToReady()
+        val second = shareOnce()
+        assertTrue(second.uri != first.uri)
+        assertArrayEquals(fake.outputContent, sharedFiles().single().readBytes())
     }
 
     @Test

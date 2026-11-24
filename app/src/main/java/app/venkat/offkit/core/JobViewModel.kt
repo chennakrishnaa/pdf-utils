@@ -38,11 +38,13 @@ import kotlin.coroutines.cancellation.CancellationException
  *   (recorded in [RecentFilesStore] with [toolId] first). The output is kept, so saving again
  *   ("save another copy") is allowed and updates `savedName`/`savedUri` to the latest;
  *   --failure--> `Done` as before with [saveError] set. While saving, [save], [share], [reset],
- *   [cancel], [invalidateResult] and [startJob] are ignored. The copy runs in
+ *   [cancel], [invalidateResult] and [startJob] are ignored (an ignored save destination is
+ *   deleted if it is empty). The copy runs in
  *   [PdfJobs.processScope], so it completes (and cleans up) even if this ViewModel is cleared.
- * - `Done` --[share]--> copy to `cacheDir/shared/` --> [shareRequest] set; the screen launches the
- *   share sheet and calls [onShareHandled], which sets `Done.shared` if it launched. A failed copy
- *   sets [saveError]; the state does not change.
+ * - `Done` --[share]--> copy to `cacheDir/shared/` (one copy per output, reused by later shares
+ *   while it exists) --> [shareRequest] set; the screen launches the share sheet and calls
+ *   [onShareHandled], which sets `Done.shared` if it launched. A failed copy sets [saveError];
+ *   the state does not change.
  * - any but saving --[reset]--> `Idle` (cancels a running job, discards the output).
  * - `Done` (not saving)/`Failed` --[invalidateResult]--> `Idle` (discards the output).
  *
@@ -82,6 +84,9 @@ open class JobViewModel(
     private var runningJob: Job? = null
     private var shareJob: Job? = null
     private var cleared = false
+
+    /** The destination of the save in progress, or null. */
+    private var savingDest: Uri? = null
 
     /** True while a job is running (including while it winds down after [cancel]). */
     val isRunning: Boolean get() = runningJob != null
@@ -148,30 +153,35 @@ open class JobViewModel(
      * dismissed) changes nothing. From `Done` (saved before or not): `saving = true`, then on
      * success `savedName` (the display name the provider reports for [dest]) and `savedUri` are
      * set; on failure `Done` is restored with [saveError] set (the destination document is
-     * deleted). The output is kept either way. Ignored while saving.
+     * deleted). The output is kept either way.
+     *
+     * While saving, a new [dest] is ignored and, like below, deleted if it is empty (it was just
+     * created by a second dialog); a non-empty document and the destination being written are
+     * never deleted.
      *
      * If there is no output (e.g. the process was recreated while the dialog was open), the
      * just-created destination document is deleted if it is empty and [saveError] explains that the
      * result is gone.
      */
     fun save(dest: Uri?) {
-        if (dest == null || isSaving) return
+        if (dest == null) return
+        if (isSaving) {
+            // A second dialog's document: not used, so remove it if it is still empty. Never the
+            // destination being written now (it is empty until the copy starts).
+            if (dest != savingDest) deleteIfEmptyInBackground(dest)
+            return
+        }
         val app = getApplication<Application>()
         val output = pending
         if (output == null) {
-            jobs.processScope.launch {
-                try {
-                    withContext(Dispatchers.IO) { jobs.deleteDestinationIfEmpty(dest) }
-                } catch (e: Exception) {
-                    // Best effort.
-                }
-            }
+            deleteIfEmptyInBackground(dest)
             _saveError.value = app.getString(R.string.core_result_unavailable)
             return
         }
         val before = _jobState.value as? JobUiState.Done ?: return
         _saveError.value = null
         _jobState.value = before.copy(saving = true)
+        savingDest = dest
         jobs.processScope.launch {
             val result = try {
                 jobs.save(output, dest)
@@ -181,6 +191,7 @@ open class JobViewModel(
             val savedName = if (result.isSuccess) recordRecent(dest, output) else null
             // onCleared left the output to this save, the last user of it.
             if (cleared) jobs.discard(output)
+            savingDest = null
             val current = _jobState.value as? JobUiState.Done ?: before
             if (result.isSuccess) {
                 _jobState.value = current.copy(saving = false, savedName = savedName, savedUri = dest)
@@ -193,9 +204,22 @@ open class JobViewModel(
         }
     }
 
+    /** Deletes [dest] if it is empty ([PdfJobs.deleteDestinationIfEmpty]) off the main thread, best effort. */
+    private fun deleteIfEmptyInBackground(dest: Uri) {
+        jobs.processScope.launch {
+            try {
+                withContext(Dispatchers.IO) { jobs.deleteDestinationIfEmpty(dest) }
+            } catch (e: Exception) {
+                // Best effort.
+            }
+        }
+    }
+
     /**
      * Prepares the output for sharing: copies it off the main thread to
      * `cacheDir/shared/<random id>/<sanitised Done.suggestedName>`, then sets [shareRequest].
+     * Sharing the same output again reuses that copy (same Uri) while it still exists with the
+     * output's length ([PdfJobs.prepareShare]); a new output always gets its own copy.
      * Ignored unless in `Done` and not saving, and while a share is already being prepared. A
      * failed copy (or a missing output) sets [saveError] and leaves the state unchanged.
      */

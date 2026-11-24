@@ -51,7 +51,8 @@ sealed interface JobInput {
 /**
  * A finished output kept in the app cache until the caller discards it. It can be saved
  * ([PdfJobs.save]) and shared ([PdfJobs.prepareShare]) any number of times; only
- * [PdfJobs.discard] (or [PdfJobs.wipeAll]) removes it.
+ * [PdfJobs.discard] (or [PdfJobs.wipeAll]) removes it. It remembers its one shared copy, so
+ * sharing it again reuses that copy while it still exists.
  *
  * @property file the output PDF (inside `cacheDir/jobs/<id>/`).
  * @property pages page count reported by the engine.
@@ -62,7 +63,14 @@ class PendingOutput internal constructor(
     val pages: Int,
     val bytes: Long,
     internal val jobDir: File,
-)
+) {
+    /** The last copy [PdfJobs.prepareShare] made of this output (under `cacheDir/shared/`), or null. */
+    @Volatile
+    internal var sharedCopy: SharedCopy? = null
+}
+
+/** A shared copy of a [PendingOutput]: the [file] under `cacheDir/shared/<id>/` and its [request]. */
+internal class SharedCopy(val file: File, val request: ShareRequest)
 
 /** Result of [PdfJobs.run]. */
 sealed interface JobOutcome {
@@ -352,9 +360,20 @@ class PdfJobs @VisibleForTesting internal constructor(
      * the app's share provider (authority `<applicationId>.share`, which exposes only
      * `cacheDir/shared/`). Throws [IOException] (the partial copy is deleted) or
      * [CancellationException]. The copy stays until [wipeShared].
+     *
+     * One copy per output: if [output] was shared before under the same name and that copy
+     * still exists with the output's length, the same [ShareRequest] is returned without copying
+     * again; otherwise a fresh copy is made and remembered in its place.
      */
     suspend fun prepareShare(output: PendingOutput, suggestedName: String): ShareRequest = withContext(ioDispatcher) {
         val name = shareFileName(suggestedName)
+        output.sharedCopy?.let { copy ->
+            if (copy.request.name == name && output.file.isFile && copy.file.isFile &&
+                copy.file.length() == output.file.length()
+            ) {
+                return@withContext copy.request
+            }
+        }
         val dir = File(sharedRoot, UUID.randomUUID().toString())
         try {
             if (!output.file.isFile) throw IOException("Output no longer exists")
@@ -362,7 +381,9 @@ class PdfJobs @VisibleForTesting internal constructor(
             val target = File(dir, name)
             val ctx = currentCoroutineContext()
             target.outputStream().use { UriIo.copyToStream(output.file, it) { !ctx.isActive } }
-            ShareRequest(FileProvider.getUriForFile(appContext, shareAuthority(appContext), target), name)
+            ShareRequest(FileProvider.getUriForFile(appContext, shareAuthority(appContext), target), name).also {
+                output.sharedCopy = SharedCopy(target, it)
+            }
         } catch (e: Throwable) {
             withContext(NonCancellable) { dir.deleteRecursively() }
             if (e is IllegalArgumentException) throw IOException("Cannot share file", e)
@@ -389,6 +410,7 @@ class PdfJobs @VisibleForTesting internal constructor(
 
     /** Deletes [output] and its job directory. Safe to call more than once. */
     fun discard(output: PendingOutput) {
+        output.sharedCopy = null
         output.jobDir.deleteRecursively()
     }
 
@@ -407,13 +429,61 @@ class PdfJobs @VisibleForTesting internal constructor(
         /** Authority of the app's non-exported share `FileProvider` (see the manifest). */
         fun shareAuthority(context: Context): String = context.packageName + ".share"
 
+        /** Longest shared-copy file name, in UTF-8 bytes, extension included (file systems allow 255). */
+        @VisibleForTesting
+        internal const val MAX_SHARE_NAME_BYTES = 200
+
         /**
-         * File name for a shared copy: [suggestedName] through [sanitizeDisplayName] (no path
-         * separators), with a `.pdf` extension added if missing.
+         * File name for a shared copy, always one path segment: [suggestedName] through
+         * [sanitizeDisplayName] (no path separators), with a `.pdf` extension added if missing,
+         * then cut to at most [MAX_SHARE_NAME_BYTES] UTF-8 bytes. The cut keeps the extension,
+         * falls on a code-point boundary and also drops a base character whose combining marks
+         * would be cut off. [DEFAULT_SHARE_NAME] if nothing usable is left.
          */
         fun shareFileName(suggestedName: String): String {
             val clean = sanitizeDisplayName(suggestedName, DEFAULT_SHARE_NAME)
-            return if (clean.endsWith(PDF_EXTENSION, ignoreCase = true)) clean else clean + PDF_EXTENSION
+            val hasExt = clean.endsWith(PDF_EXTENSION, ignoreCase = true)
+            val ext = if (hasExt) clean.takeLast(PDF_EXTENSION.length) else PDF_EXTENSION
+            val base = cutToUtf8Bytes(
+                if (hasExt) clean.dropLast(PDF_EXTENSION.length) else clean,
+                MAX_SHARE_NAME_BYTES - ext.toByteArray(Charsets.UTF_8).size,
+            ).trimEnd()
+            val name = base + ext
+            val usable = base.any { !it.isWhitespace() && it != '.' } &&
+                name.none { it == '/' || it == '\\' || it == '\u0000' }
+            return if (usable) name else DEFAULT_SHARE_NAME
+        }
+
+        /**
+         * The longest prefix of [s] that fits in [maxBytes] UTF-8 bytes, cut between code points;
+         * if the cut would separate a character from its combining marks, the character goes too.
+         */
+        private fun cutToUtf8Bytes(s: String, maxBytes: Int): String {
+            var bytes = 0
+            var end = 0
+            while (end < s.length) {
+                val cp = s.codePointAt(end)
+                val size = when {
+                    cp < 0x80 -> 1
+                    cp < 0x800 -> 2
+                    cp < 0x10000 -> 3
+                    else -> 4
+                }
+                if (bytes + size > maxBytes) break
+                bytes += size
+                end += Character.charCount(cp)
+            }
+            if (end == s.length) return s
+            // Back off while the next code point is a mark that belongs to the one before the cut.
+            while (end > 0 && isCombining(s.codePointAt(end))) {
+                end = s.offsetByCodePoints(end, -1)
+            }
+            return s.substring(0, end)
+        }
+
+        private fun isCombining(cp: Int): Boolean = when (Character.getType(cp).toByte()) {
+            Character.NON_SPACING_MARK, Character.ENCLOSING_MARK, Character.COMBINING_SPACING_MARK -> true
+            else -> false
         }
 
         /** The single thread on which every engine call in the process runs. */
