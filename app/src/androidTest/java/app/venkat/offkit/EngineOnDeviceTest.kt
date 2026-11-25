@@ -403,7 +403,8 @@ class EngineOnDeviceTest {
 
             // A page past the end is rejected and leaves no output.
             val bad = remote.renderPage(pdf, req.copy(page = 2), out, JobControl.None)
-            assertTrue("got $bad", bad is PdfRender.Err && (bad.error as? PdfError.Io)?.cause is IllegalArgumentException)
+            // (The wire carries Io's cause as an IOException naming the original class.)
+            assertTrue("got $bad", bad is PdfRender.Err && bad.error is PdfError.Io)
             assertFalse(out.exists())
         } finally {
             readerDir.deleteRecursively()

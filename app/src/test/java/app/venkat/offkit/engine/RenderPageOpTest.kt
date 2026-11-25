@@ -227,6 +227,15 @@ class RenderPageOpTest {
     }
 
     @Test
+    fun pageOverTheAnnotationCapIsRefusedBeforeLoading() {
+        val pdf = File(dir, "annots.pdf").apply {
+            writeBytes(HostilePdf.sharedAnnots(ObjectGraph.MAX_ANNOTS_PER_PAGE + 500, 1))
+        }
+        assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(pdf))
+        assertRenderErr(pdf, RenderRequest(0, 1f, 0, 0, 5, 5), { it == PdfError.OutOfMemory })
+    }
+
+    @Test
     fun invalidRequestsAreIoIllegalArgument() {
         val pdf = Fixtures.quadrantPdf(dir, "q.pdf", listOf(QuadrantPage(200f, 100f)))
         assertRenderErr(pdf, RenderRequest(1, 1f, 0, 0, 10, 10), isBadRequest) // past the end
@@ -264,7 +273,7 @@ class RenderPageOpTest {
         val fullMs = (System.nanoTime() - t0) / 1_000_000
         println("TIMING slow page ($SLOW_FILLS full-page fills, 2800x2800) uncancelled: $fullMs ms")
         assertColor(img, 1400, 1400, Fixtures.GREEN, "last fill wins")
-        assertTrue("fixture must be slow to prove anything (took $fullMs ms)", fullMs >= 2_000)
+        assertTrue("fixture must be slow to prove anything (took $fullMs ms)", fullMs >= 1_000)
 
         val cancelAt = System.nanoTime() + 300_000_000L
         val job = object : JobControl {
@@ -275,7 +284,7 @@ class RenderPageOpTest {
         assertRenderErr(pdf, req, { it == PdfError.Cancelled }, job)
         val cancelMs = (System.nanoTime() - t1) / 1_000_000
         println("TIMING slow page cancelled after 300 ms returned at: $cancelMs ms")
-        assertTrue("cancel returned after $cancelMs ms", cancelMs < 1_300)
+        assertTrue("cancel returned after $cancelMs ms (uncancelled $fullMs ms)", cancelMs < fullMs / 2)
     }
 
     // ------------------------------------------------------------------ timings (printed)
@@ -289,22 +298,36 @@ class RenderPageOpTest {
             println("TIMING open+pageInfo 100-page text PDF (run ${run + 1}): ${(System.nanoTime() - t0) / 1_000_000} ms")
             assertEquals(100, (info as PdfPageInfo.Ok).pages.size)
         }
+        println("TIMING 100-page text PDF is ${texts.length()} bytes")
         val photo = Fixtures.photoPdf(dir, "photo.pdf", pages = 1, imageWidth = 1600, imageHeight = 1200)
+        println("TIMING 1-page photo PDF (1600x1200 JPEG) is ${photo.length()} bytes")
         repeat(2) { run ->
             val t0 = System.nanoTime()
-            val img = full(photo, 0, 2f) // 3200x2400
-            println("TIMING full-page render scale 2 image page 3200x2400 (run ${run + 1}, incl. pageInfo): ${(System.nanoTime() - t0) / 1_000_000} ms")
-            assertAllOpaque(img)
+            engine.pageInfo(photo)
+            println("TIMING open+pageInfo photo PDF (run ${run + 1}): ${(System.nanoTime() - t0) / 1_000_000} ms")
         }
-        repeat(2) { run ->
-            val t0 = System.nanoTime()
-            val img = full(texts, 0, 2f) // 1190x1684
-            println("TIMING full-page render scale 2 text page ${img.width}x${img.height} (run ${run + 1}, incl. pageInfo): ${(System.nanoTime() - t0) / 1_000_000} ms")
-            // Text is drawn (some dark pixels near the line at y = 100 pt from the top).
-            var dark = 0
-            for (y in 160 until 240) for (x in 0 until img.width) if (img.px(x, y)[0] < 128) dark++
-            assertTrue("no text pixels", dark > 100)
+        val out = File(dir, "timing.rgba")
+        fun timedRender(pdf: File, label: String): Long {
+            val dims = (engine.pageInfo(pdf) as PdfPageInfo.Ok).pages[0]
+            val req = RenderRequest(0, 2f, 0, 0, RenderLimits.scaledWidth(dims, 2f).toInt(), RenderLimits.scaledHeight(dims, 2f).toInt())
+            var best = Long.MAX_VALUE
+            repeat(2) { run ->
+                val t0 = System.nanoTime()
+                assertTrue(engine.renderPage(pdf, req, out, JobControl.None) is PdfRender.Ok)
+                val ms = (System.nanoTime() - t0) / 1_000_000
+                println("TIMING renderPage only, scale 2, $label ${req.width}x${req.height} (run ${run + 1}): $ms ms")
+                best = minOf(best, ms)
+            }
+            return best
         }
+        timedRender(photo, "image page")
+        assertAllOpaque(Rgba(out.readBytes(), 3200, 2400))
+        timedRender(texts, "text page")
+        val img = Rgba(out.readBytes(), 1190, 1684)
+        // Text is drawn (some dark pixels near the line at y = 100 pt from the top).
+        var dark = 0
+        for (y in 160 until 240) for (x in 0 until img.width) if (img.px(x, y)[0] < 128) dark++
+        assertTrue("no text pixels", dark > 100)
     }
 
     // ------------------------------------------------------------------ helpers

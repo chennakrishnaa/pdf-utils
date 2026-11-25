@@ -16,7 +16,9 @@ import com.artifex.mupdf.fitz.ColorSpace
 import com.artifex.mupdf.fitz.Cookie
 import com.artifex.mupdf.fitz.DrawDevice
 import com.artifex.mupdf.fitz.Matrix
+import app.venkat.offkit.engine.ObjectGraph
 import com.artifex.mupdf.fitz.PDFDocument
+import com.artifex.mupdf.fitz.PDFObject
 import com.artifex.mupdf.fitz.Page
 import com.artifex.mupdf.fitz.Pixmap
 import com.artifex.mupdf.fitz.Rect
@@ -28,6 +30,34 @@ internal fun pageDimsOf(bounds: Rect): PageDims? {
     val w = bounds.x1 - bounds.x0
     val h = bounds.y1 - bounds.y0
     return if (w.isFinite() && h.isFinite() && w > 0f && h > 0f) PageDims(w, h) else null
+}
+
+/**
+ * SR3-3 for one page: `loadPage` builds every annotation of the page, so a page whose `/Annots`
+ * array has more than [ObjectGraph.MAX_ANNOTS_PER_PAGE] entries is refused (`OutOfMemory`) before
+ * it is loaded. Resolves only the array (its length); no annotation is loaded.
+ */
+internal fun checkPageAnnots(doc: PDFDocument, index: Int) {
+    loadingPage {
+        val page = doc.findPage(index)
+        try {
+            val raw = page.get("Annots")
+            val arr = if (raw.isIndirect) raw.resolve().also { destroyObj(raw) } else raw
+            try {
+                if (arr.isArray && arr.size() > ObjectGraph.MAX_ANNOTS_PER_PAGE) {
+                    throw PdfInputException(PdfError.OutOfMemory)
+                }
+            } finally {
+                destroyObj(arr)
+            }
+        } finally {
+            destroyObj(page)
+        }
+    }
+}
+
+private fun destroyObj(o: PDFObject) {
+    if (o !== PDFObject.Null) o.destroy()
 }
 
 /** A non-OOM MuPDF failure while loading a page or reading its bounds means the page is unusable. */
@@ -56,6 +86,8 @@ class PageInfoOp {
             val count = doc.countPages()
             if (count > RenderLimits.MAX_PAGES) return@guarded PdfPageInfo.Err(PdfError.OutOfMemory)
             if (count <= 0) return@guarded PdfPageInfo.Err(PdfError.Corrupt)
+            // SR3-3: /Annots lengths of all pages, budgeted, before any loadPage (as the other ops).
+            PdfInputs.checkGraph { ObjectGraph.checkAnnots(doc) }
             val dims = ArrayList<PageDims>(count)
             for (i in 0 until count) {
                 if (job.isCancelled()) return@guarded PdfPageInfo.Err(PdfError.Cancelled)
@@ -151,6 +183,7 @@ class RenderPageOp {
             if (job.isCancelled()) return PdfRender.Err(PdfError.Cancelled)
             val count = doc.countPages()
             if (request.page >= count) return invalid("page ${request.page} past the end ($count pages)")
+            checkPageAnnots(doc, request.page)
             val page = loadingPage { doc.loadPage(request.page) }
             try {
                 val bounds = loadingPage { page.bounds }
