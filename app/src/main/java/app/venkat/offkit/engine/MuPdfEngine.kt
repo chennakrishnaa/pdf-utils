@@ -4,6 +4,8 @@ import app.venkat.offkit.engine.ops.AppendImagesOp
 import app.venkat.offkit.engine.ops.CompressOp
 import app.venkat.offkit.engine.ops.ImagesToPdfOp
 import app.venkat.offkit.engine.ops.MergeOp
+import app.venkat.offkit.engine.ops.PageInfoOp
+import app.venkat.offkit.engine.ops.RenderPageOp
 import java.io.File
 
 /**
@@ -44,14 +46,12 @@ class MuPdfEngine : PdfEngine, PdfPageRenderer {
     override fun appendImages(pdf: File, images: List<File>, out: File, job: JobControl): PdfResult =
         guardedRun(out) { appendImagesOp.run(pdf, images, out, job) }
 
-    // Placeholder until the reader's MuPDF rendering lands (Task C).
-    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo =
-        PdfPageInfo.Err(PdfError.Io(UnsupportedOperationException("not implemented")))
+    // Both run on their own EngineStack thread and map failures themselves (they return
+    // PdfPageInfo / PdfRender, not PdfResult, so guardedRun does not apply).
+    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo = PageInfoOp().run(pdf, job)
 
-    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
-        out.delete()
-        return PdfRender.Err(PdfError.Io(UnsupportedOperationException("not implemented")))
-    }
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender =
+        RenderPageOp().run(pdf, request, out, job)
 }
 
 /**

@@ -17,7 +17,11 @@ import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfEngine
+import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.RenderRequest
 import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PdfResult
 import kotlinx.coroutines.runBlocking
@@ -357,6 +361,54 @@ class EngineOnDeviceTest {
             run(listOf(image(good), image(bad))) { e, files, o, j -> e.imagesToPdf(files, PageSize.A4, o, j) },
             PdfError.UnsupportedImage,
         )
+    }
+
+    @Test
+    fun reader_pageInfoAndRenderThroughEngineProcess() {
+        val remote = (context.applicationContext as PdfUtilApp).engine as RemoteEngine
+        // EngineServer only accepts paths inside cacheDir/jobs.
+        val readerDir = File(jobsRoot, "reader-ondevice-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val pdf = Fixtures.quadrantPdf(
+                readerDir, "q.pdf",
+                listOf(Fixtures.QuadrantPage(200f, 100f), Fixtures.QuadrantPage(200f, 100f, rotate = 90)),
+            )
+            val info = remote.pageInfo(pdf, JobControl.None)
+            assertEquals(
+                PdfPageInfo.Ok(listOf(PageDims(200f, 100f), PageDims(100f, 200f))),
+                info,
+            )
+            val out = File(readerDir, "tile.rgba")
+            // Page 2 (/Rotate 90) at scale 2: 200x400 px; unrotated top-left RED is displayed top-right.
+            val req = RenderRequest(page = 1, scale = 2f, left = 0, top = 0, width = 200, height = 400)
+            assertEquals(PdfRender.Ok(200, 400), remote.renderPage(pdf, req, out, JobControl.None))
+            val bytes = out.readBytes()
+            assertEquals(200 * 400 * 4, bytes.size)
+            fun px(x: Int, y: Int): List<Int> = (0 until 4).map { bytes[(y * 200 + x) * 4 + it].toInt() and 0xFF }
+            fun assertPx(x: Int, y: Int, r: Int, g: Int, b: Int) {
+                val p = px(x, y)
+                val ok = abs(p[0] - r) <= 2 && abs(p[1] - g) <= 2 && abs(p[2] - b) <= 2 && p[3] == 255
+                assertTrue("pixel ($x,$y) = $p, want [$r, $g, $b, 255]", ok)
+            }
+            assertPx(150, 100, 255, 0, 0) // RED, top-right
+            assertPx(50, 100, 0, 0, 255) // BLUE, top-left
+            assertPx(50, 300, 255, 255, 0) // YELLOW, bottom-left
+            assertPx(4, 4, 255, 255, 255) // white margin
+
+            // The same bytes copy into an ARGB_8888 bitmap as the reader will do.
+            val bmp = Bitmap.createBitmap(200, 400, Bitmap.Config.ARGB_8888)
+            bmp.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(bytes))
+            assertEquals(Color.RED, bmp.getPixel(150, 100))
+            bmp.recycle()
+
+            // A page past the end is rejected and leaves no output.
+            val bad = remote.renderPage(pdf, req.copy(page = 2), out, JobControl.None)
+            // (The wire carries Io's cause as an IOException naming the original class.)
+            assertTrue("got $bad", bad is PdfRender.Err && bad.error is PdfError.Io)
+            assertFalse(out.exists())
+        } finally {
+            readerDir.deleteRecursively()
+        }
     }
 
     @Test
