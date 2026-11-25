@@ -2,41 +2,7 @@
 <!-- Offkit · Option B "Paper light". Material 3 colour roles (light). -->
 <resources>
     <color name="offkit_primary">#C2372B</color>
-    <color name="offkit_on_primary">#FFFFFF</color>
-    <color name="offkit_primary_container">#FBE3DE</color>
-    <color name="offkit_on_primary_container">#8A1F15</color>
-    <color name="offkit_inverse_primary">#FFB4A8</color>
-    <color name="offkit_secondary">#5E5A55</color>
-    <color name="offkit_on_secondary">#FFFFFF</color>
-    <color name="offkit_secondary_container">#F1ECE5</color>
-    <color name="offkit_on_secondary_container">#1C1B1A</color>
-    <color name="offkit_tertiary">#1E5A34</color>
-    <color name="offkit_on_tertiary">#FFFFFF</color>
-    <color name="offkit_tertiary_container">#DCEFE2</color>
-    <color name="offkit_on_tertiary_container">#1E5A34</color>
     <color name="offkit_background">#F7F4EF</color>
-    <color name="offkit_on_background">#1C1B1A</color>
-    <color name="offkit_surface">#F7F4EF</color>
-    <color name="offkit_on_surface">#1C1B1A</color>
-    <color name="offkit_surface_variant">#F1ECE5</color>
-    <color name="offkit_on_surface_variant">#5E5A55</color>
-    <color name="offkit_surface_tint">#C2372B</color>
-    <color name="offkit_inverse_surface">#1C1B1A</color>
-    <color name="offkit_inverse_on_surface">#F7F4EF</color>
-    <color name="offkit_error">#B3261E</color>
-    <color name="offkit_on_error">#FFFFFF</color>
-    <color name="offkit_error_container">#FBE3DE</color>
-    <color name="offkit_on_error_container">#8A1F15</color>
-    <color name="offkit_outline">#857E77</color>
-    <color name="offkit_outline_variant">#ECE6DE</color>
-    <color name="offkit_scrim">#000000</color>
-    <color name="offkit_surface_bright">#F7F4EF</color>
-    <color name="offkit_surface_dim">#E3DDD5</color>
-    <color name="offkit_surface_container_lowest">#FFFFFF</color>
-    <color name="offkit_surface_container_low">#FBF9F6</color>
-    <color name="offkit_surface_container">#F4F0EA</color>
-    <color name="offkit_surface_container_high">#F1ECE5</color>
-    <color name="offkit_surface_container_highest">#E9E3DB</color>
 
     <!-- extra roles used by the design -->
     <color name="offkit_link">#B0301F</color>
@@ -44,14 +10,4 @@
     <color name="offkit_on_success_container">#1E5A34</color>
     <color name="offkit_disabled_container">#E9E3DB</color>
     <color name="offkit_on_disabled">#5E5A55</color>
-
-    <!-- tool accents (container / icon) -->
-    <color name="offkit_tool_images_container">#E7DEF3</color>
-    <color name="offkit_tool_images_on_container">#4A3274</color>
-    <color name="offkit_tool_compress_container">#DDE7F7</color>
-    <color name="offkit_tool_compress_on_container">#1F4A8A</color>
-    <color name="offkit_tool_merge_container">#DCEFE2</color>
-    <color name="offkit_tool_merge_on_container">#1E5A34</color>
-    <color name="offkit_tool_add_pages_container">#F8E7C9</color>
-    <color name="offkit_tool_add_pages_on_container">#7A4B05</color>
 </resources>
