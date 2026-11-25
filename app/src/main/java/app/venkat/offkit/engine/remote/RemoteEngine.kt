@@ -59,9 +59,14 @@ import java.util.concurrent.locks.ReentrantLock
  * consecutive wake-ups are more than [freezeGapMs] apart, this process may have been frozen, and
  * the gap minus one [pollMs] is not counted toward the stall, total or image limits or the cancel
  * grace (their deadlines are shifted by it). The memory check is not postponed: RSS is sampled on
- * the first wake-up after such a gap. An engine death noticed within [THAW_WINDOW_MS] of a gap of
- * at least [EngineLimits.FROZEN_DEATH_GAP_MS] is `EngineUnavailable`; after a shorter gap (a GC
- * pause, a busy CPU) it is `EngineCrashed` unless [inBackground] says the app is cached (PI4R-1).
+ * the first wake-up after such a gap, unless the call is in its cancel grace (which ends within
+ * [cancelGraceMs] of observed time, by a result or a kill). A gap counts as a thaw if it is at least [EngineLimits.FROZEN_DEATH_GAP_MS], or if it
+ * is longer than [freezeGapMs] and [inBackground] (sampled when the call starts and about every
+ * [BACKGROUND_SAMPLE_MS] of wake-ups) last said, before the gap, that the app was cached: only a
+ * cached process is frozen (T22R-1). An engine death noticed within [THAW_WINDOW_MS] of a thaw is
+ * `EngineUnavailable`; after a foreground gap under [EngineLimits.FROZEN_DEATH_GAP_MS] (a GC
+ * pause, a busy CPU) it is `EngineCrashed` unless [inBackground] says the app is cached when the
+ * death is handled (PI4R-1).
  * Bound: at most [maxFrozenMs] per call is discounted in all; beyond that, gaps count as
  * ordinary time. So even if the engine really did run during every "gap" (it should not: it is
  * frozen with us), a call ends after at most its limit plus [maxFrozenMs] of wall time, and every
@@ -80,7 +85,8 @@ import java.util.concurrent.locks.ReentrantLock
  *   an engine death is reported.
  * @param maxFrozenMs most frozen time discounted from the limits in one call.
  * @param inBackground true if this process is cached (in the background); then an engine death
- *   is reported as `EngineUnavailable`, since the system may have killed the cached engine.
+ *   is reported as `EngineUnavailable`, since the system may have killed the cached engine. Also
+ *   sampled while waiting, to recognise a short freeze (see above); it should be cheap.
  * @param log where the one-time "cannot read the engine's memory" warning goes.
  */
 class RemoteEngine(
@@ -294,13 +300,18 @@ class RemoteEngine(
         var lastWake = sentAt
         var discountLeftNs = TimeUnit.MILLISECONDS.toNanos(maxFrozenMs)
         var thawedAt = 0L
+        val cachedSampleNs = TimeUnit.MILLISECONDS.toNanos(BACKGROUND_SAMPLE_MS)
+        var cached = backgrounded() // last sampled inBackground()
+        var nextCachedSample = sentAt + cachedSampleNs
         var interrupted = false
 
         /**
          * Reads the clock; if the loop went more than [freezeGapMs] since the last read, this
          * process may have been frozen: shift the time deadlines by the gap (minus one poll,
-         * within the [maxFrozenMs] budget) and sample RSS on this tick. Only a gap of at least
-         * [EngineLimits.FROZEN_DEATH_GAP_MS] counts as a thaw for classifying a death (PI4R-1).
+         * within the [maxFrozenMs] budget) and make RSS due on this tick. A gap of at least
+         * [EngineLimits.FROZEN_DEATH_GAP_MS], or a gap that began while the app was cached
+         * (T22R-1), counts as a thaw for classifying a death; a shorter foreground gap does not
+         * (PI4R-1). Then [inBackground] is sampled if due (always right after a gap).
          * Called after the wait and before the limit checks, so a freeze anywhere in the loop (in
          * the wait or in `job.progress`) is caught before it is judged.
          */
@@ -317,8 +328,14 @@ class RemoteEngine(
                     if (cancelDeadline != 0L) cancelDeadline += discount
                 }
                 nextRssSample = now // the engine was not watched during the gap: check it now
+                if (cached) thawedAt = now // cached before the gap: it was most likely a freeze
+                nextCachedSample = now
             }
             if (gap >= frozenDeathGapNs) thawedAt = now
+            if (now - nextCachedSample >= 0) {
+                cached = backgrounded()
+                nextCachedSample = now + cachedSampleNs
+            }
             return now
         }
         try {
@@ -433,7 +450,8 @@ class RemoteEngine(
 
         /**
          * A wait-loop gap longer than this (the loop wakes every ~100 ms) is not counted toward the
-         * time limits. Classifying a death needs a longer gap: [EngineLimits.FROZEN_DEATH_GAP_MS].
+         * time limits. For classifying a death such a gap is a thaw only if the app was cached
+         * before it; otherwise it takes [EngineLimits.FROZEN_DEATH_GAP_MS].
          */
         const val FREEZE_GAP_MS = 2_000L
 
@@ -441,9 +459,17 @@ class RemoteEngine(
         const val MAX_FROZEN_MS = 60 * 60_000L
 
         /**
-         * A death noticed this soon after a gap of at least [EngineLimits.FROZEN_DEATH_GAP_MS]
-         * happened while frozen: `EngineUnavailable`.
+         * A death noticed this soon after a thaw (see the class KDoc) happened while frozen:
+         * `EngineUnavailable`.
          */
         const val THAW_WINDOW_MS = 5_000L
+
+        /**
+         * How often the wait loop samples [inBackground] (in production a binder call to the
+         * system's `getMyMemoryState`): often enough to know, before a freeze, that the app was
+         * cached, as the system normally freezes a cached app only some seconds after it became
+         * cached. A freeze sooner than that is judged as before (foreground gap).
+         */
+        const val BACKGROUND_SAMPLE_MS = 1_000L
     }
 }

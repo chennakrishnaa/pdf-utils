@@ -431,17 +431,99 @@ class RemoteEngineTest {
             conn,
             // Next regular sample only after 60 s; the stall limit would end the call after 3 s.
             limits = EngineLimits(stallMs = 3_000, memoryBytes = 1_000, memorySampleMs = 60_000),
-            rssBytes = { if (samples.incrementAndGet() == 1) 10L else 2_000L },
+            // The first sample is under the cap and is followed by a 30 s freeze, shorter than the
+            // sample interval (T22R-5: the jump is driven by the sample itself, not by a timer).
+            rssBytes = {
+                if (samples.incrementAndGet() == 1) 10L.also { clock.jumpMs(30_000) } else 2_000L
+            },
             nanoTime = clock::now,
         )
-        Thread { Thread.sleep(300); clock.jumpMinutes(10) }.start()
         val (_, input, out) = jobDir()
-        val t0 = System.nanoTime()
+        // Without the sample right after the gap the next one would be due 30 s later, so the call
+        // would end TimedOut by the 3 s stall limit (a real stall of over 2 s is itself a gap,
+        // which samples too), never OutOfMemory. So no wall-time assertion is needed.
         assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.compress(input, CompressionLevel.LOW, out, Job()))
-        val ms = elapsedMs(t0)
-        assertTrue("took $ms ms", ms < 2_000) // the 3 s stall limit did not end it
         assertEquals(2, samples.get())
         assertEquals(listOf(4242), conn.killed)
+    }
+
+    /** Hand-moved clock and "app is cached" flag for [deathAfterSteps]. */
+    private class Hand {
+        val t = java.util.concurrent.atomic.AtomicLong(1_000_000_000L)
+        val cached = AtomicBoolean(false)
+        fun ms(n: Long) { t.addAndGet(TimeUnit.MILLISECONDS.toNanos(n)) }
+    }
+
+    /**
+     * Compress on an engine that reports one progress event per step and never answers. Each
+     * step runs in its progress callback (on the waiting thread, so between two wake-ups) and may
+     * move the clock or the cached flag; the engine dies right after the last step. Only the
+     * steps move the clock, so every gap is exact.
+     */
+    private fun deathAfterSteps(vararg steps: Hand.() -> Unit, startCached: Boolean = false): PdfResult {
+        val hand = Hand().apply { cached.set(startCached) }
+        val conn = FakeConnector {
+            object : IEngineService.Stub() {
+                override fun pid() = 4242
+                override fun run(requestId: Long, request: Bundle?, callback: IEngineCallback?) {
+                    for (i in 1..steps.size) callback!!.progress(requestId, i, steps.size)
+                }
+                override fun cancel(requestId: Long) {}
+            }
+        }
+        val engine = RemoteEngine(conn, nanoTime = hand.t::get, inBackground = hand.cached::get)
+        val job = object : JobControl {
+            override fun progress(done: Int, total: Int) {
+                steps[done - 1](hand)
+                if (done == total) conn.onLost!!.invoke()
+            }
+            override fun isCancelled() = false
+        }
+        val (_, input, out) = jobDir()
+        return engine.compress(input, CompressionLevel.LOW, out, job)
+    }
+
+    private val crashed = PdfResult.Err(PdfError.EngineCrashed)
+    private val unavailable = PdfResult.Err(PdfError.EngineUnavailable)
+
+    @Test
+    fun shortGapThatBeganWhileCachedIsAThaw() {
+        // T22R-1: seen cached, then a 3 s freeze; the user came back, so at death it is foreground.
+        assertEquals(unavailable, deathAfterSteps({ cached.set(true); ms(1_000) }, { cached.set(false); ms(3_000) }))
+        // Cached already when the call started (sampled then), foreground after a 3 s freeze.
+        assertEquals(unavailable, deathAfterSteps({ cached.set(false); ms(3_000) }, startCached = true))
+    }
+
+    @Test
+    fun shortGapAfterTheUserReturnedIsNotAThaw() {
+        // Seen cached, then seen foreground again (the user came back), then a 3 s GC pause.
+        assertEquals(
+            crashed,
+            deathAfterSteps({ cached.set(true); ms(1_000) }, { cached.set(false); ms(1_000) }, { ms(3_000) }),
+        )
+        // Seen cached, then a gap of exactly the freeze gap: not longer than it, so not a thaw.
+        assertEquals(crashed, deathAfterSteps({ cached.set(true); ms(1_000) }, { cached.set(false); ms(RemoteEngine.FREEZE_GAP_MS) }))
+    }
+
+    @Test
+    fun deathLongAfterAThawIsEngineCrashed() {
+        val second: Hand.() -> Unit = { ms(1_000) }
+        // Thaw by a short gap that began while cached, then 6 s in the foreground before the death.
+        assertEquals(crashed, deathAfterSteps({ cached.set(true); ms(1_000) }, { cached.set(false); ms(3_000) }, *Array(6) { second }))
+        // Control: 4 s after it is still within the thaw window.
+        assertEquals(unavailable, deathAfterSteps({ cached.set(true); ms(1_000) }, { cached.set(false); ms(3_000) }, *Array(4) { second }))
+        // The same after a 10-minute gap (T22R-6).
+        assertEquals(crashed, deathAfterSteps({ ms(600_000) }, *Array(6) { second }))
+        assertEquals(unavailable, deathAfterSteps({ ms(600_000) }, *Array(4) { second }))
+    }
+
+    @Test
+    fun severalShortForegroundGapsNeverAddUpToAThaw() {
+        // Five 3 s pauses (15 s in all) in the foreground, the death right after the last.
+        val pause: Hand.() -> Unit = { ms(3_000) }
+        assertEquals(crashed, deathAfterSteps(*Array(5) { pause }))
+        // Nor does a 9.9 s pause right after one (each gap is judged alone).
+        assertEquals(crashed, deathAfterSteps({ ms(9_900) }, { ms(9_900) }))
     }
 
     @Test
