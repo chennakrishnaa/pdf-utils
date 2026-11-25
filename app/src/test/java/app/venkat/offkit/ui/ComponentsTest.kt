@@ -27,6 +27,7 @@ import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.hasUnsavedWork
 import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.components.launchOrExplain
+import app.venkat.offkit.ui.components.rememberImagePicker
 import app.venkat.offkit.ui.components.rememberPdfPicker
 import app.venkat.offkit.ui.components.openSavedPdf
 import app.venkat.offkit.ui.components.ShareRequestEffect
@@ -126,6 +127,20 @@ class ComponentsTest {
         shadowOf(rule.activity.application).checkActivities(true)
         show {
             val pick = rememberPdfPicker(multiple = true) { }
+            Button(onClick = pick, modifier = Modifier.testTag("pick")) { Text("Pick") }
+        }
+        rule.onNodeWithTag("pick").performClick()
+        rule.waitForIdle()
+        assertEquals(rule.activity.getString(R.string.core_no_picker), ShadowToast.getTextOfLatestToast())
+        rule.onNodeWithTag("pick").assertIsDisplayed()
+    }
+
+    @Test
+    fun imagePickerWithoutHandlerSaysNoFilePicker() {
+        // The image picker is the system file picker too (OPEN_DOCUMENT), so the same message fits.
+        shadowOf(rule.activity.application).checkActivities(true)
+        show {
+            val pick = rememberImagePicker { }
             Button(onClick = pick, modifier = Modifier.testTag("pick")) { Text("Pick") }
         }
         rule.onNodeWithTag("pick").performClick()

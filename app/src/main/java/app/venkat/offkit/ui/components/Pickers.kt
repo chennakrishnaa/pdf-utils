@@ -8,7 +8,6 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -22,8 +21,17 @@ import app.venkat.offkit.core.ShareRequest
 /** MIME type of PDF documents. */
 const val MIME_PDF = "application/pdf"
 
+/**
+ * MIME types offered by the image picker ([rememberImagePicker]): every image type. The app
+ * accepts anything Android can decode: JPEG and PNG (recognised by magic bytes, not by MIME type)
+ * are embedded as is, and everything else (WebP, HEIC/HEIF, GIF, BMP, ...) is transcoded to JPEG
+ * by `ImageNormalizer` in the `:engine` process. Undecodable content is rejected there as
+ * `UnsupportedImage`, so a narrower list would only hide files that work.
+ */
+val IMAGE_PICKER_MIME_TYPES: List<String> = listOf("image/*")
+
 /*
- * All helpers use the Storage Access Framework / photo picker with transient grants only:
+ * All helpers use the Storage Access Framework (system file picker) with transient grants only:
  * the returned Uris are readable for as long as the activity lives, and nothing persists them.
  * If the user cancels a picker, onPicked is NOT called (a pick never yields an empty list).
  * If the device has no app to handle a picker, a short message is shown instead of crashing.
@@ -121,23 +129,23 @@ fun rememberPdfPicker(multiple: Boolean, onPicked: (List<Uri>) -> Unit): () -> U
 }
 
 /**
- * Returns a function that opens the system photo picker for images only
- * ([ActivityResultContracts.PickMultipleVisualMedia]). [onPicked] receives the chosen Uris in
- * the order the picker returns them; not called on cancel.
+ * Returns a function that opens the system file picker for images
+ * ([ActivityResultContracts.OpenMultipleDocuments] with [IMAGE_PICKER_MIME_TYPES]: an
+ * `ACTION_OPEN_DOCUMENT` intent with `EXTRA_ALLOW_MULTIPLE`), so the user can browse any folder,
+ * Downloads, an SD card or another document provider, not only the photo gallery.
+ * [onPicked] receives the chosen Uris in the order the picker returns them (the system does not
+ * promise selection order; they are not sorted); not called on cancel. Transient grants only,
+ * like [rememberPdfPicker]: the images are copied when a job runs, while the activity lives.
  */
 @Composable
 fun rememberImagePicker(onPicked: (List<Uri>) -> Unit): () -> Unit {
     val callback by rememberUpdatedState(onPicked)
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) callback(uris)
     }
     val context = LocalContext.current
     return remember(launcher, context) {
-        {
-            launchOrExplain(context) {
-                launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }
-        }
+        { launchOrExplain(context) { launcher.launch(IMAGE_PICKER_MIME_TYPES.toTypedArray()) } }
     }
 }
 

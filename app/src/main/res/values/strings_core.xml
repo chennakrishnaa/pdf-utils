@@ -7,7 +7,7 @@
     <!-- Shown when the save dialog returns but the result was lost (e.g. the app was closed meanwhile). -->
     <string name="core_result_unavailable">The result is no longer available. Please run it again.</string>
     <!-- Leave-confirmation dialog shown on Back while a job runs or a result is unsaved. -->
-    <!-- Shown when no app on the device can handle the document picker, photo picker or save dialog. -->
+    <!-- Shown when no app on the device can handle the document (file) picker for PDFs or images, or the save dialog. -->
     <string name="core_no_picker">No app on this device can open the file picker.</string>
     <!-- Shown when a picked image declares more pixels than the app can safely decode on a phone. -->
     <string name="core_error_image_too_large">This image is too large to process on this device.</string>
