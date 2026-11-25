@@ -1,0 +1,246 @@
+package app.venkat.offkit.core
+
+import android.app.Application
+import android.net.Uri
+import androidx.test.core.app.ApplicationProvider
+import app.venkat.offkit.FakePdfEngine
+import app.venkat.offkit.PdfUtilApp
+import app.venkat.offkit.engine.JobControl
+import app.venkat.offkit.engine.PageDims
+import app.venkat.offkit.engine.PdfEngine
+import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfPageRenderer
+import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.RenderRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import java.io.File
+import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class PdfReaderTest {
+    private lateinit var app: Application
+    private lateinit var fake: FakePdfEngine
+    private lateinit var engineDispatcher: ExecutorCoroutineDispatcher
+    private lateinit var reader: PdfReader
+
+    @Before
+    fun setUp() {
+        app = ApplicationProvider.getApplicationContext()
+        fake = FakePdfEngine()
+        (app as PdfUtilApp).engine = fake
+        engineDispatcher = Executors.newSingleThreadExecutor { Thread(it, ENGINE_THREAD) }.asCoroutineDispatcher()
+        reader = PdfReader(app, PdfJobs(app, engineDispatcher, Dispatchers.IO, Dispatchers.Main))
+    }
+
+    @After
+    fun tearDown() {
+        engineDispatcher.close()
+    }
+
+    private fun pdfUri(name: String = "book.pdf") = CoreTestSupport.contentUri(app, name, "%PDF-1.7 test".toByteArray())
+
+    private fun readerDirs() = File(app.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith("reader-") }
+
+    private fun openOk(uri: Uri = pdfUri()): ReaderDocument = when (val r = runBlocking { reader.open(uri) }) {
+        is ReaderOpenResult.Opened -> r.document
+        is ReaderOpenResult.Failed -> throw AssertionError("open failed: ${r.error}")
+    }
+
+    @Test
+    fun openCopiesIntoReaderDirAndReportsNameAndPages() {
+        fake.readerPages = listOf(PageDims(595f, 842f), PageDims(842f, 595f))
+        val doc = openOk(pdfUri("Report 2026.pdf"))
+        assertEquals("Report 2026.pdf", doc.name)
+        assertEquals(fake.readerPages, doc.pages)
+        val dirs = readerDirs()
+        assertEquals(1, dirs.size)
+        assertEquals(dirs.single().canonicalFile, doc.dir.canonicalFile)
+        assertEquals("%PDF-1.7 test", doc.file.readText())
+        assertEquals(doc.file, fake.readerCalls.single().pdf)
+    }
+
+    @Test
+    fun encryptedAndCorruptFailAndLeaveNothing() {
+        for (error in listOf(PdfError.Encrypted, PdfError.Corrupt)) {
+            fake.readerError = error
+            assertEquals(ReaderOpenResult.Failed(error), runBlocking { reader.open(pdfUri()) })
+            assertTrue(readerDirs().isEmpty())
+        }
+    }
+
+    @Test
+    fun noPagesIsCorrupt() {
+        fake.readerPages = emptyList()
+        assertEquals(ReaderOpenResult.Failed(PdfError.Corrupt), runBlocking { reader.open(pdfUri()) })
+        assertTrue(readerDirs().isEmpty())
+    }
+
+    @Test
+    fun unreadableOrNonContentUriIsIo() {
+        val missing = Uri.parse("content://app.venkat.offkit.test/missing/x.pdf")
+        val r1 = runBlocking { reader.open(missing) }
+        assertTrue(r1.toString(), r1 is ReaderOpenResult.Failed && r1.error is PdfError.Io)
+        val r2 = runBlocking { reader.open(Uri.fromFile(File(app.cacheDir, "x.pdf"))) }
+        assertTrue(r2.toString(), r2 is ReaderOpenResult.Failed && r2.error is PdfError.Io)
+        assertTrue(readerDirs().isEmpty())
+        assertTrue("engine never called", fake.readerCalls.isEmpty())
+    }
+
+    @Test
+    fun closeDeletesTheDirectory() {
+        val doc = openOk()
+        assertTrue(doc.dir.isDirectory)
+        reader.close(doc)
+        CoreTestSupport.idleUntil(message = "reader dir deleted") { !doc.dir.exists() }
+        assertEquals(ReaderTile.Err(PdfError.Cancelled), runBlocking { reader.render(doc, RenderRequest(0, 1f, 0, 0, 10, 10)) })
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun tileBecomesBitmapWithEngineColourAndFileIsDeleted() {
+        val doc = openOk()
+        for (page in 0..2) {
+            val tile = runBlocking { reader.render(doc, RenderRequest(page, 0.5f, 3, 4, 40, 30)) }
+            val bitmap = (tile as ReaderTile.Ok).bitmap
+            assertEquals(40, bitmap.width)
+            assertEquals(30, bitmap.height)
+            // The tile's bytes land in the bitmap unchanged (copyPixelsFromBuffer, no conversion).
+            val raw = java.nio.ByteBuffer.allocate(40 * 30 * 4)
+            bitmap.copyPixelsToBuffer(raw)
+            val argb = fake.readerColor(page)
+            val rgba = byteArrayOf((argb shr 16).toByte(), (argb shr 8).toByte(), argb.toByte(), 0xFF.toByte())
+            for (i in 0 until 40 * 30) for (c in 0..3) assertEquals(rgba[c], raw.get(i * 4 + c))
+            // On Android, ARGB_8888 memory is R, G, B, A, so the colour reads back exactly. The
+            // Robolectric host's native Skia may store B, G, R, A instead: then it reads back swapped.
+            val expected = if (hostStoresRgba()) argb else swapRedBlue(argb)
+            assertEquals(expected, bitmap.getPixel(0, 0))
+            assertEquals(expected, bitmap.getPixel(39, 29))
+        }
+        assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+    }
+
+    @Test
+    fun invalidRequestNeverReachesTheEngine() {
+        val doc = openOk()
+        val calls = fake.readerCalls.size
+        val tile = runBlocking { reader.render(doc, RenderRequest(0, 1f, 0, 0, 596, 10)) }
+        assertTrue(tile.toString(), tile is ReaderTile.Err && tile.error is PdfError.Io)
+        assertEquals(calls, fake.readerCalls.size)
+    }
+
+    @Test
+    fun wrongLengthTileIsRejectedAndDeleted() {
+        val doc = openOk()
+        // An engine that claims success but writes one byte too many.
+        (app as PdfUtilApp).engine = object : PdfEngine by fake, PdfPageRenderer by fake {
+            override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+                val r = fake.renderPage(pdf, request, out, job)
+                out.appendBytes(byteArrayOf(0))
+                return r
+            }
+        }
+        val tile = runBlocking { reader.render(doc, RenderRequest(0, 0.5f, 0, 0, 20, 20)) }
+        assertTrue(tile.toString(), tile is ReaderTile.Err && tile.error is PdfError.Io)
+        assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+    }
+
+    @Test
+    fun wrongReplySizeIsRejected() {
+        val doc = openOk()
+        (app as PdfUtilApp).engine = object : PdfEngine by fake, PdfPageRenderer by fake {
+            override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+                val r = fake.renderPage(pdf, request.copy(width = request.width - 1), out, job)
+                return r
+            }
+        }
+        val tile = runBlocking { reader.render(doc, RenderRequest(0, 0.5f, 0, 0, 20, 20)) }
+        assertTrue(tile.toString(), tile is ReaderTile.Err && tile.error is PdfError.Io)
+        assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+    }
+
+    @Test
+    fun tileToBitmapChecksLength() {
+        val f = File(app.cacheDir, "t.rgba")
+        f.writeBytes(ByteArray(4 * 4 * 4 - 1))
+        try {
+            PdfReader.tileToBitmap(f, 4, 4)
+            fail("short tile accepted")
+        } catch (e: IOException) {
+            // Expected.
+        }
+        f.writeBytes(ByteArray(4 * 4 * 4 + 4))
+        try {
+            PdfReader.tileToBitmap(f, 4, 4)
+            fail("long tile accepted")
+        } catch (e: IOException) {
+            // Expected.
+        }
+    }
+
+    @Test
+    fun everyEngineCallRunsOnTheEngineThread() {
+        val threads = CopyOnWriteArrayList<String>()
+        (app as PdfUtilApp).engine = object : PdfEngine by fake, PdfPageRenderer by fake {
+            override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo {
+                threads += Thread.currentThread().name.substringBefore(" @")
+                return fake.pageInfo(pdf, job)
+            }
+
+            override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+                threads += Thread.currentThread().name.substringBefore(" @")
+                return fake.renderPage(pdf, request, out, job)
+            }
+        }
+        val doc = openOk()
+        runBlocking { reader.render(doc, RenderRequest(0, 0.1f, 0, 0, 10, 10)) }
+        assertEquals(listOf(ENGINE_THREAD, ENGINE_THREAD), threads.toList())
+    }
+
+    @Test
+    fun uiSourcesNeverDecodeImages() {
+        val roots = listOf("src/main/java/app/venkat/offkit", "app/src/main/java/app/venkat/offkit")
+            .map(::File).first { it.isDirectory }
+        val scanned = listOf(File(roots, "core/PdfReader.kt")) +
+            File(roots, "feature/reader").walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        assertTrue(scanned.size >= 2)
+        val forbidden = listOf("Bitmap" + "Factory", "Image" + "Decoder", "takePersistable" + "UriPermission")
+        for (file in scanned) {
+            val text = file.readText()
+            for (word in forbidden) assertFalse("${file.name} uses $word", text.contains(word))
+        }
+    }
+
+    /** True if this runtime's ARGB_8888 memory layout is R, G, B, A (always on Android devices). */
+    private fun hostStoresRgba(): Boolean {
+        val probe = android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888)
+        probe.setPixel(0, 0, 0xFFFF0000.toInt())
+        val b = java.nio.ByteBuffer.allocate(4)
+        probe.copyPixelsToBuffer(b)
+        return b.get(0) == 0xFF.toByte()
+    }
+
+    private fun swapRedBlue(argb: Int): Int =
+        (argb and 0xFF00FF00.toInt()) or ((argb shr 16) and 0xFF) or ((argb and 0xFF) shl 16)
+
+    private companion object {
+        const val ENGINE_THREAD = "test-engine"
+    }
+}
