@@ -1,14 +1,27 @@
-# Handoff: Offkit UI redesign
+# Handoff: Offkit after the UI redesign
 
-Written 2026-11-24 at the end of the security and process-isolation work. The next piece of work is a new user interface, designed by the owner in Claude Design. This file is what a new session needs to start it.
+Written 2026-11-25 at the end of the UI redesign. The redesign is merged, built, signed and uploaded. What remains is the owner's decisions below, a real-phone check and the Play Console work.
 
 ## State of the project
 
 - **App:** Offkit, package `app.venkat.offkit`. Offline Android PDF utility with four tools: images to PDF, compress, merge, add images to a PDF.
-- **Version:** 1.0.0, version code 1. **Not yet uploaded to Google Play.** The redesign ships as part of 1.0.0; do not bump the version.
-- **Branch:** `main` at merge commit `c6a0890` is the baseline. All gates pass on it.
-- **Release artefacts:** signed APK and bundle built from `c6a0890` are in `dist/release/` (untracked) and in `s3://offkit-artifacts-656490711426/releases/1.0.0/`. They must be rebuilt and re-uploaded after the redesign.
-- **Store assets:** app icon, feature graphic, developer icon and header are in `dist/` and under `releases/1.0.0/store/` in the same bucket. Phone screenshots have not been made; make them after the redesign.
+- **Version:** 1.0.0, version code 1. **Not yet uploaded to Google Play.** Do not bump the version before the first upload.
+- **Branch:** `main` at merge commit `c8e0f22` contains the redesign and is pushed to GitHub. All five gates pass on it. Commits after it are documentation only.
+- **Release artefacts:** signed APK and bundle built from `c8e0f22` are in `dist/release/` (untracked) and in `s3://offkit-artifacts-656490711426/releases/1.0.0/`, with `SHA256SUMS` and `BUILD_INFO.txt`. The bucket is versioned; the pre-redesign build is an earlier version of the same keys.
+- **Store assets:** the new app icon and feature graphic (from the design pack) are in `dist/icon/` and under `releases/1.0.0/store/`. The developer icon and header in `dist/developer/` and `store/developer/` are unchanged. `dist/icon/preview-*.png` still show the old icon. **Phone screenshots have not been made.**
+- **Design pack:** `offkit-handoff/` (untracked). `SPEC.md` is the source of truth for the screens.
+- **Branch builds:** debug APKs of the `redesign` branch are under `s3://offkit-artifacts-656490711426/branches/redesign/<commit>/`. They can be deleted once the release is on Play.
+- **Left on disk:** the `redesign` branch and its worktree at `.claude/worktrees/redesign`, plus workers' `worktree-agent-*` branches. All are merged and can be removed.
+
+## What the redesign changed
+
+- **Look:** design pack "Option B Paper light". `OffkitTheme`, light only, bundled Manrope font, no dynamic colour. Every screen is rebuilt or restyled, including Onboarding, About, Licence text and Support.
+- **Result flow:** shared Processing, Result and Error screens (`ui/components/JobFlow.kt`, `JobFlowScreens.kt`, `JobState.kt`). Save as, Save another copy, Share, Open, and a discard dialog. The job output is kept after a save until the result is left or the next job starts.
+- **Share:** one **non-exported** `FileProvider` (authority `${applicationId}.share`) that exposes only `cache/shared/`. `PdfJobs.prepareShare` copies the output there; the folder is wiped at the next job start and at the first `PdfJobs.get`. The owner approved this provider.
+- **Add controls (owner request after a phone test):** tonal "Add" pill in the section header, a dashed Add tile after the last image, a dashed "Add PDFs" row after the last PDF.
+- **Image picker (owner request):** the system file picker (`OpenMultipleDocuments`, `image/*`), so any folder can be browsed. The photo picker is no longer used. The file picker does not promise selection order.
+- **Thumbnails are placeholders.** The UI process decodes no images; a real preview would mean decoding untrusted images outside the `:engine` process.
+- **Core changes the owner approved:** `core/JobViewModel.kt`, `core/PdfJobs.kt`, `core/UriIo.kt`, and the manifest's provider entry. `engine/**`, `scripts/**` and all Gradle files are unchanged.
 
 ## How the owner wants work done
 
@@ -17,42 +30,27 @@ Written 2026-11-24 at the end of the security and process-isolation work. The ne
 Rules that went into every worker brief:
 
 - Never read `/home/ubuntu/keys/` or any `keystore.properties`. Do not run `scripts/release.sh`; the conductor runs it on `main`.
-- Start with `git merge --ff-only main`. Commit after each item. Report the branch name and paste the verification output.
+- Start with `git merge --ff-only <integration branch>`. Commit after each item. Report the branch name and paste the verification output.
 - Stay inside the files in scope. Build files are frozen; a worker that needs a new dependency stops and reports.
 - Workers stop at 40 turns. Resume one by messaging its agent id; that counts as a retry.
 - The conductor does not `git push`. The owner pushes with `! git push origin main`.
 
-## Constraints the redesign must not break
+## Constraints that still hold
 
 The owner's standing requirement: the app is secure, works offline, and requests the absolute minimum permissions. In practice:
 
 - **Zero permissions.** `scripts/verify.sh` fails the build if the APK declares any `uses-permission`. This rules out a foreground service, notifications that need a permission, network access and analytics.
 - **No network.** No fonts, images or data fetched at run time. Bundle every asset; check the licence of any font or icon set and add it to `THIRD_PARTY_NOTICES.md`.
-- **Only `MainActivity` is exported.** No `FileProvider`, no new exported components.
-- **System pickers only**, with transient grants. Never `takePersistableUriPermission`.
+- **Only `MainActivity` is exported.** The share `FileProvider` is not exported and must stay limited to `cache/shared/`. No other new components.
+- **System pickers only**, with transient grants. Never `takePersistableUriPermission` (the one in `core/RecentFiles.kt` predates this rule and is left).
 - **MuPDF never loads in the UI process.** The PDF engine runs in a separate `:engine` process. No code outside `engine/` may import `com.artifex.mupdf`; `verify.sh` checks this and `scripts/isolation-smoke.sh` checks the running app.
+- **No image decoding in the UI process.**
 - **AGPL.** The About screen must keep the licence text, the MuPDF credit and the source link.
 - **App size and start-up:** no new native libraries; 64-bit ABIs only.
 
-## What the UI is allowed to touch
+Every `PdfError` needs a title and body on screen. The mapping is `pdfErrorTitle` / `pdfErrorBody` in `ui/components/Format.kt`.
 
-The redesign should stay in these places:
-
-- `app/src/main/java/app/venkat/offkit/ui/**`: theme, navigation, shared components, home, onboarding, about, support.
-- `app/src/main/java/app/venkat/offkit/feature/*/*Screen.kt`: the four tool screens.
-- `app/src/main/res/**`: strings, drawables, theme resources.
-- The matching tests under `app/src/test/**/ui`, `app/src/test/**/{imagestopdf,compress,merge,addimages}` and `app/src/androidTest/**`.
-
-Treat these as fixed unless the owner agrees otherwise:
-
-- `engine/**` and `engine/remote/**`: the PDF engine, the isolation layer and its limits.
-- `core/**`: `PdfJobs`, `ImagePreparer`, `ImageNormalizer`. Screens reach the engine only through the view models and `PdfJobs`.
-- The view models' behaviour: copy inputs into the cache, run the job, ask where to save, clean up. A redesign can change how states are shown, not this flow.
-- `AndroidManifest.xml`, Gradle files, `scripts/**`.
-
-Every `PdfError` needs a message on screen. The mapping is in `ui/components/Format.kt` with strings in `res/values/strings.xml`. The isolation work added `EngineCrashed`, `TimedOut` and `EngineUnavailable`; a redesigned error state must still show all of them.
-
-Screen tests are Robolectric tests using `FakePdfEngine` (`app/src/sharedTest`). They find elements mostly by test tag (about 370 uses) and sometimes by text (about 30), so keep the tags where a control survives the redesign; where one does not, the test breaks, and updating those tests is part of each task, not a follow-up.
+Screen tests are Robolectric tests using `FakePdfEngine` (`app/src/sharedTest`). They find elements mostly by test tag; keep the tags where a control survives a change, and update the tests in the same task.
 
 ## Gates
 
@@ -72,38 +70,41 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 
 - 11.6 GB of RAM and no swap. `/tmp` is RAM-backed, so large scratch files there use memory.
 - Run at most two Gradle builds at once. Run emulator scripts one at a time with about a minute between them.
-- Before an emulator run, stop idle Gradle daemons with `./gradlew --stop`. The one emulator crash seen part-way through the tests went away after memory was freed, so suspect low memory first; that cause is inferred, not proven.
+- Before an emulator run, stop idle Gradle daemons with `./gradlew --stop`.
 - The emulator must start under `sg kvm -c '...'`.
-- The emulator is x86_64 on Android 12. Nothing has been run on a real phone or on ARM.
-- S3 uploads need a current AWS SSO login; ask the owner to log in if a copy fails.
+- The emulator is x86_64 on Android 12. Its image (`pdfutils-smoke`) has no SystemUI and no system file picker, so the real picker and save dialog cannot be exercised there. A throwaway stub picker app (`stub.docs`) and two sample PDFs in Downloads were left on the image after the screenshot runs.
+- A session working inside a git worktree must run plain, separate `git` commands (no `git -C`, no variables in the command).
+- S3 uploads need a current AWS SSO login; it expires within hours. Ask the owner to run `! aws sso login --use-device-code` if a copy fails.
 
-## Starting the new session
+## Decisions waiting on the owner
 
-Open with something like: "Read `conductor.md` and `HANDOFF.md`. You are the conductor. Here is the Claude Design output: ..."
+1. **Icon licence (blocks the Play upload).** `THIRD_PARTY_NOTICES.md` still credits Material Symbols for icons the design pack replaced. The pack icons' origin and licence are needed, and the Manrope version line ("4.505") should be confirmed.
+2. **Dismissed share sheet (RD-1, Medium).** Backing out of the share sheet still counts as "shared", so Done drops an unsaved result without the discard dialog. Recommended: ask whenever the result is unsaved.
+3. **Recent wording (RD-5).** The empty state says "Files you save or share show up here"; only saved files are listed.
+4. **Shared copies (RD-6).** They are deleted when the next job starts, as the spec says; an app that reads the file late could lose it.
+5. **PI4R-1 (Low, `engine/remote`).** A scheduling gap over 2 seconds can report a real engine crash as "interrupted, try again". Recommended before release; needs the owner's go-ahead to touch the engine.
+6. **Thumbnails.** Keep placeholders, or choose a route for real previews that keeps decoding in the `:engine` process.
+7. **Unused dependency.** `material-icons-core` is no longer imported; removing it means editing Gradle files.
+8. **Wording not in the pack.** 21 strings were added; the list is in `REVIEW.md` under "Strings added by the redesign that are not in the pack".
+9. **Deviations from the pictures.** Merge shows no page counts before the job; the onboarding hero lost its blue background, arrow and label animation; the licence text is not monospace and is reflowed for display; quality rows show nothing while an estimate loads; a Compress result with no size gain cannot be saved; the Result screen returns to Home on Done, Close and Discard.
+10. **Add images with no PDF chosen** shows two dashed boxes (the PDF slot and the Add tile). Say if that looks cluttered.
 
-## What the new session needs from the owner
+## Open items
 
-- The Claude Design output: a link or exported files. Nothing from it is in this repo.
-- Whether the redesign changes any flow (for example new screens or settings) or only the look. Flow changes may need view-model work and wider tests.
-- Whether the onboarding and support screens are in scope.
-
-## Open items carried over
-
-Not blocking the redesign, but still open:
-
-- **No real-phone test yet.** All four tools, the welcome flow, returning from the file picker, and leaving the app mid-job.
+- **Real-phone checks.** The owner has tried the debug build on a phone and asked for the Add controls and the folder picker. Still unconfirmed: TalkBack focus on the bottom-bar buttons (the emulator's accessibility dump clips the bottom 126 px, probably the test image), a receiving app reading a shared file, the real save dialog end to end, content behind the system bars, the Processing and Error screens, and the notices screen's opening time (about 2 seconds on the emulator).
+- **The signed release build has only been launched, never used.** `release-smoke.sh` starts the app and checks it stays up; no gate runs a PDF job in the release build.
+- **No independent review** of the last changes: the saved-name rule, the licence reflow rules, the Add controls and the picker change. See `REVIEW.md`, "After the redesign review".
 - **Watchdog limits** (`engine/remote/EngineLimits.kt`): 90 seconds without progress, 15 minutes total, memory cap of 1.5 GB or 40% of RAM. Unproven against very large legitimate files on slow phones.
 - **Merge output size:** duplicate removal is skipped above 5,000 objects; the size effect on ordinary merges is unmeasured.
-- **Error wording:** refusals of hostile files say "Not enough memory"; "file too complex" would be clearer. The redesign is a natural time to fix this.
-- **Leaving the app during a long job** can interrupt it, because keeping it alive would need a permission. The redesign could say so on the progress screen.
-- **Two hostile-file cases not run on a device:** the forms file merged with itself, and Add images with the hostile set. The hostile files and their generators were in the previous session's scratch directory (`/tmp/claude-1000/-home-ubuntu-code-pdf-util/a7d6466d-cdd4-4a97-9575-67ba874d248d/scratchpad/sr3/`), which is RAM-backed and may be gone; `security/engine-audit.md` describes each file well enough to regenerate it.
-- **The signed release build has only been launched, never used.** `release-smoke.sh` starts the app and checks it stays up; no gate runs a PDF job in the release build. Code shrinking is off, so the risk is small, but the first real job in the signed APK will be on the owner's phone.
-- **The last set of fixes (PI4) has had no independent review.** It changed about 350 lines of the isolation layer after the final review ran; it rests on its own tests and the gates. Include it in the redesign's end review, or review it first.
-- **Play Console:** developer account, listing text (`docs/play-listing.md`), screenshots, privacy policy URL, data safety form, then internal, closed (12 testers for 14 days) and production tracks.
+- **Leaving the app during a long job** can interrupt it, because keeping it alive would need a permission. The Processing screen says to keep the app open.
+- **Two hostile-file cases not run on a device:** the forms file merged with itself, and Add images with the hostile set. `security/engine-audit.md` describes each file well enough to regenerate it.
+- **About 71 unused resources** from the design pack remain in `res/`.
+- **Play Console:** developer account, listing text (`docs/play-listing.md`), phone screenshots, privacy policy URL, data safety form, then internal, closed (12 testers for 14 days) and production tracks.
 
 ## Where to read more
 
-- `REVIEW.md`: review history, including "Final review: process isolation (FR)" and "FR follow-up (PI4)".
-- `security/engine-audit.md`, `security/platform-audit.md`: what was audited and what remains.
+- `REVIEW.md`: review history, ending with "PI4 review (PI4R)", "Redesign review (RD)" and "After the redesign review".
+- `security/engine-audit.md`, `security/platform-audit.md`: what was audited and what remains. The platform audit has a redesign addendum for the share provider and the picker change.
 - `RELEASING.md`: the release procedure.
 - `docs/play-listing.md`: store text, including the limits shown to users.
+- `offkit-handoff/SPEC.md`: the design spec.

@@ -388,3 +388,58 @@ No Critical or High findings.
 ### Verdict (RD)
 
 Fit to merge into `main`. The constraints all hold, the gates pass, and there is no Critical or High finding. RD-1 (a dismissed share sheet counts as shared and drops the result without asking) should be decided by the owner before release. RD-2 to RD-5 are small fixes.
+
+## After the redesign review (RD follow-up, PR, T15–T19)
+
+Written 2026-11-25 by the conductor from the workers' reports. This section records what changed after the RD review above; it is a record, not a new review.
+
+### RD findings: what happened
+
+| Id | Status | Note |
+|---|---|---|
+| RD-1 | **Open (owner decision)** | A dismissed share sheet still counts as shared, so leaving does not ask. |
+| RD-2 | Fixed | The share file name is capped at 200 UTF-8 bytes. |
+| RD-3 | Fixed | One shared copy per result is reused. |
+| RD-4 | Fixed | The flow ignores Save taps while the save dialog is open; an extra empty destination is deleted. |
+| RD-5 | **Open (owner decision)** | `recent_empty` says "save or share"; only saves are listed. |
+| RD-6 | **Open (accepted so far)** | Shared copies are deleted when the next job starts, as the spec says. |
+| RD-7 | Fixed (see PR-1) | The saved row shows a name only when the provider reports one; otherwise "Saved". |
+| RD-8 | Fixed | The flake was `FileProvider`'s static cache across Robolectric tests; tests now clear it in set-up. |
+
+### Second review pass (PR)
+
+A worker reviewed the RD fixes and the licence-text reflow. Findings:
+
+| Id | Severity | What | Status |
+|---|---|---|---|
+| PR-1 | Medium | `savedName` fell back to the last path segment of the Uri ("Saved as 1234") when the provider reported no display name. | Fixed: `PickedFile.nameReported`; a name is shown only when `DISPLAY_NAME` was reported. |
+| PR-2 | Low | The licence reflow joined section headings into the next paragraph. | Fixed: headings and numbered headings stay on their own line. |
+| PR-3 | Low | The reflow joined copyright lines and C-comment blocks. | Fixed: lines starting with "Copyright"/"©" and comment blocks are kept line by line. |
+| PR-4 | Low | A stale shared copy's folder stayed until the next wipe when a copy was recreated. | Fixed: the old folder is deleted first. |
+| PR-5 | Info | Deleting an extra destination during a save would also delete an existing 0-byte file the user chose to overwrite. Nearly unreachable behind the UI guard. | Left. |
+| PR-6 | Info | The 200-byte name cut is not grapheme-aware (can split a flag pair or Hangul jamo). The result is still a valid file name. | Left. |
+| PR-7 | Info | Hints show with zero items and refer to items not yet there (matches design 07c). No test that a disabled button has no icon. | Left. |
+
+### Changes that have had no independent review
+
+These rest on their own tests and on the gates only:
+
+| Task | Change |
+|---|---|
+| T15 | Pack wording for save failure; separate "no app" messages for Open and Share; share test flake fix. |
+| T16 | The PR-1 to PR-4 fixes. |
+| T17 | Screen tests save to a destination that reports a display name; a "no name → Saved" test. |
+| T18 | Visible Add controls (owner request after a phone test): tonal header pill, a dashed Add tile after the last image, a dashed "Add PDFs" row after the last PDF, scroll to the new item. |
+| T19 | Image Add opens the system file picker (`OpenMultipleDocuments`, `image/*`), not the photo picker (owner request). `PRIVACY.md`, its in-app copy, `docs/privacy/index.html` and `docs/play-listing.md` no longer mention the photo picker. |
+
+### Gates on `main` at `c8e0f22` (2026-11-25)
+
+`VERIFY OK`; emulator smoke `tests=31 failures=0 errors=0`, `SMOKE OK`; `ISOLATION SMOKE OK`; `RELEASE OK`; `RELEASE SMOKE OK`.
+
+### Still not checked
+
+- TalkBack on a real phone. The emulator's accessibility dump clips the bottom 126 px of every screen (root bounds 2274 of 2400 px), so focus on the bottom-bar buttons is unconfirmed.
+- A receiving app actually reading a shared file.
+- The real system save dialog (the test image has none; a stub app stood in for the screenshots).
+- The Processing and Error screens as rendered pictures, and content behind the system bars.
+- PI4R-1 (Low, `engine/remote`): a scheduling gap over 2 seconds can report a real engine crash as `EngineUnavailable`. Not fixed; the engine was frozen for the redesign.
