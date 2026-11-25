@@ -49,40 +49,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/*
- * Approach
- * --------
- * A plain LazyColumn is placed with a layer (scale s, top-left transform origin,
- * translationX = -offsetX) inside an unscaled, clipped Box. The list is *measured* at the
- * viewport width and at height ceil(H / s), so once scaled it exactly fills the viewport:
- * the region LazyColumn composes is exactly the visible region at every scale (laziness is
- * preserved, nothing visible is missing, and the end of the list is reachable when zoomed).
- * Vertical position is the list's own scroll; horizontal position is offsetX.
- *
- * Gestures are observed by one pointer handler on the outer Box in the Initial pass, so it
- * sees events before the list and its children:
- *  - two or more fingers: pinch (zoom about the centroid, plus pan); the events are consumed,
- *    which cancels any drag the list had started;
- *  - one finger at minScale: nothing is consumed, the LazyColumn scrolls and flings itself;
- *  - one finger when zoomed: once past touch slop the drag is consumed and pans both axes
- *    (vertical via listState.dispatchRawDelta(-dy / s)); on release a vertical fling runs
- *    through listState.scroll with the default fling behaviour;
- *  - taps are only observed, never consumed, so clickable children keep working. Two quick
- *    taps close together toggle the zoom (animated, about the tapped point).
- *
- * Known limitations
- *  - Zooming about a centroid near the very top or end of the list cannot keep the point
- *    under the centroid vertically: the list's scroll is clamped there.
- *  - No horizontal fling; horizontal pan stops when the finger lifts.
- *  - A double tap on a clickable child also delivers two clicks to that child.
- *  - When a pinch ends at minScale with one finger still down, that finger does not scroll
- *    the list until it is lifted (the list's drag was cancelled by the pinch).
- *  - The container needs a bounded height (do not put it inside a vertical scroll).
- *  - If minScale > 1, offsetX is still forced to 0 at minScale (as specified), so the right
- *    part of the content is only reachable after zooming in further.
- *  - The list's own scrollbar/overscroll effects are drawn inside the scaled layer.
- */
-
 /**
  * State of a [ZoomableList]: the zoom [scale] and the horizontal pan [offsetX]. The vertical
  * position is the [LazyListState] passed to [ZoomableList].
@@ -175,8 +141,39 @@ fun rememberZoomableListState(minScale: Float = 1f, maxScale: Float = 5f): Zooma
     }
 
 /**
- * A vertical lazy list that zooms as one surface, like a document viewer. See the comment at
- * the top of this file for the approach and its limitations.
+ * A vertical lazy list that zooms as one surface, like a document viewer.
+ *
+ * Approach
+ * --------
+ * A plain LazyColumn is placed with a layer (scale s, top-left transform origin,
+ * translationX = -offsetX) inside an unscaled, clipped Box. The list is *measured* at the
+ * viewport width and at height ceil(H / s), so once scaled it exactly fills the viewport:
+ * the region LazyColumn composes is exactly the visible region at every scale (laziness is
+ * preserved, nothing visible is missing, and the end of the list is reachable when zoomed).
+ * Vertical position is the list's own scroll; horizontal position is offsetX.
+ *
+ * Gestures are observed by one pointer handler on the outer Box in the Initial pass, so it
+ * sees events before the list and its children:
+ *  - two or more fingers: pinch (zoom about the centroid, plus pan); the events are consumed,
+ *    which cancels any drag the list had started;
+ *  - one finger at minScale: nothing is consumed, the LazyColumn scrolls and flings itself;
+ *  - one finger when zoomed: once past touch slop the drag is consumed and pans both axes
+ *    (vertical via listState.dispatchRawDelta(-dy / s)); on release a vertical fling runs
+ *    through listState.scroll with the default fling behaviour;
+ *  - taps are only observed, never consumed, so clickable children keep working. Two quick
+ *    taps close together toggle the zoom (animated, about the tapped point).
+ *
+ * Known limitations
+ *  - Zooming about a centroid near the very top or end of the list cannot keep the point
+ *    under the centroid vertically: the list's scroll is clamped there.
+ *  - No horizontal fling; horizontal pan stops when the finger lifts.
+ *  - A double tap on a clickable child also delivers two clicks to that child.
+ *  - When a pinch ends at minScale with one finger still down, that finger does not scroll
+ *    the list until it is lifted (the list's drag was cancelled by the pinch).
+ *  - The container needs a bounded height (do not put it inside a vertical scroll).
+ *  - If minScale > 1, offsetX is still forced to 0 at minScale (as specified), so the right
+ *    part of the content is only reachable after zooming in further.
+ *  - The list's own scrollbar/overscroll effects are drawn inside the scaled layer.
  */
 @Composable
 fun ZoomableList(

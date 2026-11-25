@@ -195,6 +195,23 @@ class ZoomableListTest {
     }
 
     @Test
+    fun zoomedFastSwipeFlingsFurtherThanTheDrag() {
+        show()
+        rule.runOnUiThread { list.requestScrollToItem(10) }
+        rule.waitForIdle()
+        zoomInstantly(2f)
+        val before = scrollTop()
+        val x = viewport.width / 2f
+        rule.onNodeWithTag(TAG).performTouchInput {
+            swipe(Offset(x, 400f), Offset(x, 200f), durationMillis = 100)
+        }
+        rule.waitForIdle()
+        val scrolled = scrollTop() - before
+        // The drag alone moves 200 / 2 = 100 content px; the fling must carry it clearly further.
+        assertTrue("scrolled $scrolled", scrolled > 150f)
+    }
+
+    @Test
     fun doubleTapTogglesTwoAndAHalfAndBack() {
         show()
         val c = Offset(viewport.width / 2f, viewport.height / 3f)
