@@ -71,7 +71,7 @@ class EngineServer(
 
     private val renderer: PdfPageRenderer by lazy {
         renderer?.invoke()
-            ?: (engine as? PdfPageRenderer ?: throw UnsupportedOperationException("the engine cannot render pages"))
+            ?: (this.engine as? PdfPageRenderer ?: throw UnsupportedOperationException("the engine cannot render pages"))
     }
 
     /** A request that was accepted and has not sent its result yet. */
