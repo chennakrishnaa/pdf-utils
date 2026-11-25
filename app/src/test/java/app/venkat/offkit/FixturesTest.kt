@@ -148,4 +148,25 @@ class FixturesTest {
         assertTrue(Fixtures.pageTexts(f).all { it.contains("Mixed page") })
         renderAll(f)
     }
+
+    @Test
+    fun jpegThenPlainPdfHasQuadrantImagePageAndPlainPage() {
+        val jpeg = Fixtures.jpegWithExifOrientation(tmp.root, "q.jpg", 400, 300, 1).readBytes()
+        val f = Fixtures.jpegThenPlainPdf(tmp.root, "jp.pdf", jpeg, 400, 300)
+        assertEquals(2, Fixtures.pageCount(f))
+        assertEquals(listOf(400f to 300f, 400f to 300f), Fixtures.pageSizes(f))
+        val infos = Fixtures.imageInfos(f)
+        assertEquals(1, infos.size)
+        assertEquals("DCTDecode", infos[0].filter)
+        assertEquals(400 to 300, infos[0].width to infos[0].height)
+        assertArrayEquals(jpeg, Fixtures.rawImageStreams(f)[0])
+        val c = Fixtures.renderCornerColors(f, 0)
+        assertTrue(c.toString(), Fixtures.colorNear(c.topLeft, Fixtures.RED))
+        assertTrue(c.toString(), Fixtures.colorNear(c.topRight, Fixtures.GREEN))
+        assertTrue(c.toString(), Fixtures.colorNear(c.bottomLeft, Fixtures.BLUE))
+        assertTrue(c.toString(), Fixtures.colorNear(c.bottomRight, Fixtures.YELLOW))
+        val plain = Fixtures.render(f, 1, 400)
+        assertEquals(0xFFFFFF, plain.at(20, 20))
+        assertEquals(Fixtures.BLUE, plain.at(200, 150))
+    }
 }
