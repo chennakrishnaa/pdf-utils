@@ -11,7 +11,13 @@ import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfEstimate
+import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfPageRenderer
+import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.RenderLimits
+import app.venkat.offkit.engine.RenderRequest
+import java.io.IOException
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -38,10 +44,20 @@ import java.util.concurrent.locks.ReentrantLock
  * process too. A death during it gives `PreparedImage.Err(EngineCrashed)`, a hard cancel
  * `PreparedImage.Err(Cancelled)`; the raw file is deleted in every case.
  *
+ * It is also the app's [PdfPageRenderer] (the in-app reader). Engine death, unavailability,
+ * cancel and the watchdog map as for the other calls (`PdfPageInfo.Err` / `PdfRender.Err`), and a
+ * render's `out` is deleted on every `Err`. The reply is not trusted: a render `Ok` whose
+ * dimensions differ from the request's, or whose `out` is not exactly `width * height * 4` bytes,
+ * is deleted and becomes `Err(Io)`; a page-info `Ok` with more than [RenderLimits.MAX_PAGES] pages
+ * or a size that is not finite and > 0 becomes `Err(Io)` ([EngineWire.decodePageInfo]). An
+ * invalid render request (`RenderLimits.check(request, null)`) is refused without contacting the
+ * engine: `Err(Io(IllegalArgumentException))`.
+ *
  * **Watchdog** ([limits]): MuPDF calls cannot be interrupted, so while waiting the client also
  * kills the engine and returns `Err(TimedOut)` when a PDF operation goes [EngineLimits.stallMs]
  * without a progress event or result, or runs past [EngineLimits.totalMs] (image estimate or
- * normalisation: [EngineLimits.imageTotalMs]); and returns `Err(OutOfMemory)` when the engine's
+ * normalisation: [EngineLimits.imageTotalMs]; reader page info and render:
+ * [EngineLimits.infoTotalMs] and [EngineLimits.renderTotalMs], with no stall limit); and returns `Err(OutOfMemory)` when the engine's
  * resident memory, sampled about every [EngineLimits.memorySampleMs] through [rssBytes], exceeds
  * [EngineLimits.memoryBytes]. If [rssBytes] cannot read it, the memory check is skipped (logged
  * once). A user cancel takes precedence over the watchdog and still returns `Cancelled`. After a
@@ -101,7 +117,7 @@ class RemoteEngine(
     private val freezeGapMs: Long = FREEZE_GAP_MS,
     private val maxFrozenMs: Long = MAX_FROZEN_MS,
     private val inBackground: () -> Boolean = { false },
-) : PdfEngine, ImagePreparer {
+) : PdfEngine, ImagePreparer, PdfPageRenderer {
     private sealed interface Event {
         data class Progress(val done: Int, val total: Int) : Event
         data class Result(val bundle: Bundle) : Event
@@ -178,6 +194,35 @@ class RemoteEngine(
         }
     } finally {
         raw.delete()
+    }
+
+    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo =
+        when (val r = call(EngineRequest.PageInfo(pdf.path), job)) {
+            is Reply.Done -> EngineWire.decodePageInfo(r.bundle)
+            is Reply.Failed -> PdfPageInfo.Err(r.error)
+        }
+
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+        RenderLimits.check(request, null)?.let {
+            out.delete()
+            return PdfRender.Err(PdfError.Io(IllegalArgumentException(it)))
+        }
+        val result = when (val r = call(EngineRequest.RenderPage(pdf.path, request, out.path), job)) {
+            is Reply.Done -> when (val d = EngineWire.decodeRender(r.bundle)) {
+                is PdfRender.Ok ->
+                    if (d.width == request.width && d.height == request.height &&
+                        out.length() == d.width.toLong() * d.height.toLong() * 4L
+                    ) {
+                        d
+                    } else {
+                        PdfRender.Err(PdfError.Io(IOException("Render reply does not match the request")))
+                    }
+                is PdfRender.Err -> d
+            }
+            is Reply.Failed -> PdfRender.Err(r.error)
+        }
+        if (result is PdfRender.Err) out.delete()
+        return result
     }
 
     private fun result(request: EngineRequest, out: File, job: JobControl): PdfResult =
@@ -291,8 +336,17 @@ class RemoteEngine(
         val gapNs = TimeUnit.MILLISECONDS.toNanos(freezeGapMs)
         val thawWindowNs = TimeUnit.MILLISECONDS.toNanos(THAW_WINDOW_MS)
         val frozenDeathGapNs = TimeUnit.MILLISECONDS.toNanos(EngineLimits.FROZEN_DEATH_GAP_MS)
-        val totalNs = TimeUnit.MILLISECONDS.toNanos(if (request.isImageRequest()) limits.imageTotalMs else limits.totalMs)
-        val stallNs = TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
+        val totalNs = TimeUnit.MILLISECONDS.toNanos(
+            when {
+                request is EngineRequest.PageInfo -> limits.infoTotalMs
+                request is EngineRequest.RenderPage -> limits.renderTotalMs
+                request.isImageRequest() -> limits.imageTotalMs
+                else -> limits.totalMs
+            },
+        )
+        // Reader requests report no progress: only their total limit applies.
+        val stallNs = if (request is EngineRequest.PageInfo || request is EngineRequest.RenderPage) Long.MAX_VALUE
+        else TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
         var sentAt = nanoTime()
         var lastActivity = sentAt
         var nextRssSample = sentAt

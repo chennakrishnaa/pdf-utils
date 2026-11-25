@@ -5,11 +5,17 @@ import app.venkat.offkit.core.InProcessImagePreparer
 import app.venkat.offkit.core.PreparedImage
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
+import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfEstimate
+import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfPageRenderer
+import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.RenderLimits
+import app.venkat.offkit.engine.RenderRequest
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -29,9 +35,13 @@ import java.util.concurrent.CopyOnWriteArrayList
  * the `:engine` process does in the app, unless [prepare] is scripted. Every call is recorded in
  * [prepareCalls].
  *
+ * As a [PdfPageRenderer] (the reader) every document has the pages [readerPages] (or fails with
+ * [readerError]); [renderPage] writes a valid RGBA tile of one opaque colour, [readerColor] of the
+ * page. Every reader call is recorded in [readerCalls].
+ *
  * Safe to configure from the test thread while the engine runs on another thread.
  */
-class FakePdfEngine : PdfEngine, ImagePreparer {
+class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
     enum class Op { IMAGES_TO_PDF, COMPRESS, MERGE, APPEND_IMAGES }
 
     /**
@@ -99,6 +109,61 @@ class FakePdfEngine : PdfEngine, ImagePreparer {
         } finally {
             raw.delete()
         }
+    }
+
+    /** One recorded reader call: [request] and [out] are null for [pageInfo]. */
+    data class ReaderCall(val pdf: File, val request: RenderRequest? = null, val out: File? = null)
+
+    /** Every [pageInfo] and [renderPage] call, in order. */
+    val readerCalls: MutableList<ReaderCall> = CopyOnWriteArrayList()
+
+    /** Pages every document has, for [pageInfo] and for checking [renderPage] requests. Default: 3 x A4. */
+    @Volatile
+    var readerPages: List<PageDims> = List(3) { PageDims(595f, 842f) }
+
+    /** When set, [pageInfo] and [renderPage] fail with it (and `out` is deleted). */
+    @Volatile
+    var readerError: PdfError? = null
+
+    /**
+     * Invoked on the engine thread at the start of each [renderPage] (after recording it). A test
+     * can block here (e.g. on a latch) to observe loading, or cancel the job.
+     */
+    @Volatile
+    var beforeRender: ((RenderRequest) -> Unit)? = null
+
+    /** The opaque ARGB colour [renderPage] fills page [page] with (distinct for neighbouring pages). */
+    fun readerColor(page: Int): Int {
+        val palette = intArrayOf(0xFFE53935.toInt(), 0xFF43A047.toInt(), 0xFF1E88E5.toInt(), 0xFFFDD835.toInt(), 0xFF8E24AA.toInt())
+        return palette[Math.floorMod(page, palette.size)]
+    }
+
+    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo {
+        readerCalls += ReaderCall(pdf)
+        readerError?.let { return PdfPageInfo.Err(it) }
+        if (job.isCancelled()) return PdfPageInfo.Err(PdfError.Cancelled)
+        val pages = readerPages
+        if (pages.size > RenderLimits.MAX_PAGES) return PdfPageInfo.Err(PdfError.OutOfMemory)
+        return PdfPageInfo.Ok(pages.toList())
+    }
+
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+        readerCalls += ReaderCall(pdf, request, out)
+        beforeRender?.invoke(request)
+        fun fail(e: PdfError): PdfRender {
+            out.delete()
+            return PdfRender.Err(e)
+        }
+        readerError?.let { return fail(it) }
+        if (job.isCancelled()) return fail(PdfError.Cancelled)
+        val dims = readerPages.getOrNull(request.page)
+            ?: return fail(PdfError.Io(IllegalArgumentException("page ${request.page} out of range")))
+        RenderLimits.check(request, dims)?.let { return fail(PdfError.Io(IllegalArgumentException(it))) }
+        val argb = readerColor(request.page)
+        val pixel = byteArrayOf((argb shr 16).toByte(), (argb shr 8).toByte(), argb.toByte(), 0xFF.toByte())
+        val row = ByteArray(request.width * 4) { pixel[it % 4] }
+        out.outputStream().buffered().use { s -> repeat(request.height) { s.write(row) } }
+        return PdfRender.Ok(request.width, request.height)
     }
 
     fun setResult(op: Op, result: PdfResult) {

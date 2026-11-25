@@ -11,7 +11,7 @@ import java.io.File
  * [app.venkat.offkit.engine.ops]; this class only adds the common error handling of
  * [guardedRun]. See [PdfEngine] for the threading contract.
  */
-class MuPdfEngine : PdfEngine {
+class MuPdfEngine : PdfEngine, PdfPageRenderer {
     private val imagesToPdfOp = ImagesToPdfOp()
     private val compressOp = CompressOp()
     private val mergeOp = MergeOp()
@@ -43,6 +43,15 @@ class MuPdfEngine : PdfEngine {
 
     override fun appendImages(pdf: File, images: List<File>, out: File, job: JobControl): PdfResult =
         guardedRun(out) { appendImagesOp.run(pdf, images, out, job) }
+
+    // Placeholder until the reader's MuPDF rendering lands (Task C).
+    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo =
+        PdfPageInfo.Err(PdfError.Io(UnsupportedOperationException("not implemented")))
+
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+        out.delete()
+        return PdfRender.Err(PdfError.Io(UnsupportedOperationException("not implemented")))
+    }
 }
 
 /**
