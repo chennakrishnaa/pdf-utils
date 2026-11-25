@@ -6,8 +6,8 @@ Written 2026-11-25 at the end of the UI redesign. The redesign is merged, built,
 
 - **App:** Offkit, package `app.venkat.offkit`. Offline Android PDF utility with four tools: images to PDF, compress, merge, add images to a PDF.
 - **Version:** 1.0.0, version code 1. **Not yet uploaded to Google Play.** Do not bump the version before the first upload.
-- **Branch:** `main` at merge commit `c8e0f22` contains the redesign and is pushed to GitHub. All five gates pass on it. Commits after it are documentation only.
-- **Release artefacts:** signed APK and bundle built from `c8e0f22` are in `dist/release/` (untracked) and in `s3://offkit-artifacts-656490711426/releases/1.0.0/`, with `SHA256SUMS` and `BUILD_INFO.txt`. The bucket is versioned; the pre-redesign build is an earlier version of the same keys.
+- **Branch:** `main` contains the redesign (merge commit `c8e0f22`) and the follow-up fixes made the same day: share-sheet fix, engine watchdog fix, dependency and unused-resource removal, wording. `dist/release/BUILD_INFO.txt` names the commit the signed build was made from.
+- **Release artefacts:** signed APK and bundle are in `dist/release/` (untracked) and in `s3://offkit-artifacts-656490711426/releases/1.0.0/`, with `SHA256SUMS` and `BUILD_INFO.txt`. The bucket is versioned; the pre-redesign build is an earlier version of the same keys.
 - **Store assets:** the new app icon and feature graphic (from the design pack) are in `dist/icon/` and under `releases/1.0.0/store/`. The developer icon and header in `dist/developer/` and `store/developer/` are unchanged. `dist/icon/preview-*.png` still show the old icon. **Phone screenshots have not been made.**
 - **Design pack:** `offkit-handoff/` (untracked). `SPEC.md` is the source of truth for the screens.
 - **Branch builds:** debug APKs of the `redesign` branch are under `s3://offkit-artifacts-656490711426/branches/redesign/<commit>/`. They can be deleted once the release is on Play.
@@ -79,12 +79,12 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 ## Decisions waiting on the owner
 
 1. **Icon licence (blocks the Play upload).** `THIRD_PARTY_NOTICES.md` still credits Material Symbols for icons the design pack replaced. The pack icons' origin and licence are needed, and the Manrope version line ("4.505") should be confirmed.
-2. **Dismissed share sheet (RD-1, Medium).** Backing out of the share sheet still counts as "shared", so Done drops an unsaved result without the discard dialog. Recommended: ask whenever the result is unsaved.
+2. **Dismissed share sheet (RD-1): fixed.** Only a save protects a result now; an unsaved result always asks before it is discarded, whether or not Share was used. The discard dialog reads "It hasn't been saved. Your original file isn't affected."
 3. **Recent wording (RD-5): decided.** The empty state now reads "Files you save show up here."
 4. **Shared copies (RD-6).** They are deleted when the next job starts, as the spec says; an app that reads the file late could lose it.
-5. **PI4R-1 (Low, `engine/remote`).** A scheduling gap over 2 seconds can report a real engine crash as "interrupted, try again". Recommended before release; needs the owner's go-ahead to touch the engine.
+5. **PI4R-1: fixed and reviewed (sound to ship).** An engine death is reported as "interrupted" only when the app is in the background or within 5 seconds of a pause of at least 10 seconds. Open follow-up T22R-1 (Low): a freeze of 2 to 10 seconds that ends with the app in the foreground now shows a real kill as a crash; the reviewer suggests remembering the background state seen on each watchdog tick.
 6. **Thumbnails.** Keep placeholders, or choose a route for real previews that keeps decoding in the `:engine` process.
-7. **Unused dependency.** `material-icons-core` is no longer imported; removing it means editing Gradle files.
+7. **Unused dependency: removed.** `material-icons-core` is gone from the Gradle files and from the notices.
 8. **Wording not in the pack.** 21 strings were added; the list is in `REVIEW.md` under "Strings added by the redesign that are not in the pack".
 9. **Deviations from the pictures.** Merge shows no page counts before the job; the onboarding hero lost its blue background, arrow and label animation; the licence text is not monospace and is reflowed for display; quality rows show nothing while an estimate loads; a Compress result with no size gain cannot be saved; the Result screen returns to Home on Done, Close and Discard.
 10. **Add images with no PDF chosen** shows two dashed boxes (the PDF slot and the Add tile). Say if that looks cluttered.
@@ -98,7 +98,7 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 - **Merge output size:** duplicate removal is skipped above 5,000 objects; the size effect on ordinary merges is unmeasured.
 - **Leaving the app during a long job** can interrupt it, because keeping it alive would need a permission. The Processing screen says to keep the app open.
 - **Two hostile-file cases not run on a device:** the forms file merged with itself, and Add images with the hostile set. `security/engine-audit.md` describes each file well enough to regenerate it.
-- **About 71 unused resources** from the design pack remain in `res/`.
+- **Unused resources: removed.** 69 unused pack resources were deleted; lint now flags only `font/manrope.xml`, kept on purpose.
 - **Play Console:** developer account, listing text (`docs/play-listing.md`), phone screenshots, privacy policy URL, data safety form, then internal, closed (12 testers for 14 days) and production tracks.
 
 ## Where to read more

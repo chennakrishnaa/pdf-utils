@@ -336,3 +336,15 @@ Apart from RA-1, RA-2 and the two recorded review items, I found nothing new. Sp
 - Name rendering was checked only at `HomeScreen.kt:510-514` and `FileCards.kt:145`. Other text in the rebuilt screens that shows file names (for example the saved name on the result screen) was not traced.
 - The `RemoteEngine` log messages were not checked for file names or URIs.
 - In the SR claims table, only the metadata strings were re-read. The Home footer, About, README and Play listing claims were not re-checked against the rebuilt screens, apart from `PRIVACY.md:21` and the "Android's own file picker" line in `docs/play-listing.md:26`. The files and tests the PI section cites (`scripts/verify.sh`, `scripts/isolation-smoke.sh`, `HostileIntentTest`, `EngineIsolationOnDeviceTest`) still exist, but their contents were not re-read.
+
+### Status after the addendum (2026-11-25, later the same day)
+
+Written by the conductor from the workers' reports; the rows above are left as written.
+
+| Item | Status |
+|---|---|
+| RD-1 | Fixed: sharing no longer marks a result as kept; an unsaved result always asks before it is discarded. |
+| RA-1 | Fixed: `PRIVACY.md`, its in-app copy and `docs/privacy/index.html` now describe when temporary and shared copies are deleted, and mention sharing from the result screen. |
+| RA-2, RD-6 | Unchanged (accepted). |
+| `material-icons-core` | Removed from the build; it no longer resolves and is no longer in the notices. |
+| PI4R-1 (engine watchdog) | Fixed and independently reviewed; see `REVIEW.md`, "Later the same day". |

@@ -397,7 +397,7 @@ Written 2026-11-25 by the conductor from the workers' reports. This section reco
 
 | Id | Status | Note |
 |---|---|---|
-| RD-1 | **Open (owner decision)** | A dismissed share sheet still counts as shared, so leaving does not ask. |
+| RD-1 | Fixed (T21) | The `shared` flag is removed; only a save protects a result, so an unsaved result always asks before leaving. |
 | RD-2 | Fixed | The share file name is capped at 200 UTF-8 bytes. |
 | RD-3 | Fixed | One shared copy per result is reused. |
 | RD-4 | Fixed | The flow ignores Save taps while the save dialog is open; an extra empty destination is deleted. |
@@ -442,4 +442,25 @@ These rest on their own tests and on the gates only:
 - A receiving app actually reading a shared file.
 - The real system save dialog (the test image has none; a stub app stood in for the screenshots).
 - The Processing and Error screens as rendered pictures, and content behind the system bars.
-- PI4R-1 (Low, `engine/remote`): a scheduling gap over 2 seconds can report a real engine crash as `EngineUnavailable`. Not fixed; the engine was frozen for the redesign.
+- A real device freeze: the PI4R-1 fix (below) is tested on the JVM only.
+
+### Later the same day (T20–T23 and wording)
+
+| Item | Change | Review |
+|---|---|---|
+| T20 | `security/platform-audit.md` gained a redesign addendum (share provider, picker change, 14 out-of-date statements, RA-1, RA-2). | Docs only. |
+| T21 | RD-1 fixed: `JobUiState.Done.shared` removed; `hasUnsavedWork()` is `saving || savedUri == null`. | Tests and gates only. |
+| T22 | PI4R-1 fixed: a death counts as after a thaw only after a gap of at least 10 s (`EngineLimits.FROZEN_DEATH_GAP_MS`); the RSS sample is taken on the first wake-up after a gap, not postponed. | Independently reviewed: **sound to ship**, nothing above Low. |
+| T23 | 69 unused resources removed (42 colours, 18 dimens, 7 drawables, 1 string, 1 plural). | Lint and a cross-check scan. |
+| Conductor | `material-icons-core` removed from the Gradle files and notices; `recent_empty` (RD-5), `discard_body` and the privacy text (RA-1) reworded; privacy effective date 25 November 2026. | Gates only. |
+
+Findings from the T22 review:
+
+| Id | Severity | What | Status |
+|---|---|---|---|
+| T22R-1 | Low | A freeze of 2 to 10 s that ends with the app back in the foreground, with the engine killed in that window, is now shown as `EngineCrashed` (it was `EngineUnavailable`). `inBackground()` is read only when the death is handled. Suggested: remember the background state seen on each tick. | Open. |
+| T22R-2 | Info (older) | An engine death during the cancel grace returns the death error, not `Cancelled`. | Open. |
+| T22R-3 | Info | KDoc says RSS is sampled on the first wake-up after a gap; not during the cancel grace. | Open. |
+| T22R-4 | Info | `FROZEN_DEATH_GAP_MS` is a fixed constant, not a constructor parameter like `freezeGapMs`. Production is unaffected. | Open. |
+| T22R-5 | Info | `rssIsSampledOnTheFirstTickAfterAGapAndTheCapStillKills` depends on real time and could fail on a heavily loaded machine. | Open. |
+| T22R-6 | Info | Untested: a death more than 5 s after a long gap; deadline shifts for 2 to 10 s gaps; several short gaps in a row; the cancel-grace interaction. | Open. |
