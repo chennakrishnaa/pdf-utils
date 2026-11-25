@@ -80,20 +80,31 @@ object UriIo {
         return PickedFile(uri, finalName, size, nameReported = reportedName.isNotEmpty())
     }
 
+    /** Thrown by [copyToFile] when the source is longer than its `maxBytes`. */
+    class InputTooLargeException(val maxBytes: Long) : IOException("Input is larger than $maxBytes bytes")
+
     /**
      * Copies the content of [src] into [dest] (created or overwritten). Returns the number of
      * bytes copied. [isCancelled] is polled between 64 KiB chunks; when it returns true the
-     * partial [dest] is deleted and a [CancellationException] is thrown.
+     * partial [dest] is deleted and a [CancellationException] is thrown. If more than [maxBytes]
+     * bytes arrive, copying stops, the partial [dest] is deleted and [InputTooLargeException] is
+     * thrown (for providers that report no size, or a wrong one).
      *
      * @throws IOException if [src] is missing, unreadable or the copy fails (any provider
      *   exception such as SecurityException is wrapped); the partial [dest] is deleted.
      */
     @Throws(IOException::class)
-    fun copyToFile(context: Context, src: Uri, dest: File, isCancelled: () -> Boolean = { false }): Long {
+    fun copyToFile(
+        context: Context,
+        src: Uri,
+        dest: File,
+        isCancelled: () -> Boolean = { false },
+        maxBytes: Long = Long.MAX_VALUE,
+    ): Long {
         try {
             val input = openInput(context, src)
             return input.use { inp ->
-                FileOutputStream(dest).use { out -> pump(inp, out, isCancelled) }
+                FileOutputStream(dest).use { out -> pump(inp, out, isCancelled, maxBytes) }
             }
         } catch (e: Throwable) {
             dest.delete()
@@ -132,15 +143,16 @@ object UriIo {
     private fun openInput(context: Context, src: Uri): InputStream =
         context.contentResolver.openInputStream(src) ?: throw IOException("Cannot open $src")
 
-    private fun pump(input: InputStream, output: OutputStream, isCancelled: () -> Boolean): Long {
+    private fun pump(input: InputStream, output: OutputStream, isCancelled: () -> Boolean, maxBytes: Long = Long.MAX_VALUE): Long {
         val buffer = ByteArray(BUFFER_SIZE)
         var total = 0L
         while (true) {
             if (isCancelled()) throw CancellationException("Copy cancelled")
             val n = input.read(buffer)
             if (n < 0) break
-            output.write(buffer, 0, n)
             total += n
+            if (total > maxBytes) throw InputTooLargeException(maxBytes)
+            output.write(buffer, 0, n)
         }
         output.flush()
         return total

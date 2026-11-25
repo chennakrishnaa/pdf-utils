@@ -84,18 +84,115 @@ data class ReaderLimits(
 
 /** Pure geometry and planning of reader renders. */
 object ReaderPlanner {
-    /** Zoom at or below which no detail is rendered. */
+    /**
+     * Zoom at or below which a detail is rendered only if the base is softer than
+     * [ZOOM1_MIN_SHARPNESS]. On wide items (tablets, landscape, tall pages) the base is capped by
+     * [ReaderLimits.basePagePixels] below the screen's resolution, so the visible part is rendered
+     * at the fit scale too; on a phone in portrait the base is already sharp and no detail is made.
+     */
     private const val NO_DETAIL_ZOOM = 1.001f
+
+    /** Least sharpness (base bitmap pixels per screen pixel) accepted at zoom 1 without a detail. */
+    const val ZOOM1_MIN_SHARPNESS = 0.9f
 
     /** A detail must be at least this much sharper than the base to be worth rendering. */
     private const val MIN_DETAIL_GAIN = 1.05f
 
-    /** Item height in pixels of a page [dims] in an item [itemWidthPx] wide (at least 1). */
-    fun itemHeightPx(dims: PageDims, itemWidthPx: Int): Int =
-        max(1, (itemWidthPx.toDouble() * dims.heightPt / dims.widthPt).roundToInt())
+    /**
+     * Tallest page item, in pixels. A page taller than this at fit width (a long receipt or scroll,
+     * or a hostile size) is shown in an item of this height, scaled down to fit it (keeping its
+     * aspect ratio) and centred horizontally: it gets narrower rather than taller, and the user can
+     * zoom in. Compose cannot measure an item much taller than 2^18 px (less when it is wide; see
+     * [MAX_ITEM_WIDTH_PX]), so this keeps a wide margin.
+     */
+    const val MAX_ITEM_HEIGHT_PX = 60_000
 
-    /** Pixels per PDF point at which page [dims] fills an item [itemWidthPx] wide. */
-    fun fitScale(dims: PageDims, itemWidthPx: Int): Float = itemWidthPx / dims.widthPt
+    /**
+     * Widest page item, in pixels (the screen coerces its item width to this). Compose `Constraints`
+     * hold a height up to 2^18 - 1 px only while the width is below 2^13 px; 8,191 px is wider than
+     * any screen.
+     */
+    const val MAX_ITEM_WIDTH_PX = 8_191
+
+    /** `min(itemWidthPx / widthPt, MAX_ITEM_HEIGHT_PX / heightPt)`, see [fitScale]. */
+    private fun fit(dims: PageDims, itemWidthPx: Int): Double =
+        min(itemWidthPx.toDouble() / dims.widthPt, MAX_ITEM_HEIGHT_PX.toDouble() / dims.heightPt)
+
+    /**
+     * Item height in pixels of a page [dims] in an item [itemWidthPx] wide: the page's height at
+     * [fitScale], rounded, in `[1, MAX_ITEM_HEIGHT_PX]`.
+     */
+    fun itemHeightPx(dims: PageDims, itemWidthPx: Int): Int {
+        val h = Math.round(dims.heightPt * fit(dims, itemWidthPx)).toDouble()
+        return if (h.isNaN()) 1 else h.coerceIn(1.0, MAX_ITEM_HEIGHT_PX.toDouble()).toInt()
+    }
+
+    /**
+     * Where page [dims] is drawn inside its item ([itemWidthPx] x [itemHeightPx]), in item pixels:
+     * its size at [fitScale], at the top, centred horizontally. That is the full item width unless
+     * the page is too tall (see [MAX_ITEM_HEIGHT_PX]). Base and detail bitmaps are placed in it.
+     */
+    fun pageRect(dims: PageDims, itemWidthPx: Int): ItemRect {
+        val w = itemWidthPx.toDouble()
+        val f = fit(dims, itemWidthPx)
+        val pw = (dims.widthPt * f).let { if (it.isNaN() || it > w) w else it.coerceAtLeast(0.0) }
+        val ph = (dims.heightPt * f).let { if (it.isNaN()) 1.0 else it.coerceIn(0.0, MAX_ITEM_HEIGHT_PX.toDouble()) }
+        if (pw >= w) return ItemRect(0f, 0f, itemWidthPx.toFloat(), ph.toFloat())
+        val left = (w - pw) / 2
+        return ItemRect(left.toFloat(), 0f, (left + pw).toFloat(), ph.toFloat())
+    }
+
+    /**
+     * Pixels per PDF point at which page [dims] is shown in an item [itemWidthPx] wide: it fills the
+     * item's width, or is [MAX_ITEM_HEIGHT_PX] tall if that is smaller (the size of [pageRect]).
+     * Finite and > 0 for dims within `PdfReader.sanePageDims`.
+     */
+    fun fitScale(dims: PageDims, itemWidthPx: Int): Float = fit(dims, itemWidthPx).toFloat()
+
+    /**
+     * The on-screen part of one laid-out item, in unscaled item pixels, or null if none is on
+     * screen. The list is laid out in unscaled content pixels (see `ZoomableList`): the zoomed
+     * viewport's horizontal range is `[offsetX / zoom, (offsetX + viewportWidthPx) / zoom]` and items
+     * start [gapPx] from its left edge; vertically the item at [itemOffset] (`LazyListItemInfo.offset`)
+     * of height [itemHeightPx] is cut by `[viewportStartOffset, viewportEndOffset)`.
+     */
+    fun visibleRect(
+        itemWidthPx: Int,
+        itemHeightPx: Int,
+        gapPx: Int,
+        zoom: Float,
+        offsetX: Float,
+        viewportWidthPx: Int,
+        viewportStartOffset: Int,
+        viewportEndOffset: Int,
+        itemOffset: Int,
+    ): ItemRect? {
+        if (!(zoom > 0f) || !zoom.isFinite()) return null
+        val w = itemWidthPx.toFloat()
+        val h = itemHeightPx.toFloat()
+        val left = (offsetX / zoom - gapPx).coerceIn(0f, w)
+        val right = ((offsetX + viewportWidthPx) / zoom - gapPx).coerceIn(0f, w)
+        val top = (viewportStartOffset.toLong() - itemOffset).toFloat().coerceIn(0f, h)
+        val bottom = (viewportEndOffset.toLong() - itemOffset).toFloat().coerceIn(0f, h)
+        val rect = ItemRect(left, top, right, bottom)
+        return if (rect.isEmpty) null else rect
+    }
+
+    /**
+     * Where to draw a bitmap that shows [rect] (item pixels of an item [rectItemWidthPx] wide) in an
+     * item drawn [drawWidthPx] wide: [rect] scaled by `drawWidthPx / rectItemWidthPx`, rounded to
+     * whole pixels. Null if that is empty or not finite.
+     */
+    fun drawRect(rect: ItemRect, rectItemWidthPx: Int, drawWidthPx: Float): DrawRect? {
+        if (rectItemWidthPx < 1 || !(drawWidthPx > 0f) || !drawWidthPx.isFinite()) return null
+        val k = drawWidthPx.toDouble() / rectItemWidthPx
+        val v = listOf(rect.left, rect.top, rect.right, rect.bottom).map { it * k }
+        if (v.any { !it.isFinite() }) return null
+        val (l, t, r, b) = v.map { Math.round(it).coerceIn(-DRAW_LIMIT, DRAW_LIMIT).toInt() }
+        return if (r > l && b > t) DrawRect(l, t, r, b) else null
+    }
+
+    private const val DRAW_LIMIT = 1L shl 30
 
     /** The page with the largest visible height (ties: the first), or null if none is visible. */
     fun currentPage(visible: List<VisiblePage>): Int? =
@@ -107,71 +204,80 @@ object ReaderPlanner {
      */
     fun baseRequest(page: Int, dims: PageDims, itemWidthPx: Int, maxPixels: Long): RenderRequest {
         var scale = min(fitScale(dims, itemWidthPx), RenderLimits.MAX_SCALE)
-        // Float rounding can make ceil(widthPt * fit) one pixel wider than the item.
-        while (RenderLimits.scaledWidth(dims, scale) > itemWidthPx && scale > Float.MIN_VALUE) scale = Math.nextDown(scale)
-        scale = fitPixels(scale, maxPixels) { s -> RenderLimits.scaledWidth(dims, s) * RenderLimits.scaledHeight(dims, s) }
+        // Float rounding can make ceil(widthPt * fit) one pixel wider than the page's rect.
+        val maxWidth = max(1L, ceil(pageRect(dims, itemWidthPx).width.toDouble()).toLong())
+        repeat(8) { if (RenderLimits.scaledWidth(dims, scale) > maxWidth) scale = Math.nextDown(scale) }
+        scale = fitPixels(scale, maxPixels) { s -> RenderLimits.scaledWidth(dims, s).toDouble() * RenderLimits.scaledHeight(dims, s) }
         return RenderRequest(
             page,
             scale,
             0,
             0,
-            RenderLimits.scaledWidth(dims, scale).toInt(),
-            RenderLimits.scaledHeight(dims, scale).toInt(),
+            RenderLimits.scaledWidth(dims, scale).coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
+            RenderLimits.scaledHeight(dims, scale).coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
         )
     }
 
-    /** The base render of [page]; covers the whole item. */
-    fun basePlan(page: Int, dims: PageDims, itemWidthPx: Int, limits: ReaderLimits): PlannedRender {
-        val itemHeight = itemWidthPx * dims.heightPt / dims.widthPt
-        return PlannedRender(
+    /** The base render of [page]; covers the page's [pageRect]. */
+    fun basePlan(page: Int, dims: PageDims, itemWidthPx: Int, limits: ReaderLimits): PlannedRender =
+        PlannedRender(
             RenderKind.BASE,
             baseRequest(page, dims, itemWidthPx, limits.basePagePixels),
-            ItemRect(0f, 0f, itemWidthPx.toFloat(), itemHeight),
+            pageRect(dims, itemWidthPx),
             itemWidthPx,
         )
-    }
 
     /**
      * The detail render of [page] for its on-screen [visible] rect at [zoom], or null when none is
-     * needed (zoom about 1, nothing visible, or the base is already as sharp). The rect plus
+     * needed (nothing visible; the base is already as sharp, within [MIN_DETAIL_GAIN]; or zoom about
+     * 1 and the base at least [ZOOM1_MIN_SHARPNESS] as sharp as the screen). The rect plus
      * [ReaderLimits.detailMargin] is rendered at `fitScale * zoom`, capped at
      * [RenderLimits.MAX_SCALE]; if that exceeds [ReaderLimits.detailPixels], the margin is dropped and
      * then the scale lowered (the rect is never cropped, so the result always covers [visible]).
+     *
+     * Sharpness (`scale / (fitScale * zoom)`) is 1 unless a cap applies: e.g. at 5x on a 2,544 px
+     * tablet item an A4 page needs 21 px/pt, so the detail is capped at [RenderLimits.MAX_SCALE] 16
+     * (sharpness about 0.75). That is accepted: it is still about 1,150 dpi of page.
      */
     fun detailPlan(page: Int, dims: PageDims, itemWidthPx: Int, zoom: Float, visible: ItemRect, limits: ReaderLimits): PlannedRender? {
-        if (!zoom.isFinite() || zoom <= NO_DETAIL_ZOOM || itemWidthPx < 1) return null
+        if (!zoom.isFinite() || itemWidthPx < 1) return null
         val fit = fitScale(dims, itemWidthPx)
-        val itemW = itemWidthPx.toFloat()
-        val itemH = itemWidthPx * dims.heightPt / dims.widthPt
+        val baseScale = baseRequest(page, dims, itemWidthPx, limits.basePagePixels).scale
+        val target = min(fit * max(zoom, 1f), RenderLimits.MAX_SCALE)
+        // About zoom 1: only when the base is clearly softer than the screen needs.
+        if (zoom <= NO_DETAIL_ZOOM && baseScale >= target * ZOOM1_MIN_SHARPNESS) return null
+        val pr = pageRect(dims, itemWidthPx)
+        // The visible part of the page, relative to the page's top-left corner.
+        val pw = pr.width
+        val ph = pr.height
         val clamped = ItemRect(
-            visible.left.coerceIn(0f, itemW),
-            visible.top.coerceIn(0f, itemH),
-            visible.right.coerceIn(0f, itemW),
-            visible.bottom.coerceIn(0f, itemH),
+            (visible.left - pr.left).coerceIn(0f, pw),
+            (visible.top - pr.top).coerceIn(0f, ph),
+            (visible.right - pr.left).coerceIn(0f, pw),
+            (visible.bottom - pr.top).coerceIn(0f, ph),
         )
         if (clamped.isEmpty) return null
-        val baseScale = baseRequest(page, dims, itemWidthPx, limits.basePagePixels).scale
         val mx = clamped.width * limits.detailMargin
         val my = clamped.height * limits.detailMargin
         val withMargin = ItemRect(
             max(0f, clamped.left - mx),
             max(0f, clamped.top - my),
-            min(itemW, clamped.right + mx),
-            min(itemH, clamped.bottom + my),
+            min(pw, clamped.right + mx),
+            min(ph, clamped.bottom + my),
         )
-        var scale = min(fit * zoom, RenderLimits.MAX_SCALE)
+        var scale = target
         var region = withMargin
         if (pixelRect(dims, fit, scale, region).pixels > limits.detailPixels) region = clamped
-        scale = fitPixels(scale, limits.detailPixels) { s -> pixelRect(dims, fit, s, region).pixels }
+        scale = fitPixels(scale, limits.detailPixels) { s -> pixelRect(dims, fit, s, region).pixels.toDouble() }
         if (scale < baseScale * MIN_DETAIL_GAIN) return null
         val px = pixelRect(dims, fit, scale, region)
         val k = scale / fit
         return PlannedRender(
             RenderKind.DETAIL,
             RenderRequest(page, scale, px.left, px.top, px.right - px.left, px.bottom - px.top),
-            ItemRect(px.left / k, px.top / k, px.right / k, px.bottom / k),
+            ItemRect(pr.left + px.left / k, pr.top + px.top / k, pr.left + px.right / k, pr.top + px.bottom / k),
             itemWidthPx,
-            clamped,
+            ItemRect(clamped.left + pr.left, clamped.top + pr.top, clamped.right + pr.left, clamped.bottom + pr.top),
         )
     }
 
@@ -225,15 +331,15 @@ object ReaderPlanner {
         val k = scale.toDouble() / fit
         val w = RenderLimits.scaledWidth(dims, scale)
         val h = RenderLimits.scaledHeight(dims, scale)
-        val left = floor(region.left * k).toLong().coerceIn(0, w - 1)
-        val top = floor(region.top * k).toLong().coerceIn(0, h - 1)
-        val right = ceil(region.right * k).toLong().coerceIn(left + 1, w)
-        val bottom = ceil(region.bottom * k).toLong().coerceIn(top + 1, h)
+        val left = floor(region.left * k).toLong().coerceIn(0, max(0, w - 1))
+        val top = floor(region.top * k).toLong().coerceIn(0, max(0, h - 1))
+        val right = ceil(region.right * k).toLong().coerceIn(left + 1, max(left + 1, w))
+        val bottom = ceil(region.bottom * k).toLong().coerceIn(top + 1, max(top + 1, h))
         return PixelRect(left.toInt(), top.toInt(), right.toInt(), bottom.toInt())
     }
 
     /** [scale], lowered until [pixelsAt] is at most [maxPixels] (always > 0). */
-    private inline fun fitPixels(start: Float, maxPixels: Long, pixelsAt: (Float) -> Long): Float {
+    private inline fun fitPixels(start: Float, maxPixels: Long, pixelsAt: (Float) -> Double): Float {
         var scale = start
         var pixels = pixelsAt(scale)
         if (pixels > maxPixels) {
@@ -247,6 +353,9 @@ object ReaderPlanner {
         return scale
     }
 }
+
+/** A rectangle in whole drawing pixels; `right > left` and `bottom > top` (both exclusive). */
+data class DrawRect(val left: Int, val top: Int, val right: Int, val bottom: Int)
 
 /**
  * What the screen shows: items [itemWidthPx] wide at zoom 1, drawn [zoom] times larger, and the

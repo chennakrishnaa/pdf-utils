@@ -11,6 +11,8 @@
     <string name="reader_page_cd">Page %1$d of %2$d</string>
     <string name="reader_open_another">Open another PDF</string>
     <string name="reader_page_error">This page could not be shown.</string>
+    <!-- A page that ran the renderer out of memory or time -->
+    <string name="reader_page_too_complex">This page is too large or complex to show.</string>
     <string name="reader_retry">Retry</string>
     <string name="reader_retry_page_cd">Retry page %1$d</string>
 </resources>

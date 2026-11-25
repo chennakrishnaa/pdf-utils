@@ -56,7 +56,9 @@ class ReaderPlannerTest {
                         assertTrue(p.request.scale <= ReaderPlanner.fitScale(d, width) + 1e-4f)
                         assertTrue(p.request.width <= width)
                     } else {
-                        assertTrue(ctx, zoom > 1f)
+                        // At zoom 1 only for a base clearly softer than the screen (RDR-2).
+                        val baseSharpness = ReaderPlanner.basePlan(1, d, width, limits).request.scale / ReaderPlanner.fitScale(d, width)
+                        assertTrue(ctx, zoom > 1f || baseSharpness < ReaderPlanner.ZOOM1_MIN_SHARPNESS)
                         assertTrue("$ctx $p", p.covers.contains(rect))
                         assertTrue(p.request.width.toLong() * p.request.height <= limits.detailPixels)
                         assertTrue(p.request.scale <= minOf(RenderLimits.MAX_SCALE, ReaderPlanner.fitScale(d, width) * zoom) + 1e-4f)
@@ -66,7 +68,10 @@ class ReaderPlannerTest {
                 // The visible page's base comes first.
                 assertEquals(RenderKind.BASE, plan.first().kind)
                 assertEquals(1, plan.first().page)
-                if (zoom == 1f) assertTrue(plan.none { it.kind == RenderKind.DETAIL })
+                if (zoom == 1f) {
+                    val sharp = ReaderPlanner.basePlan(1, dims, width, limits).request.scale >= ReaderPlanner.fitScale(dims, width) * ReaderPlanner.ZOOM1_MIN_SHARPNESS
+                    if (sharp) assertTrue(plan.none { it.kind == RenderKind.DETAIL })
+                }
             }
         }
     }

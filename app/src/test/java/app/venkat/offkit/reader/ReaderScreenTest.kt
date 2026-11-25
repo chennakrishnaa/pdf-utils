@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -32,6 +33,7 @@ import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.feature.reader.ReaderPageDetailShown
 import app.venkat.offkit.feature.reader.ReaderPageRendered
 import app.venkat.offkit.feature.reader.ReaderPlanner
@@ -39,6 +41,8 @@ import app.venkat.offkit.feature.reader.TAG_READER_INDICATOR
 import app.venkat.offkit.feature.reader.TAG_READER_LIST
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
 import app.venkat.offkit.feature.reader.TAG_READER_TITLE
+import app.venkat.offkit.feature.reader.VIEWPORT_SETTLE_MS
+import app.venkat.offkit.feature.reader.readerPageReasonTag
 import app.venkat.offkit.feature.reader.readerPageRetryTag
 import app.venkat.offkit.feature.reader.readerPageTag
 import app.venkat.offkit.ui.components.MIME_PDF
@@ -138,7 +142,9 @@ class ReaderScreenTest {
         rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals(name)
     }
 
-    private fun rendered(@Suppress("UNUSED_PARAMETER") index: Int, value: Boolean = true) = SemanticsMatcher.expectValue(ReaderPageRendered, value)
+    /** Matches the item of page [index] whose base bitmap is (or, with [value] false, is not) drawn. */
+    private fun rendered(index: Int, value: Boolean = true) =
+        hasTestTag(readerPageTag(index)) and SemanticsMatcher.expectValue(ReaderPageRendered, value)
 
     private fun isRendered(index: Int): Boolean =
         rule.onAllNodesWithTag(readerPageTag(index)).fetchSemanticsNodes()
@@ -252,6 +258,76 @@ class ReaderScreenTest {
         assertTrue("detail requested at zoom 1: $after", after.none { it.scale > base.scale * 1.01f })
     }
 
+    /**
+     * RDR-1: hostile page sizes (a 10 x 14,400 pt scroll, a 14,400 x 10 pt strip, 1 x 100,000 pt,
+     * Float.MAX-ish sides) open, lay out in bounded items and get rendered, without crashing.
+     */
+    @Test
+    fun extremePageSizesOpenAndRenderWithoutCrashing() {
+        fake.readerPages = listOf(
+            PageDims(10f, 14_400f),
+            PageDims(14_400f, 10f),
+            PageDims(1f, 100_000f),
+            PageDims(Float.MAX_VALUE / 2, 10f),
+            PageDims(10f, Float.MAX_VALUE / 2),
+            PageDims(Float.MAX_VALUE, Float.MAX_VALUE),
+            a4,
+        )
+        openDocument("scroll.pdf")
+        rule.onNodeWithTag(TAG_READER_INDICATOR).assertTextEquals(indicator(1, fake.readerPages.size))
+        for (index in fake.readerPages.indices) {
+            rule.onNode(hasScrollToIndexAction()).performScrollToIndex(index)
+            rule.waitForIdle()
+            waitUntilRendered(index)
+            val size = rule.onNodeWithTag(readerPageTag(index)).fetchSemanticsNode().size
+            assertTrue("page $index height ${size.height}", size.height in 1..ReaderPlanner.MAX_ITEM_HEIGHT_PX)
+            assertTrue("page $index width ${size.width}", size.width >= 1)
+        }
+        for (request in renderRequests()) {
+            val dims = PdfReader.sanePageDims(fake.readerPages[request.page])!!
+            assertNull(RenderLimits.check(request, dims))
+            assertNull(RenderLimits.check(request, fake.readerPages[request.page]))
+        }
+    }
+
+    /** RDR-4: a one-finger pan while zoomed sends no detail request until it has stopped for a while. */
+    @Test
+    fun zoomedPanRequestsNoDetailUntilItStops() {
+        openDocument()
+        val list = rule.onNodeWithTag(TAG_READER_LIST).fetchSemanticsNode().size
+        val c = Offset(list.width / 2f, list.height / 3f)
+        val base = renderRequests().first { it.page == 0 }
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput {
+            pinch(c - Offset(30f, 0f), c - Offset(100f, 0f), c + Offset(30f, 0f), c + Offset(100f, 0f))
+        }
+        rule.waitForIdle()
+        waitUntil("detail of page 0") { detailShown(0) }
+        fun details() = renderRequests().count { it.scale > base.scale * 1.01f }
+        val before = details()
+
+        rule.mainClock.autoAdvance = false
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { down(c) }
+        repeat(30) {
+            rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { moveBy(Offset(-6f, 0f)) }
+            rule.mainClock.advanceTimeBy(16)
+        }
+        // Let anything that was sent reach the engine thread.
+        repeat(10) {
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            Thread.sleep(20)
+        }
+        assertEquals("detail requested mid-pan", before, details())
+
+        // The finger rests: after the settle time exactly one detail, for the new position, is requested.
+        rule.mainClock.advanceTimeBy(VIEWPORT_SETTLE_MS + 50)
+        CoreTestSupport.idleUntil(message = "detail after pan") { details() > before }
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { up() }
+        rule.mainClock.autoAdvance = true
+        rule.waitForIdle()
+        waitUntil("new detail shown") { detailShown(0) }
+        assertEquals(before + 1, details())
+    }
+
     @Test
     fun accessibilityZoomActionStillWorksOnTheReaderList() {
         openDocument()
@@ -287,6 +363,8 @@ class ReaderScreenTest {
         answer(enterReader(), pdf("report.pdf"))
         waitFor(readerPageRetryTag(0))
         assertTrue(!isRendered(0))
+        rule.onNodeWithText(str(R.string.reader_page_error)).assertExists()
+        rule.onNodeWithTag(readerPageReasonTag(0)).assertTextEquals(str(pdfErrorTitle(PdfError.Corrupt)))
         val before = renderRequests().count { it.page == 0 }
         failPage0.set(false)
         rule.onNodeWithTag(readerPageRetryTag(0)).performClick()
@@ -294,6 +372,20 @@ class ReaderScreenTest {
         waitUntilRendered(0)
         assertTrue(renderRequests().count { it.page == 0 } > before)
         assertTrue(!exists(readerPageRetryTag(0)))
+    }
+
+    @Test
+    fun pageThatRunsTheEngineOutOfMemoryOrTimeSaysItIsTooComplex() {
+        for (error in listOf(PdfError.OutOfMemory, PdfError.TimedOut)) {
+            fake.beforeRender = { request -> fake.readerError = if (request.page == 0) error else null }
+            answer(enterReader(), pdf("big.pdf"))
+            waitFor(readerPageRetryTag(0))
+            rule.onNodeWithText(str(R.string.reader_page_too_complex)).assertExists()
+            assertTrue(!exists(readerPageReasonTag(0)))
+            rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+            rule.waitForIdle()
+            waitFor(TAG_TOOL_READ)
+        }
     }
 
     @Test

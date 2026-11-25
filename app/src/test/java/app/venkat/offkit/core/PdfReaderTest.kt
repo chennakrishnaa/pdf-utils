@@ -1,5 +1,13 @@
 package app.venkat.offkit.core
 
+import android.content.ContentProvider
+import android.content.ContentValues
+import android.database.Cursor
+import android.database.MatrixCursor
+import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
+import org.robolectric.Robolectric
+import java.io.FileNotFoundException
 import android.app.Application
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
@@ -242,5 +250,56 @@ class PdfReaderTest {
 
     private companion object {
         const val ENGINE_THREAD = "test-engine"
+    }
+
+    /** RDR-6: a PDF larger than the engine's input limit fails as OutOfMemory, before or during the copy. */
+    @Test
+    fun fileOverTheInputLimitIsOutOfMemoryAndLeavesNothing() {
+        val jobs = PdfJobs(app, engineDispatcher, Dispatchers.IO, Dispatchers.Main)
+        val small = PdfReader(app, jobs, maxInputBytes = 8)
+        // The test provider reports no size: the copy stops once past the limit.
+        assertEquals(ReaderOpenResult.Failed(PdfError.OutOfMemory), runBlocking { small.open(pdfUri()) })
+        assertTrue(readerDirs().isEmpty())
+        assertTrue(fake.readerCalls.isEmpty())
+
+        // A provider that reports the size: refused before its stream is opened.
+        Robolectric.setupContentProvider(SizedProvider::class.java, SizedProvider.AUTHORITY)
+        SizedProvider.opened.set(0)
+        val sized = Uri.parse("content://${SizedProvider.AUTHORITY}/big.pdf")
+        assertEquals(ReaderOpenResult.Failed(PdfError.OutOfMemory), runBlocking { small.open(sized) })
+        assertEquals(0, SizedProvider.opened.get())
+        assertTrue(readerDirs().isEmpty())
+
+        // Exactly at the limit is fine ("%PDF-1.7 test" is 13 bytes).
+        val atLimit = runBlocking { PdfReader(app, jobs, maxInputBytes = 13).open(pdfUri()) }
+        assertTrue(atLimit is ReaderOpenResult.Opened)
+    }
+
+    @Test
+    fun hostilePageSizesAreClampedOrCorrupt() {
+        fake.readerPages = listOf(PageDims(Float.MAX_VALUE, 0.001f), PageDims(595f, 842f))
+        assertEquals(listOf(PageDims(PdfReader.MAX_PAGE_PT, PdfReader.MIN_PAGE_PT), PageDims(595f, 842f)), openOk().pages)
+        fake.readerPages = listOf(PageDims(595f, Float.NaN))
+        assertEquals(ReaderOpenResult.Failed(PdfError.Corrupt), runBlocking { reader.open(pdfUri()) })
+    }
+
+    /** Reports a 100-byte `big.pdf` and counts attempts to open it (which fail). */
+    class SizedProvider : ContentProvider() {
+        override fun onCreate() = true
+        override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor =
+            MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)).apply { addRow(arrayOf<Any>("big.pdf", 100L)) }
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            opened.incrementAndGet()
+            throw FileNotFoundException(uri.toString())
+        }
+        override fun getType(uri: Uri) = "application/pdf"
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+        override fun delete(uri: Uri, selection: String?, args: Array<out String>?) = 0
+        override fun update(uri: Uri, values: ContentValues?, selection: String?, args: Array<out String>?) = 0
+
+        companion object {
+            const val AUTHORITY = "app.venkat.offkit.sizedtest"
+            val opened = java.util.concurrent.atomic.AtomicInteger()
+        }
     }
 }
