@@ -126,7 +126,11 @@ class PageInfoOp {
  *
  * Validates the request with [RenderLimits.check] before opening and again with the page's
  * [PageDims] (same [pageDimsOf] as [PageInfoOp]) after loading it; an invalid request or a page
- * past the end is `Err(Io(IllegalArgumentException))`. The document is opened per call (MuPDF
+ * past the end is `Err(Io(IllegalArgumentException))`. Before the page is loaded, its annotation
+ * count ([checkPageAnnots]) and the images it can draw ([RenderImageGate]: declared size, JPEG/JPX
+ * stream headers, predictor rows, ICC profiles, through forms, patterns, soft masks, Type 3 fonts
+ * and annotation appearances) are checked; over a limit is `Err(OutOfMemory)`, never a decode.
+ * The document is opened per call (MuPDF
  * objects live on the [EngineStack] thread of this call only).
  *
  * Geometry: the page is drawn with `ctm = [s 0 0 s (-x0*s - left) (-y0*s - top)]`, where
@@ -184,6 +188,8 @@ class RenderPageOp {
             val count = doc.countPages()
             if (request.page >= count) return invalid("page ${request.page} past the end ($count pages)")
             checkPageAnnots(doc, request.page)
+            // RDR-3: images the page can draw are vetted before Page.run decodes them.
+            PdfInputs.checkGraph { RenderImageGate.checkPage(doc, request.page) }
             val page = loadingPage { doc.loadPage(request.page) }
             try {
                 val bounds = loadingPage { page.bounds }
