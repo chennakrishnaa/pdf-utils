@@ -10,6 +10,7 @@ import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
+import app.venkat.offkit.engine.ScanMemo
 import app.venkat.offkit.engine.classifyFailure
 import app.venkat.offkit.engine.isOutOfMemoryFailure
 import com.artifex.mupdf.fitz.ColorSpace
@@ -81,7 +82,7 @@ private inline fun <T> loadingPage(block: () -> T): T = try {
 class PageInfoOp {
     fun run(pdf: File, job: JobControl): PdfPageInfo = guarded {
         if (job.isCancelled()) return@guarded PdfPageInfo.Err(PdfError.Cancelled)
-        val doc = PdfInputs.open(pdf)
+        val doc = PdfInputs.open(pdf, ScanMemo.keyOf(pdf))
         try {
             val count = doc.countPages()
             if (count > RenderLimits.MAX_PAGES) return@guarded PdfPageInfo.Err(PdfError.OutOfMemory)
@@ -126,7 +127,11 @@ class PageInfoOp {
  *
  * Validates the request with [RenderLimits.check] before opening and again with the page's
  * [PageDims] (same [pageDimsOf] as [PageInfoOp]) after loading it; an invalid request or a page
- * past the end is `Err(Io(IllegalArgumentException))`. The document is opened per call (MuPDF
+ * past the end is `Err(Io(IllegalArgumentException))`. Before the page is loaded, its annotation
+ * count ([checkPageAnnots]) and the images it can draw ([RenderImageGate]: declared size, JPEG/JPX
+ * stream headers, predictor rows, ICC profiles, through forms, patterns, soft masks, Type 3 fonts
+ * and annotation appearances) are checked; over a limit is `Err(OutOfMemory)`, never a decode.
+ * The document is opened per call (MuPDF
  * objects live on the [EngineStack] thread of this call only).
  *
  * Geometry: the page is drawn with `ctm = [s 0 0 s (-x0*s - left) (-y0*s - top)]`, where
@@ -178,12 +183,18 @@ class RenderPageOp {
     private fun render(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
         RenderLimits.check(request, null)?.let { return invalid(it) }
         if (job.isCancelled()) return PdfRender.Err(PdfError.Cancelled)
-        val doc = PdfInputs.open(pdf)
+        val memo = ScanMemo.keyOf(pdf) // RDR-4: pre-scan and image-gate verdicts once per document
+        val doc = PdfInputs.open(pdf, memo)
         try {
             if (job.isCancelled()) return PdfRender.Err(PdfError.Cancelled)
             val count = doc.countPages()
             if (request.page >= count) return invalid("page ${request.page} past the end ($count pages)")
             checkPageAnnots(doc, request.page)
+            // RDR-3: images the page can draw are vetted before Page.run decodes them.
+            if (memo == null || !ScanMemo.pagePassed(memo, request.page)) {
+                PdfInputs.checkGraph { RenderImageGate.checkPage(doc, request.page) }
+                if (memo != null) ScanMemo.rememberPage(memo, request.page)
+            }
             val page = loadingPage { doc.loadPage(request.page) }
             try {
                 val bounds = loadingPage { page.bounds }
