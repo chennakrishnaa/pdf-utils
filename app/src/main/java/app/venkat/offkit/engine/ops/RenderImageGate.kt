@@ -43,7 +43,7 @@ import java.util.zip.InflaterInputStream
  *   unparsable header, or a larger stream is refused: those are the bomb spellings of
  *   `CompressFilterGateTest` and the header cannot be reached cheaply;
  * - JPX: MuPDF ignores the dictionary size and openjpeg allocates from the codestream's SIZ
- *   marker (32-bit samples): SIZ must be found and `w × h × components ≤` [MAX_JPX_SAMPLES];
+ *   marker (32-bit samples): SIZ must be found where openjpeg reads it ([jpxSize]) and `w × h × components ≤` [MAX_JPX_SAMPLES];
  *   JPX behind any other filter is refused (MuPDF itself only honours a JPX stream on its own);
  * - Flate/LZW predictors: `/Columns × /Colors × /BitsPerComponent / 8` ≤ [MAX_PREDICTOR_ROW_BYTES]
  *   (MuPDF sizes its row buffers from these alone, SR-5); CCITT `/Columns` ≤ [ImageLimits.MAX_EDGE];
@@ -54,18 +54,23 @@ import java.util.zip.InflaterInputStream
  *   MuPDF: an Indexed lookup is read for `(hival + 1) × n` bytes only);
  * - the image's `/SMask` and `/Mask` streams, checked the same way.
  *
- * **What is walked** (iteratively, a visited set by object number, so shared objects are checked
- * once and cycles end; at most [MAX_NESTING] nested resource levels and [MAX_VISITS] visited
- * entries in [MAX_WALK_MILLIS], else refused): the page's `/Resources` (inherited), its
- * `/XObject` entries, form XObjects' `/Resources` (a form without them uses its parent's, already
- * walked), tiling patterns' `/Resources` (`/Pattern`), soft-mask groups (`/ExtGState` → `/SMask`
- * → `/G`), Type 3 fonts' `/Resources` (`/Font`), and every annotation's appearance streams
- * (`/AP` `/N` `/R` `/D`, a stream or a dictionary of states). When a resource dictionary has more
- * than [NARROW_ABOVE] `/XObject` entries (generators that share one resource dictionary across
- * all pages), only the entries whose name occurs as a `/Name` token in the content stream(s) that
- * use it are checked, provided those streams are unfiltered or plain Flate and inflate within
- * [MAX_CONTENT_SCAN_BYTES]; otherwise every entry is checked. Any `/` token counts, so the
- * candidate set is a superset of what the interpreter can look up.
+ * **What is walked** (iteratively; images and resource dictionaries are deduplicated by object
+ * number, so cycles end; at most [MAX_NESTING] nested resource levels and [MAX_VISITS] budget
+ * units in [MAX_WALK_MILLIS], else refused; cancellation is polled throughout and reported as
+ * `Cancelled`): the page's `/Resources` (inherited), its `/XObject` entries, form XObjects'
+ * `/Resources`, tiling patterns' `/Resources` (`/Pattern`), soft-mask groups (`/ExtGState` →
+ * `/SMask` → `/G`), Type 3 fonts' `/Resources` (`/Font`), the ICC profiles of `/ColorSpace`
+ * resources, and every annotation's appearance streams (`/AP` `/N` `/R` `/D`, a stream or a
+ * dictionary of states). A form, pattern, group or Type 3 font WITHOUT its own `/Resources` is
+ * run by MuPDF with its caller's, so the caller's dictionary is walked again for it, once per
+ * (object, parent dictionary) pair (RF-2). Each resource dictionary is listed once per check and
+ * only entries actually checked are charged. When a dictionary has more than [NARROW_ABOVE]
+ * `/XObject` entries (generators that share one resource dictionary across all pages) and every
+ * key is a [plainKey], only the entries whose name occurs as a token in the content stream(s)
+ * that use it are checked ([matchNames], MuPDF's tokenisation), provided those streams are
+ * unfiltered or plain Flate, inflate within [MAX_CONTENT_SCAN_BYTES] and the page has scanned at
+ * most [MAX_PAGE_SCAN_BYTES]; otherwise every entry is checked. Any `/` starts a token, so the
+ * matched set is a superset of what the interpreter can look up.
  *
  * **Not covered** (the RSS watchdog stays the backstop): inline images (`BI … ID … EI` inside a
  * content stream, including an inline DCT image whose SOF lies); JBIG2 internals (jbig2dec sizes
@@ -74,7 +79,12 @@ import java.util.zip.InflaterInputStream
  * streams); shading patterns and `sh` (no images, but large function streams); fonts other than
  * Type 3 (embedded font programs); `/MK` icons of widgets that have no appearance stream yet; an
  * image's `/Alternates`; images drawn through the appearance MuPDF synthesises; colour-space
- * resource lookups for inline images.
+ * resource lookups for inline images. ICC profiles are vetted only where an image's colour space
+ * or a `/ColorSpace` resource names them directly or as an Indexed base: not those of `/Shading`
+ * dictionaries, transparency groups (`/Group /CS`), DeviceN/Separation alternates, or an ICC
+ * stream's own `/Alternate` (RF-6). Stream sizes are taken from `/Length`; a stream whose real
+ * extent runs past it is read to `endstream` by MuPDF (`readRawStream`) before the size checks
+ * apply, as in Compress (RF-4).
  */
 internal object RenderImageGate {
     /** 256 MiB per image: 4000×6000 CMYK JPEG 96 MB, 600 dpi A4 4960×7016 gray 35 MB / RGB 104 MB. */
@@ -620,28 +630,62 @@ internal object RenderImageGate {
     private val DELIMITERS = "()<>[]{}/%".map { it.code }.toSet()
 
     /**
-     * Width, height and component count from a JPEG 2000 codestream's SIZ marker (`FF 4F FF 51`,
-     * found anywhere in [raw], so inside a JP2 `jp2c` box too), as Longs; null if absent/truncated.
+     * RF-3: width, height and component count of a JPX stream, read where openjpeg reads them
+     * (MuPDF `load-jpx.c`: data starting `FF 4F` is a bare codestream, anything else is JP2):
+     * - bare codestream: SOC + SIZ (`FF 4F FF 51`) must be at offset 0;
+     * - JP2: top-level boxes are walked (LBox 1 = 64-bit XLBox, LBox 0 = to the end; at most
+     *   [MAX_JP2_BOXES]) to the first `jp2c` box, whose content must start with SOC + SIZ.
+     * Null (refused) when the SIZ cannot be found that way or is truncated.
      */
     internal fun jpxSize(raw: ByteArray): Triple<Long, Long, Long>? {
-        var i = 0
-        while (i + 4 <= raw.size) {
-            if (raw[i] == 0xFF.toByte() && raw[i + 1] == 0x4F.toByte() && raw[i + 2] == 0xFF.toByte() && raw[i + 3] == 0x51.toByte()) {
-                val p = i + 4 // Lsiz
-                if (p + 38 > raw.size) return null
-                fun u32(o: Int) = ((raw[o].toLong() and 0xFF) shl 24) or ((raw[o + 1].toLong() and 0xFF) shl 16) or
-                    ((raw[o + 2].toLong() and 0xFF) shl 8) or (raw[o + 3].toLong() and 0xFF)
-                val xsiz = u32(p + 4)
-                val ysiz = u32(p + 8)
-                val xo = u32(p + 12)
-                val yo = u32(p + 16)
-                val csiz = ((raw[p + 36].toLong() and 0xFF) shl 8) or (raw[p + 37].toLong() and 0xFF)
-                return Triple(xsiz - xo, ysiz - yo, csiz)
+        if (raw.size >= 2 && raw[0] == 0xFF.toByte() && raw[1] == 0x4F.toByte()) return sizAt(raw, 0)
+        var off = 0L
+        var boxes = 0
+        while (off + 8 <= raw.size && boxes++ < MAX_JP2_BOXES) {
+            val o = off.toInt()
+            val lbox = u32(raw, o)
+            val type = String(raw, o + 4, 4, Charsets.ISO_8859_1)
+            val header: Long
+            val length: Long
+            when (lbox) {
+                1L -> {
+                    if (o + 16 > raw.size) return null
+                    header = 16
+                    length = (u32(raw, o + 8) shl 32) or u32(raw, o + 12)
+                }
+                0L -> {
+                    header = 8
+                    length = raw.size - off
+                }
+                else -> {
+                    header = 8
+                    length = lbox
+                }
             }
-            i++
+            if (length < header) return null
+            if (type == "jp2c") return if (off + header <= Int.MAX_VALUE) sizAt(raw, (off + header).toInt()) else null
+            off += length
         }
         return null
     }
+
+    /** SIZ of a codestream whose SOC is at [p] in [raw], or null. */
+    private fun sizAt(raw: ByteArray, p: Int): Triple<Long, Long, Long>? {
+        if (p + 4 + 38 > raw.size) return null
+        if (raw[p] != 0xFF.toByte() || raw[p + 1] != 0x4F.toByte() || raw[p + 2] != 0xFF.toByte() || raw[p + 3] != 0x51.toByte()) return null
+        val l = p + 4 // Lsiz
+        val xsiz = u32(raw, l + 4)
+        val ysiz = u32(raw, l + 8)
+        val xo = u32(raw, l + 12)
+        val yo = u32(raw, l + 16)
+        val csiz = ((raw[l + 36].toLong() and 0xFF) shl 8) or (raw[l + 37].toLong() and 0xFF)
+        return Triple(xsiz - xo, ysiz - yo, csiz)
+    }
+
+    private fun u32(raw: ByteArray, o: Int): Long = ((raw[o].toLong() and 0xFF) shl 24) or ((raw[o + 1].toLong() and 0xFF) shl 16) or
+        ((raw[o + 2].toLong() and 0xFF) shl 8) or (raw[o + 3].toLong() and 0xFF)
+
+    private const val MAX_JP2_BOXES = 1000
 
     /** Ends the stream (EOF) after [limit] bytes. */
     private class Capped(input: InputStream, private var left: Long) : FilterInputStream(input) {
