@@ -2,7 +2,10 @@ package app.venkat.offkit.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -31,16 +34,23 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
@@ -61,8 +71,15 @@ const val TAG_THUMB_MOVE_LATER = "thumb_move_later"
 /** Test tag of the "Remove" button of the [OffkitThumbnailRow] toolbar. */
 const val TAG_THUMB_REMOVE = "thumb_remove"
 
+/** Test tag of the trailing "Add" tile of [OffkitThumbnailRow]. */
+const val TAG_THUMB_ADD = "thumb_add"
+
+/** Test tag of the trailing "Add PDFs" row of [OffkitSelectableFileList]. */
+const val TAG_FILE_LIST_ADD = "file_list_add"
+
 private val ToolbarShape = RoundedCornerShape(28.dp)
-private val TileShape = RoundedCornerShape(16.dp)
+private val TileRadius = 16.dp
+private val TileShape = RoundedCornerShape(TileRadius)
 private val TileContentShape = RoundedCornerShape(12.dp)
 
 /**
@@ -91,6 +108,10 @@ private val TileContentShape = RoundedCornerShape(12.dp)
  * `cd_image_n`, wrapped in `cd_selected` when selected; the picture and the badge have no
  * semantics of their own. Tags: tile [thumbTag] (`thumb_$index`), toolbar buttons
  * [TAG_THUMB_MOVE_EARLIER], [TAG_THUMB_MOVE_LATER], [TAG_THUMB_REMOVE].
+ *
+ * With [onAdd], a dashed "Add" tile ([addLabel], default `add`; tag [TAG_THUMB_ADD]) follows the
+ * last image (alone when [count] is 0). It is one `Role.Button`, not selectable, not numbered and
+ * not part of the reorder. When [count] grows the row scrolls to its end (not on remove/reorder).
  */
 @Composable
 fun OffkitThumbnailRow(
@@ -103,15 +124,20 @@ fun OffkitThumbnailRow(
     modifier: Modifier = Modifier,
     horizontalPadding: Dp = 0.dp,
     key: ((Int) -> Any)? = null,
+    onAdd: (() -> Unit)? = null,
+    addLabel: String? = null,
     thumbnail: @Composable BoxScope.(index: Int) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val selected = selectedIndex?.takeIf { it in 0 until count }
+    val scrollState = rememberScrollState()
+    // New images are appended: bring the end of the row (newest images and the Add tile) into view.
+    OnCountGrew(count) { scrollState.animateScrollTo(scrollState.maxValue) }
     Column(modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
+                .horizontalScroll(scrollState)
                 .padding(horizontal = horizontalPadding, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(OffkitDimens.itemGap),
         ) {
@@ -151,6 +177,9 @@ fun OffkitThumbnailRow(
                     }
                 }
             }
+            if (onAdd != null) {
+                AddTile(label = addLabel ?: stringResource(R.string.add), onClick = onAdd)
+            }
         }
         if (selected != null) {
             DarkToolbar(Modifier.padding(start = horizontalPadding, end = horizontalPadding, top = 8.dp)) {
@@ -169,6 +198,69 @@ fun OffkitThumbnailRow(
                 ToolbarIconButton(AppIcons.delete, stringResource(R.string.remove), true, TAG_THUMB_REMOVE) { onRemove(selected) }
             }
         }
+    }
+}
+
+/**
+ * Runs [action] (after the next frame, so scroll ranges include the new items) whenever [count]
+ * becomes larger than it was on the previous composition. Not on first composition, on a
+ * shrink (remove) or when the count is unchanged (reorder).
+ */
+@Composable
+private fun OnCountGrew(count: Int, action: suspend () -> Unit) {
+    val last = remember { intArrayOf(count) }
+    val currentAction by rememberUpdatedState(action)
+    LaunchedEffect(count) {
+        val grew = count > last[0]
+        last[0] = count
+        if (grew) {
+            withFrameNanos { }
+            currentAction()
+        }
+    }
+}
+
+/**
+ * Trailing "Add" tile of [OffkitThumbnailRow]: as wide as an image tile (96dp) and at least as
+ * tall (128dp; it grows with large fonts), white with the dashed `outline` border of
+ * [OffkitFileSlot] (16dp radius), a 48dp `primary` circle with `ic_add` and [label] below it
+ * (`labelMedium`, up to two lines). One `Role.Button` node whose text is [label]; not selectable,
+ * no page badge. Tag [TAG_THUMB_ADD].
+ */
+@Composable
+private fun AddTile(label: String, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .width(OffkitDimens.thumbWidth)
+            .heightIn(min = OffkitDimens.thumbHeight)
+            .clip(TileShape)
+            .background(colors.surfaceContainerLowest)
+            .dashedBorder(colors.outline, TileRadius)
+            .clickable(role = Role.Button, onClick = onClick)
+            .testTag(TAG_THUMB_ADD)
+            .padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+    ) {
+        AddCircle(OffkitDimens.iconContainer, OffkitDimens.iconSize)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = colors.onSurface,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** The `primary` circle with a white `ic_add` used by the Add tile and the Add row. */
+@Composable
+private fun AddCircle(size: Dp, iconSize: Dp) {
+    val colors = MaterialTheme.colorScheme
+    Box(Modifier.size(size).background(colors.primary, CircleShape), contentAlignment = Alignment.Center) {
+        Icon(AppIcons.add, contentDescription = null, tint = colors.onPrimary, modifier = Modifier.size(iconSize))
     }
 }
 
@@ -245,6 +337,11 @@ private fun ToolbarTextButton(icon: Painter, label: String, enabled: Boolean, ta
  * existing ones of [FileList]): card [fileRowTag], toolbar buttons [fileRowUpTag],
  * [fileRowDownTag], [fileRowRemoveTag] (only present for the selected row). Built from a plain
  * Column, so it can sit in [OffkitScaffold]'s scrolling content.
+ *
+ * With [onAdd], a dashed row ([addLabel], default `add_pdfs`; tag [TAG_FILE_LIST_ADD]; at least
+ * 72dp, 20dp radius, `primary` circle with `ic_add`) follows the last card (alone when [rows] is
+ * empty); it is one `Role.Button`. When [rows] grows, it is brought into view in the enclosing
+ * scroller.
  */
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
@@ -256,10 +353,15 @@ fun OffkitSelectableFileList(
     onMoveDown: (Int) -> Unit,
     onRemove: (Int) -> Unit,
     modifier: Modifier = Modifier,
+    onAdd: (() -> Unit)? = null,
+    addLabel: String? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val shape = MaterialTheme.shapes.medium
     val last = rows.lastIndex
+    val addRowInView = remember { BringIntoViewRequester() }
+    // New files are appended: scroll the screen so the Add row (just under the newest file) shows.
+    OnCountGrew(rows.size) { if (onAdd != null) addRowInView.bringIntoView() }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(OffkitDimens.itemGap)) {
         rows.forEachIndexed { index, row ->
             key(row.key) {
@@ -315,6 +417,31 @@ fun OffkitSelectableFileList(
                         }
                     }
                 }
+            }
+        }
+        if (onAdd != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewRequester(addRowInView)
+                    .heightIn(min = OffkitDimens.listRowMinHeight)
+                    .clip(shape)
+                    .background(colors.surfaceContainerLowest)
+                    .dashedBorder(colors.outline, OffkitDimens.cardRadius)
+                    .clickable(role = Role.Button, onClick = onAdd)
+                    .testTag(TAG_FILE_LIST_ADD)
+                    .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // 32dp, like the order badges above it, so the circle lines up with them.
+                AddCircle(32.dp, OffkitDimens.iconSizeSmall)
+                Text(
+                    text = addLabel ?: stringResource(R.string.add_pdfs),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = colors.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }

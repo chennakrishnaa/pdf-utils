@@ -39,6 +39,7 @@ import app.venkat.offkit.ui.components.OffkitOption
 import app.venkat.offkit.ui.components.OffkitPrimaryButton
 import app.venkat.offkit.ui.components.OffkitRadioGroup
 import app.venkat.offkit.ui.components.OffkitScaffold
+import app.venkat.offkit.ui.components.OffkitHeaderActionStyle
 import app.venkat.offkit.ui.components.OffkitSectionHeader
 import app.venkat.offkit.ui.components.OffkitThumbnailRow
 import app.venkat.offkit.ui.components.TAG_JOB_RUN
@@ -224,6 +225,7 @@ private fun ImagesToPdfOptions(
             onAction = onAdd,
             actionIcon = AppIcons.add,
             actionTestTag = TAG_IMAGESTOPDF_ADD,
+            actionStyle = OffkitHeaderActionStyle.Tonal,
         )
         // Shown with or without images (design 07c), so the header is never followed by a gap.
         Text(
@@ -232,16 +234,16 @@ private fun ImagesToPdfOptions(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
         )
-        if (hasImages) {
-            OffkitThumbnailRow(
-                count = imageCount,
-                selectedIndex = selectedIndex,
-                onSelect = onSelect,
-                onMoveEarlier = onMoveEarlier,
-                onMoveLater = onMoveLater,
-                onRemove = onRemove,
-            ) { _ -> PlaceholderTile() }
-        }
+        // With no images the dashed Add tile alone is the empty state.
+        OffkitThumbnailRow(
+            count = imageCount,
+            selectedIndex = selectedIndex,
+            onSelect = onSelect,
+            onMoveEarlier = onMoveEarlier,
+            onMoveLater = onMoveLater,
+            onRemove = onRemove,
+            onAdd = onAdd,
+        ) { _ -> PlaceholderTile() }
 
         OffkitSectionHeader(stringResource(R.string.section_page_size))
         OffkitChipRow(

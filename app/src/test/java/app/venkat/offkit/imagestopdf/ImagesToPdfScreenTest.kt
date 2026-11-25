@@ -16,6 +16,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -61,6 +62,7 @@ import app.venkat.offkit.ui.components.TAG_JOB_SHARE
 import app.venkat.offkit.ui.components.TAG_JOB_SUMMARY
 import app.venkat.offkit.ui.components.TAG_LEAVE_CONFIRM
 import app.venkat.offkit.ui.components.TAG_LEAVE_STAY
+import app.venkat.offkit.ui.components.TAG_THUMB_ADD
 import app.venkat.offkit.ui.components.TAG_THUMB_MOVE_EARLIER
 import app.venkat.offkit.ui.components.TAG_THUMB_MOVE_LATER
 import app.venkat.offkit.ui.components.TAG_THUMB_REMOVE
@@ -242,6 +244,39 @@ class ImagesToPdfScreenTest {
     }
 
     // ---- Images: empty, add, select, move, remove ----
+
+    @Test
+    fun addTileAfterImagesOpensTheSamePickerAndIsNotCountedAsAnImage() {
+        // Empty: the Add tile alone is the empty state.
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo()
+        rule.onNodeWithTag(TAG_THUMB_ADD).assertIsDisplayed().assertTextEquals(str(R.string.add))
+        addImages("a.jpg", "b.jpg", "c.jpg")
+        rule.onNodeWithText(str(R.string.imagestopdf_section_count, 3)).assertExists()
+        rule.onNodeWithTag(thumbTag(3)).assertDoesNotExist()
+        rule.onNodeWithText(pages(3)).assertExists()
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo()
+        assertTrue(rule.onNodeWithTag(TAG_THUMB_ADD).getBoundsInRoot().left >= rule.onNodeWithTag(thumbTag(2)).getBoundsInRoot().right)
+
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_IMAGESTOPDF_ADD)
+        val header = shadowOf(rule.activity).nextStartedActivity
+        assertNotNull(header)
+        rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo()
+        rule.onNodeWithTag(TAG_THUMB_ADD).performScrollTo().performClick()
+        rule.waitForIdle()
+        val tile = shadowOf(rule.activity).nextStartedActivity
+        assertNotNull("the Add tile opened no picker", tile)
+        assertEquals(header.action, tile.action)
+        assertEquals(header.type, tile.type)
+
+        // Move/remove still treat c.jpg as the last image.
+        onTile(2, TAG_THUMB_MOVE_EARLIER)
+        assertEquals(listOf("a.jpg", "c.jpg", "b.jpg"), names())
+        onTile(1, TAG_THUMB_REMOVE)
+        assertEquals(listOf("a.jpg", "b.jpg"), names())
+        rule.onNodeWithTag(thumbTag(2)).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_THUMB_ADD).assertExists()
+    }
 
     @Test
     fun noImages_buttonDisabledWithAddImagesFirst() {
