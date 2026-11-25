@@ -16,6 +16,7 @@ import app.venkat.offkit.OnboardingSeenRule
 import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.R
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -65,6 +66,27 @@ class NavigationTest {
             rule.waitForIdle()
             cards.forEach { rule.onNodeWithTag(it).performScrollTo().assertIsDisplayed() }
         }
+    }
+
+    @Test
+    fun readCardSitsBelowTheGridAndOpensTheReader() {
+        rule.onNodeWithTag("tool_read").performScrollTo().assertIsDisplayed()
+            .assertTextEquals(rule.activity.getString(R.string.tool_read_title), rule.activity.getString(R.string.tool_read_desc))
+        // Unclipped positions, all read in the same scroll state.
+        fun node(tag: String) = rule.onNodeWithTag(tag).fetchSemanticsNode()
+        val read = node("tool_read")
+        val gridLeft = node("tool_merge")
+        val gridRight = node("tool_add_images")
+        assertTrue("below the grid", read.positionInRoot.y >= gridLeft.positionInRoot.y + gridLeft.size.height)
+        assertEquals("aligned with the grid", gridLeft.positionInRoot.x, read.positionInRoot.x, 1f)
+        assertEquals("as wide as the grid", gridRight.positionInRoot.x + gridRight.size.width - gridLeft.positionInRoot.x, read.size.width.toFloat(), 1f)
+        rule.onNodeWithTag("tool_read").performScrollTo().performClick()
+        rule.waitForIdle()
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, shadowOf(rule.activity).nextStartedActivityForResult?.intent?.action)
+        rule.onNodeWithTag("action_back").assertIsDisplayed()
+        rule.onNodeWithTag("action_back").performClick()
+        rule.waitForIdle()
+        cards.forEach { rule.onNodeWithTag(it).performScrollTo().assertIsDisplayed() }
     }
 
     @Test

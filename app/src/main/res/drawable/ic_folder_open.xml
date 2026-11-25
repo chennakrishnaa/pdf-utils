@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- An open folder: the back with its tab, and the front flap tilted open -->
+    <path android:pathData="M4 18V6.5C4 5.7 4.7 5 5.5 5H9.3l2 2h6.2c0.8 0 1.5 0.7 1.5 1.5V10"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path android:pathData="M4 18l2.6 -7h14.4l-2.6 7z"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
