@@ -43,8 +43,8 @@ import kotlin.coroutines.cancellation.CancellationException
  *   [PdfJobs.processScope], so it completes (and cleans up) even if this ViewModel is cleared.
  * - `Done` --[share]--> copy to `cacheDir/shared/` (one copy per output, reused by later shares
  *   while it exists) --> [shareRequest] set; the screen launches the share sheet and calls
- *   [onShareHandled], which sets `Done.shared` if it launched. A failed copy sets [saveError];
- *   the state does not change.
+ *   [onShareHandled], which clears it. The state does not change either way (sharing never counts
+ *   as saving: Android gives no result for a share). A failed copy sets [saveError].
  * - any but saving --[reset]--> `Idle` (cancels a running job, discards the output).
  * - `Done` (not saving)/`Failed` --[invalidateResult]--> `Idle` (discards the output).
  *
@@ -260,12 +260,12 @@ open class JobViewModel(
     }
 
     /**
-     * Call once the screen has handled [shareRequest]: clears it and, if the share sheet was
-     * [launched], marks the result `shared`.
+     * Call once the screen has handled [shareRequest] (launched the share sheet or explained that
+     * no app can take it): clears it. The result's state is left as is: Android reports nothing
+     * about what happens in the share sheet, so an unsaved result stays unsaved.
      */
-    fun onShareHandled(launched: Boolean) {
+    fun onShareHandled() {
         _shareRequest.value = null
-        if (launched) (_jobState.value as? JobUiState.Done)?.let { _jobState.value = it.copy(shared = true) }
     }
 
     /**

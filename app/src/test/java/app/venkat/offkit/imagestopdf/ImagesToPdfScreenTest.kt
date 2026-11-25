@@ -5,6 +5,7 @@ import app.venkat.offkit.core.isSaved
 import app.venkat.offkit.core.isSavingNow
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.compose.ui.semantics.SemanticsActions
@@ -903,12 +904,17 @@ class ImagesToPdfScreenTest {
         readyResult()
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_JOB_SHARE)
-        CoreTestSupport.idleUntil(rule, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
+        CoreTestSupport.idleUntil(rule, message = "share sheet launched") {
+            shadowOf(rule.activity).peekNextStartedActivity() != null
+        }
         rule.waitForIdle()
-        assertNotNull(shadowOf(rule.activity).nextStartedActivity)
+        assertEquals(Intent.ACTION_CHOOSER, shadowOf(rule.activity).nextStartedActivity?.action)
         assertNull(vm.shareRequest.value)
-        rule.onNodeWithText(str(R.string.result_shared_only)).assertExists()
-        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
+        // RD-1: sharing does not count as saving.
+        rule.onNodeWithText(str(R.string.result_not_saved)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_discard))
+        click(TAG_JOB_RESET)
+        rule.onNodeWithText(str(R.string.discard_title)).assertExists()
     }
 
     @Test

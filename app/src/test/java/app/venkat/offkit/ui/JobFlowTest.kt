@@ -226,14 +226,6 @@ class JobFlowTest {
     }
 
     @Test
-    fun sharedOnlyResultLabels() {
-        flow(unsaved.copy(shared = true))
-        rule.onNodeWithText(str(R.string.result_shared_only)).assertExists()
-        rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_as))
-        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
-    }
-
-    @Test
     fun savedResultLabels() {
         flow(unsaved.copy(savedName = "Saved copy.pdf", savedUri = Uri.parse("content://x/1")))
         rule.onNodeWithText(str(R.string.result_saved_as, "Saved copy.pdf")).assertExists()
@@ -277,17 +269,29 @@ class JobFlowTest {
     }
 
     @Test
-    fun doneAfterSaveOrShareLeavesWithoutDialog() {
+    fun doneAfterSaveLeavesWithoutDialog() {
         flow(unsaved.copy(savedName = "a.pdf", savedUri = Uri.parse("content://x/1")))
         rule.onNodeWithTag(TAG_JOB_RESET).performClick()
         assertAbsent(TAG_LEAVE_CONFIRM)
         assertEquals(listOf("reset", "leave"), calls)
 
         calls.clear()
-        flow(unsaved.copy(shared = true))
         back()
         assertAbsent(TAG_LEAVE_CONFIRM)
         assertEquals(listOf("reset", "leave"), calls)
+    }
+
+    /** RD-1: tapping Share on an unsaved result changes nothing; leaving still asks. */
+    @Test
+    fun shareTapOnUnsavedResultStillAsksBeforeLeaving() {
+        flow(unsaved)
+        rule.onNodeWithTag(TAG_JOB_SHARE).performClick()
+        assertEquals(listOf("share"), calls)
+        rule.onNodeWithText(str(R.string.result_not_saved)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_discard))
+        back()
+        rule.onNodeWithText(str(R.string.discard_title)).assertExists()
+        assertEquals(listOf("share"), calls)
     }
 
     @Test

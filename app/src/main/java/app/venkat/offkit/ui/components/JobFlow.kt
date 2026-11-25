@@ -55,8 +55,9 @@ internal fun jobFlowScreen(state: JobUiState, noGainAsError: Boolean): JobFlowSc
  *   with `suggestedName` and passes the chosen Uri (or null on cancel) to [onSave]. Share calls
  *   [onShare]; each new [shareRequest] launches the share sheet and is reported through
  *   [onShareHandled]. The result stays after a save error. Close, Discard/Done (tag [TAG_JOB_RESET]) and system back leave
- *   the tool ([onReset] then [onLeave]); while the result is neither saved nor shared they first
- *   show [OffkitDiscardDialog] (Keep stays, Discard leaves). While saving, leaving is ignored.
+ *   the tool ([onReset] then [onLeave]); while the result is not saved they first show
+ *   [OffkitDiscardDialog] (Keep stays, Discard leaves), also after a share (Android reports no
+ *   result for a share sheet, so only a save protects a result). While saving, leaving is ignored.
  * - With [noGainAsError], a `Done` whose `bytes >= originalBytes` shows the no-gain card instead
  *   (`ic_warning`, `error_no_gain_*`, [inputName] and [inputBytes], primary
  *   `action_choose_another`); its primary button, Back and system back call [onReset].
@@ -79,7 +80,7 @@ fun OffkitJobFlow(
     saveError: String?,
     onSaveErrorShown: () -> Unit,
     shareRequest: ShareRequest?,
-    onShareHandled: (Boolean) -> Unit,
+    onShareHandled: () -> Unit,
     onCancel: () -> Unit,
     onSave: (Uri?) -> Unit,
     onShare: () -> Unit,
