@@ -313,6 +313,99 @@ object Fixtures {
         return f
     }
 
+    /** One page of [quadrantPdf]: [width]x[height] pt, MediaBox origin ([originX], [originY]), `/Rotate` [rotate]. */
+    data class QuadrantPage(
+        val width: Float,
+        val height: Float,
+        val rotate: Int = 0,
+        val originX: Float = 0f,
+        val originY: Float = 0f,
+    )
+
+    /**
+     * One page per entry of [pages], each with four solid vector rectangles (`rg … re f`) in the
+     * quadrants of the UNROTATED page: top-left [RED], top-right [GREEN], bottom-left [BLUE],
+     * bottom-right [YELLOW] ("top" = larger PDF y). Each rectangle is inset by `m = min(w, h) / 10`
+     * from the page edges and from the centre lines, so a band of width m along the edges and a
+     * cross of width 2m through the centre stay white.
+     */
+    fun quadrantPdf(dir: File, name: String, pages: List<QuadrantPage>): File {
+        val f = File(dir, name)
+        buildPdf { doc ->
+            for (p in pages) {
+                val (w, h, rot, ox, oy) = p
+                val m = minOf(w, h) / 10f
+                val hw = w / 2f
+                val hh = h / 2f
+                fun rect(rgb: String, x: Float, y: Float) =
+                    "$rgb rg ${num(ox + x)} ${num(oy + y)} ${num(hw - 2 * m)} ${num(hh - 2 * m)} re f\n"
+                val content = rect("1 0 0", m, hh + m) + rect("0 1 0", hw + m, hh + m) +
+                    rect("0 0 1", m, m) + rect("1 1 0", hw + m, m)
+                val res = doc.newDictionary()
+                try {
+                    val page = doc.addPage(Rect(ox, oy, ox + w, oy + h), rot, res, content)
+                    try { doc.insertPage(-1, page) } finally { page.destroy() }
+                } finally {
+                    res.destroy()
+                }
+            }
+        }.save(f)
+        return f
+    }
+
+    /**
+     * One [size]x[size] pt page whose content is [fills] full-page solid fills (alternating red and
+     * green, ending on green): cheap to store (it deflates well), slow to draw at a large scale.
+     */
+    fun manyFillsPdf(dir: File, name: String, fills: Int, size: Float = 500f): File {
+        val f = File(dir, name)
+        buildPdf { doc ->
+            val sb = StringBuilder(fills * 24)
+            for (i in 0 until fills) {
+                sb.append(if ((fills - i) % 2 == 1) "0 1 0 rg " else "1 0 0 rg ")
+                sb.append("0 0 ${num(size)} ${num(size)} re f\n")
+            }
+            val res = doc.newDictionary()
+            try {
+                val page = doc.addPage(Rect(0f, 0f, size, size), 0, res, sb.toString())
+                try { doc.insertPage(-1, page) } finally { page.destroy() }
+            } finally {
+                res.destroy()
+            }
+        }.save(f)
+        return f
+    }
+
+    /**
+     * One empty white 200x200 pt page carrying a Square annotation over MuPDF page rect
+     * (50, 50)-(150, 150) (origin top-left) with blue border and blue interior, appearance generated.
+     */
+    fun squareAnnotationPdf(dir: File, name: String): File {
+        val f = File(dir, name)
+        val built = buildPdf { doc ->
+            val res = doc.newDictionary()
+            try {
+                val pageObj = doc.addPage(Rect(0f, 0f, 200f, 200f), 0, res, "")
+                try { doc.insertPage(-1, pageObj) } finally { pageObj.destroy() }
+            } finally {
+                res.destroy()
+            }
+            val page = doc.loadPage(0) as com.artifex.mupdf.fitz.PDFPage
+            try {
+                val annot = page.createAnnotation(com.artifex.mupdf.fitz.PDFAnnotation.TYPE_SQUARE)
+                annot.rect = Rect(50f, 50f, 150f, 150f)
+                annot.color = floatArrayOf(0f, 0f, 1f)
+                annot.interiorColor = floatArrayOf(0f, 0f, 1f)
+                annot.update()
+                page.update()
+            } finally {
+                page.destroy()
+            }
+        }
+        built.save(f)
+        return f
+    }
+
     /**
      * One page with a text line and one image XObject whose dictionary says [dictWidth]x[dictHeight],
      * 8 bpc DeviceRGB, `/Filter /[filter]`, and whose stream is exactly [data] (not checked).
