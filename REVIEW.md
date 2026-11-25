@@ -462,5 +462,18 @@ Findings from the T22 review:
 | T22R-2 | Info (older) | An engine death during the cancel grace returns the death error, not `Cancelled`. | Open. |
 | T22R-3 | Info | KDoc says RSS is sampled on the first wake-up after a gap; not during the cancel grace. | Fixed (T24). |
 | T22R-4 | Info | `FROZEN_DEATH_GAP_MS` is a fixed constant, not a constructor parameter like `freezeGapMs`. Production is unaffected. | Open. |
-| T22R-5 | Info | `rssIsSampledOnTheFirstTickAfterAGapAndTheCapStillKills` depends on real time and could fail on a heavily loaded machine. | Fixed (T24): the test uses a hand-moved clock. |
+| T22R-5 | Info | `rssIsSampledOnTheFirstTickAfterAGapAndTheCapStillKills` depends on real time and could fail on a heavily loaded machine. | Fixed (T24): the clock jump is driven by the first memory sample, with no timer thread and no wall-time assertion; the test still polls in real time. |
 | T22R-6 | Info | Untested: a death more than 5 s after a long gap; deadline shifts for 2 to 10 s gaps; several short gaps in a row; the cancel-grace interaction. | Open. |
+
+### Review of T24 (the T22R-1 fix)
+
+Independent review of `git diff 0c7da77 deb6112`: **sound to ship**; T22R-1 is fixed and the PI4R-1 fix holds. Nothing above Low. Gates on `main` at `b345ce4`: `VERIFY OK`; `tests=31 failures=0 errors=0`, `SMOKE OK`; `ISOLATION SMOKE OK`.
+
+| Id | Severity | What | Status |
+|---|---|---|---|
+| T24R-1 | Low | `wake()` stores `lastWake` before the `inBackground()` binder call and does not read the clock again, so a slow call (seconds, on a struggling system) looks like a freeze on the next wake-up and shifts the deadlines, up to the existing 1 h per-call budget. A file cannot cause it without already controlling the process. Suggested: read the clock again after sampling; sample before `sentAt` at attempt start. | Open. |
+| T24R-2 | Info | The background sample can be about 1 s old: return to the app, a pause over 2 s within that second, then a real crash within 5 s gives `EngineUnavailable`. Costs one manual retry. | Accepted. |
+| T24R-3 | Info | `backgrounded()` catches only `RuntimeException`; an `Error` would leave the engine unwatched (already true of other callbacks). | Open. |
+| T24R-4 | Info | `nextCachedSample = now` after a gap has no effect with production values. | Open. |
+| T24R-5 | Info | No test counts `inBackground` calls or covers a throwing or slow callback, or the stale-sample boundary. | Open. |
+| T24R-6 | Info | One KDoc line is not wrapped; the cancel-grace clause omits an engine death. | Open. |
