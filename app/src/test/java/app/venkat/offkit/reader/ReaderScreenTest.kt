@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -141,7 +142,9 @@ class ReaderScreenTest {
         rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals(name)
     }
 
-    private fun rendered(@Suppress("UNUSED_PARAMETER") index: Int, value: Boolean = true) = SemanticsMatcher.expectValue(ReaderPageRendered, value)
+    /** Matches the item of page [index] whose base bitmap is (or, with [value] false, is not) drawn. */
+    private fun rendered(index: Int, value: Boolean = true) =
+        hasTestTag(readerPageTag(index)) and SemanticsMatcher.expectValue(ReaderPageRendered, value)
 
     private fun isRendered(index: Int): Boolean =
         rule.onAllNodesWithTag(readerPageTag(index)).fetchSemanticsNodes()
