@@ -96,7 +96,7 @@ class PdfReader internal constructor(context: Context, private val jobs: PdfJobs
      *
      * Failures (the directory is deleted): non-`content:` or unreadable Uri: `Io`; the engine's
      * `Encrypted`, `Corrupt`, `OutOfMemory`, `EngineCrashed`, ...; a document with no pages or with
-     * an invalid page size: `Corrupt`. Cancelling the caller deletes the directory and rethrows.
+     * an invalid page size: `Corrupt`. Page sizes are passed through [sanePageDims]. Cancelling the caller deletes the directory and rethrows.
      */
     suspend fun open(uri: Uri): ReaderOpenResult {
         if (!UriIo.isContentUri(uri)) return ReaderOpenResult.Failed(PdfError.Io(IOException("Not a content Uri")))
@@ -120,14 +120,12 @@ class PdfReader internal constructor(context: Context, private val jobs: PdfJobs
             return when (info) {
                 is PdfPageInfo.Err -> ReaderOpenResult.Failed(info.error)
                 is PdfPageInfo.Ok -> {
-                    val pages = info.pages
-                    val valid = pages.isNotEmpty() && pages.size <= RenderLimits.MAX_PAGES &&
-                        pages.all { it.widthPt.isFinite() && it.heightPt.isFinite() && it.widthPt > 0f && it.heightPt > 0f }
-                    if (!valid) {
+                    val pages = info.pages.map { sanePageDims(it) }
+                    if (pages.isEmpty() || pages.size > RenderLimits.MAX_PAGES || pages.any { it == null }) {
                         ReaderOpenResult.Failed(PdfError.Corrupt)
                     } else {
                         keep = true
-                        ReaderOpenResult.Opened(ReaderDocument(name, pages.toList(), dir, file))
+                        ReaderOpenResult.Opened(ReaderDocument(name, pages.filterNotNull(), dir, file))
                     }
                 }
             }
@@ -220,6 +218,30 @@ class PdfReader internal constructor(context: Context, private val jobs: PdfJobs
     }
 
     companion object {
+        /** Smallest page side kept by [sanePageDims], in PDF points. */
+        const val MIN_PAGE_PT = 1f
+
+        /** Largest page side kept by [sanePageDims], in PDF points: 200 times PDF's 14,400 pt limit (UserUnit). */
+        const val MAX_PAGE_PT = 200f * 14_400f
+
+        /**
+         * The page size the reader works with for an engine-reported [dims], or null if [dims] is
+         * not a size at all (a side not finite or not > 0: the reply is broken, the document is
+         * `Corrupt`). Each side is clamped to `[MIN_PAGE_PT, MAX_PAGE_PT]`.
+         *
+         * Why clamp rather than refuse: a real document may hold one absurd page among good ones,
+         * and the rest should still open. Within this range every product the reader computes
+         * (scales, pixel counts, item sizes) is finite and fits a Long, whatever the reply held.
+         * A side clamped down only makes requests cover part of the real page, which the engine
+         * accepts; a side clamped up (under 1 pt, not a printable page) may make the engine refuse
+         * that page's requests, which shows as a per-page error, never a crash.
+         */
+        fun sanePageDims(dims: PageDims): PageDims? {
+            val w = dims.widthPt
+            val h = dims.heightPt
+            if (!w.isFinite() || !h.isFinite() || w <= 0f || h <= 0f) return null
+            return PageDims(w.coerceIn(MIN_PAGE_PT, MAX_PAGE_PT), h.coerceIn(MIN_PAGE_PT, MAX_PAGE_PT))
+        }
         /** Prefix of reader directories under `cacheDir/jobs`. */
         const val READER_DIR_PREFIX = "reader-"
         private const val DOCUMENT_NAME = "document.pdf"

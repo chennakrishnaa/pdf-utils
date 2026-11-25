@@ -32,6 +32,7 @@ import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.feature.reader.ReaderPageDetailShown
 import app.venkat.offkit.feature.reader.ReaderPageRendered
 import app.venkat.offkit.feature.reader.ReaderPlanner
@@ -250,6 +251,38 @@ class ReaderScreenTest {
         CoreTestSupport.idleUntil(rule, message = "settle") { true }
         val after = renderRequests().drop(before)
         assertTrue("detail requested at zoom 1: $after", after.none { it.scale > base.scale * 1.01f })
+    }
+
+    /**
+     * RDR-1: hostile page sizes (a 10 x 14,400 pt scroll, a 14,400 x 10 pt strip, 1 x 100,000 pt,
+     * Float.MAX-ish sides) open, lay out in bounded items and get rendered, without crashing.
+     */
+    @Test
+    fun extremePageSizesOpenAndRenderWithoutCrashing() {
+        fake.readerPages = listOf(
+            PageDims(10f, 14_400f),
+            PageDims(14_400f, 10f),
+            PageDims(1f, 100_000f),
+            PageDims(Float.MAX_VALUE / 2, 10f),
+            PageDims(10f, Float.MAX_VALUE / 2),
+            PageDims(Float.MAX_VALUE, Float.MAX_VALUE),
+            a4,
+        )
+        openDocument("scroll.pdf")
+        rule.onNodeWithTag(TAG_READER_INDICATOR).assertTextEquals(indicator(1, fake.readerPages.size))
+        for (index in fake.readerPages.indices) {
+            rule.onNode(hasScrollToIndexAction()).performScrollToIndex(index)
+            rule.waitForIdle()
+            waitUntilRendered(index)
+            val size = rule.onNodeWithTag(readerPageTag(index)).fetchSemanticsNode().size
+            assertTrue("page $index height ${size.height}", size.height in 1..ReaderPlanner.MAX_ITEM_HEIGHT_PX)
+            assertTrue("page $index width ${size.width}", size.width >= 1)
+        }
+        for (request in renderRequests()) {
+            val dims = PdfReader.sanePageDims(fake.readerPages[request.page])!!
+            assertNull(RenderLimits.check(request, dims))
+            assertNull(RenderLimits.check(request, fake.readerPages[request.page]))
+        }
     }
 
     @Test

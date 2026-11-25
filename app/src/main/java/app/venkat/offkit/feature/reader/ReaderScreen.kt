@@ -51,7 +51,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.layout
@@ -88,7 +92,6 @@ import app.venkat.offkit.ui.reader.rememberZoomableListState
 import app.venkat.offkit.ui.theme.OffkitDimens
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
-import kotlin.math.roundToInt
 
 /** Test tag of the reader's page list (the [ZoomableList]). */
 const val TAG_READER_LIST = "reader_list"
@@ -313,7 +316,7 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val density = LocalDensity.current
             val gapPx = with(density) { PageGap.roundToPx() }
-            val itemWidthPx = (constraints.maxWidth - 2 * gapPx).coerceAtLeast(1)
+            val itemWidthPx = (constraints.maxWidth - 2 * gapPx).coerceIn(1, ReaderPlanner.MAX_ITEM_WIDTH_PX)
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             val geometry = remember(doc, itemWidthPx, gapPx) { PageGeometry(doc.pages, itemWidthPx, gapPx) }
 
@@ -349,6 +352,7 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
                         state = flow.collectAsState().value,
                         widthPx = itemWidthPx,
                         heightPx = geometry.pageHeights[index],
+                        pageRect = geometry.pageRects[index],
                         gapPx = gapPx,
                         onRetry = { vm.retry(index) },
                     )
@@ -358,37 +362,35 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     }
 }
 
-/** Item geometry of a document laid out [itemWidthPx] wide, with [gapPx] below each page and at each side. */
+/**
+ * Item geometry of a document laid out [itemWidthPx] wide, with [gapPx] below each page and at each
+ * side. Item sizes and page rectangles come from [ReaderPlanner] (bounded for any page size).
+ */
 private class PageGeometry(pages: List<PageDims>, val itemWidthPx: Int, private val gapPx: Int) {
     val pageHeights: IntArray = IntArray(pages.size) { ReaderPlanner.itemHeightPx(pages[it], itemWidthPx) }
+    val pageRects: List<ItemRect> = List(pages.size) { ReaderPlanner.pageRect(pages[it], itemWidthPx) }
 
-    /**
-     * The on-screen part of each laid-out page, in unscaled item pixels. The list's layout is in
-     * unscaled content pixels and exactly as tall as the zoomed viewport ([ZoomableList]); its
-     * horizontal visible range is `[offsetX / scale, (offsetX + W) / scale]`, and items start
-     * [gapPx] from its left edge.
-     */
+    /** The on-screen part of each laid-out page, in unscaled item pixels ([ReaderPlanner.visibleRect]). */
     fun visible(info: LazyListLayoutInfo, zoom: ZoomableListState): List<VisiblePage> {
         val scale = zoom.scale
+        val offsetX = zoom.offsetX
         val width = info.viewportSize.width
-        val left = (zoom.offsetX / scale - gapPx).coerceIn(0f, itemWidthPx.toFloat())
-        val right = ((zoom.offsetX + width) / scale - gapPx).coerceIn(0f, itemWidthPx.toFloat())
         return info.visibleItemsInfo.mapNotNull { item ->
             val index = item.index
             if (index !in pageHeights.indices) return@mapNotNull null
-            val h = pageHeights[index].toFloat()
-            val top = (info.viewportStartOffset - item.offset).toFloat().coerceIn(0f, h)
-            val bottom = (info.viewportEndOffset - item.offset).toFloat().coerceIn(0f, h)
-            val rect = ItemRect(left, top, right, bottom)
-            if (rect.isEmpty) null else VisiblePage(index, rect)
+            ReaderPlanner.visibleRect(
+                itemWidthPx, pageHeights[index], gapPx, scale, offsetX, width,
+                info.viewportStartOffset, info.viewportEndOffset, item.offset,
+            )?.let { VisiblePage(index, it) }
         }
     }
 }
 
 /**
  * One page: exactly [widthPx] x [heightPx] pixels (the planner's item size) followed by a [gapPx]
- * gap. Draws the base bitmap stretched to the page, then the detail over its rectangle; a white
- * page with a spinner while loading; a Retry action when the render failed.
+ * gap. The page itself is [pageRect] inside it (the whole width unless the page is very tall, then
+ * centred). Draws the base bitmap stretched to [pageRect], then the detail over its rectangle; a
+ * white page with a spinner while loading; a Retry action when the render failed.
  */
 @Composable
 private fun ReaderPage(
@@ -397,6 +399,7 @@ private fun ReaderPage(
     state: ReaderPageState,
     widthPx: Int,
     heightPx: Int,
+    pageRect: ItemRect,
     gapPx: Int,
     onRetry: () -> Unit,
 ) {
@@ -411,7 +414,6 @@ private fun ReaderPage(
                 val placeable = measurable.measure(Constraints.fixed(widthPx, heightPx))
                 layout(widthPx, heightPx + gapPx) { placeable.place(0, 0) }
             }
-            .background(Color.White)
             .semantics {
                 contentDescription = description
                 readerPageRendered = base != null
@@ -420,27 +422,13 @@ private fun ReaderPage(
             .testTag(readerPageTag(index)),
     ) {
         Canvas(Modifier.matchParentSize()) {
-            if (baseImage != null) {
-                drawImage(
-                    baseImage,
-                    dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
-                    filterQuality = FilterQuality.Medium,
-                )
+            val page = ReaderPlanner.drawRect(pageRect, widthPx, size.width)
+            if (page != null) {
+                drawRect(Color.White, Offset(page.left.toFloat(), page.top.toFloat()), Size((page.right - page.left).toFloat(), (page.bottom - page.top).toFloat()))
+                if (baseImage != null) drawBitmap(baseImage, page)
             }
-            if (detail != null && detailImage != null && detail.itemWidthPx > 0) {
-                val k = size.width / detail.itemWidthPx
-                val l = (detail.rect.left * k).roundToInt()
-                val t = (detail.rect.top * k).roundToInt()
-                val r = (detail.rect.right * k).roundToInt()
-                val b = (detail.rect.bottom * k).roundToInt()
-                if (r > l && b > t) {
-                    drawImage(
-                        detailImage,
-                        dstOffset = IntOffset(l, t),
-                        dstSize = IntSize(r - l, b - t),
-                        filterQuality = FilterQuality.Medium,
-                    )
-                }
+            if (detail != null && detailImage != null) {
+                ReaderPlanner.drawRect(detail.rect, detail.itemWidthPx, size.width)?.let { drawBitmap(detailImage, it) }
             }
         }
         when {
@@ -453,6 +441,15 @@ private fun ReaderPage(
             )
         }
     }
+}
+
+private fun DrawScope.drawBitmap(image: ImageBitmap, dst: DrawRect) {
+    drawImage(
+        image,
+        dstOffset = IntOffset(dst.left, dst.top),
+        dstSize = IntSize(dst.right - dst.left, dst.bottom - dst.top),
+        filterQuality = FilterQuality.Medium,
+    )
 }
 
 /** A failed page with nothing to show: a short message and a Retry button. */
