@@ -86,20 +86,19 @@ fun openSavedPdf(context: Context, uri: Uri): Boolean =
     launchOrExplain(context, R.string.core_no_pdf_viewer) { context.startActivity(openPdfIntent(uri)) }
 
 /**
- * Launches the share sheet for each new [request] (guarded by [launchOrExplain]) and reports
- * whether it launched through [onHandled] (e.g. `JobViewModel.onShareHandled`).
+ * Launches the share sheet for each new [request] (guarded by [launchOrExplain]), then calls
+ * [onHandled] (e.g. `JobViewModel.onShareHandled`), whether or not it launched.
  */
 @Composable
-fun ShareRequestEffect(request: ShareRequest?, onHandled: (launched: Boolean) -> Unit) {
+fun ShareRequestEffect(request: ShareRequest?, onHandled: () -> Unit) {
     val context = LocalContext.current
     val callback by rememberUpdatedState(onHandled)
     LaunchedEffect(request) {
         if (request != null) {
-            callback(
-                launchOrExplain(context, R.string.core_no_share_target) {
-                    context.startActivity(sharePdfIntent(request.uri, request.name))
-                },
-            )
+            launchOrExplain(context, R.string.core_no_share_target) {
+                context.startActivity(sharePdfIntent(request.uri, request.name))
+            }
+            callback()
         }
     }
 }

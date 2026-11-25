@@ -592,22 +592,28 @@ class JobViewModelTest {
         assertArrayEquals(fake.outputContent, copy.readBytes())
         assertTrue(state().hasUnsavedWork())
 
-        vm.onShareHandled(launched = true)
+        val before = state()
+        vm.onShareHandled()
         assertNull(vm.shareRequest.value)
-        assertTrue((state() as JobUiState.Done).shared)
-        assertFalse(state().hasUnsavedWork())
+        // RD-1: a share is not a save; the result stays unsaved.
+        assertEquals(before, state())
+        assertTrue(state().hasUnsavedWork())
         // Not wiped right after sharing: the receiving app may still be reading it.
         assertEquals(1, sharedFiles().size)
     }
 
     @Test
-    fun shareNotLaunchedDoesNotMarkShared() {
+    fun shareThenSaveIsSavedAndShareAfterSaveKeepsItSaved() {
         runToReady()
-        vm.share()
-        CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
-        vm.onShareHandled(launched = false)
-        assertFalse((state() as JobUiState.Done).shared)
+        shareOnce()
         assertTrue(state().hasUnsavedWork())
+        val dest = fileDest("after-share.pdf")
+        vm.save(dest)
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
+        assertFalse(state().hasUnsavedWork())
+        shareOnce()
+        assertEquals(dest, (state() as JobUiState.Done).savedUri)
+        assertFalse(state().hasUnsavedWork())
     }
 
     @Test
@@ -615,7 +621,7 @@ class JobViewModelTest {
         runToReady()
         vm.share()
         CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
-        vm.onShareHandled(launched = true)
+        vm.onShareHandled()
         assertEquals(1, sharedFiles().size)
         vm.merge(listOf(input()))
         CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
@@ -626,7 +632,7 @@ class JobViewModelTest {
         vm.share()
         CoreTestSupport.idleUntil(message = "share request") { vm.shareRequest.value != null }
         val request = vm.shareRequest.value!!
-        vm.onShareHandled(launched = true)
+        vm.onShareHandled()
         return request
     }
 

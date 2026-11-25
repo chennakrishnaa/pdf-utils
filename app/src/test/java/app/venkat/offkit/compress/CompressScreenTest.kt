@@ -542,18 +542,88 @@ class CompressScreenTest {
         assertEquals(Intent.ACTION_CREATE_DOCUMENT, shadowOf(rule.activity).nextStartedActivity?.action)
     }
 
-    @Test
-    fun shareButtonRequestsShare() {
-        choose(pdf("a.pdf"))
-        runToReady()
+    /** Taps Share and returns the chooser it launched (asserting it is the PDF share intent). */
+    private fun shareAndGetChooser(): Intent {
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_JOB_SHARE)
-        CoreTestSupport.idleUntil(rule, message = "shared") { (state() as? JobUiState.Done)?.shared == true }
+        CoreTestSupport.idleUntil(rule, message = "share sheet launched") {
+            shadowOf(rule.activity).peekNextStartedActivity() != null
+        }
         rule.waitForIdle()
-        assertNotNull(shadowOf(rule.activity).nextStartedActivity)
+        val chooser = shadowOf(rule.activity).nextStartedActivity!!
         assertNull(vm.shareRequest.value)
-        rule.onNodeWithText(str(R.string.result_shared_only)).assertExists()
+        assertEquals(Intent.ACTION_CHOOSER, chooser.action)
+        assertTrue(chooser.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        val send = chooser.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)!!
+        assertEquals(Intent.ACTION_SEND, send.action)
+        assertEquals("application/pdf", send.type)
+        val stream = send.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)!!
+        assertEquals(app.packageName + ".share", stream.authority)
+        assertEquals("a-compressed.pdf", stream.lastPathSegment)
+        assertTrue(send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        return chooser
+    }
+
+    /**
+     * RD-1: Share launches the chooser, but Android reports nothing back, so a dismissed sheet
+     * looks like a completed one. Only a save protects a result: after Share the status still
+     * reads "not saved", the button is still Discard, and Discard / Close / system back ask.
+     */
+    @Test
+    fun shareLaunchesChooserButUnsavedResultStillAsksBeforeLeaving() {
+        choose(pdf("a.pdf"))
+        runToReady()
+        shareAndGetChooser()
+        rule.onNodeWithText(str(R.string.result_not_saved)).assertExists()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_discard))
+        assertTrue(state().isReadyToSave)
+
+        click(TAG_JOB_RESET)
+        rule.onNodeWithText(str(R.string.discard_title)).assertExists()
+        rule.onNodeWithText(str(R.string.discard_body)).assertExists()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_ACTION_CLOSE).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText(str(R.string.discard_title)).assertExists()
+        rule.onNodeWithTag(TAG_LEAVE_STAY).performClick()
+        rule.waitForIdle()
+        // Sharing again (one reused copy) changes nothing either.
+        shareAndGetChooser()
+        systemBack()
+        rule.onNodeWithText(str(R.string.discard_title)).assertExists()
+        assertEquals(0, backCalls)
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).performClick()
+        rule.waitForIdle()
+        assertEquals(1, backCalls)
+        assertEquals(JobUiState.Idle, state())
+    }
+
+    /** After a save, leaving does not ask, whether Share was used before or after the save. */
+    @Test
+    fun shareBeforeAndAfterSaveThenDoneLeavesWithoutDialog() {
+        choose(pdf("a.pdf"))
+        runToReady()
+        shareAndGetChooser()
+        saveTo(ByteArrayOutputStream())
         rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
+        shareAndGetChooser()
+        rule.onNodeWithText(str(R.string.result_not_saved)).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_done))
+        click(TAG_JOB_RESET)
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertDoesNotExist()
+        assertEquals(1, backCalls)
+    }
+
+    @Test
+    fun shareBeforeSaveThenSystemBackLeavesWithoutDialog() {
+        choose(pdf("a.pdf"))
+        runToReady()
+        shareAndGetChooser()
+        saveTo(ByteArrayOutputStream())
+        systemBack()
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertDoesNotExist()
+        assertEquals(1, backCalls)
     }
 
     @Test

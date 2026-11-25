@@ -75,7 +75,6 @@ class ComponentsTest {
         assertEquals(true, done.copy(saving = true).hasUnsavedWork())
         assertEquals(true, done.copy(saving = true, savedUri = android.net.Uri.parse("content://x/1")).hasUnsavedWork())
         assertEquals(false, done.copy(savedName = "a.pdf", savedUri = android.net.Uri.parse("content://x/1")).hasUnsavedWork())
-        assertEquals(false, done.copy(shared = true).hasUnsavedWork())
         assertEquals(false, JobUiState.Failed(app.venkat.offkit.engine.PdfError.Encrypted).hasUnsavedWork())
     }
 
@@ -173,10 +172,11 @@ class ComponentsTest {
     fun shareWithoutTargetSaysSoNotFilePicker() {
         shadowOf(rule.activity.application).checkActivities(true)
         val request = ShareRequest(Uri.parse("content://app.venkat.offkit.test/doc.pdf"), "doc.pdf")
-        var handled: Boolean? = null
-        show { ShareRequestEffect(request) { handled = it } }
+        var handled = 0
+        show { ShareRequestEffect(request) { handled++ } }
         rule.waitForIdle()
-        assertEquals(false, handled)
+        // Handled once (the request is cleared) even though nothing launched.
+        assertEquals(1, handled)
         val msg = rule.activity.getString(R.string.core_no_share_target)
         assertEquals("No app on this device can share this file.", msg)
         assertEquals(msg, ShadowToast.getTextOfLatestToast())

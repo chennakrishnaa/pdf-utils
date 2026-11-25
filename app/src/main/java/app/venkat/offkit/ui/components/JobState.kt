@@ -24,7 +24,6 @@ sealed interface JobUiState {
      *   started, reset, invalidated, shared or cancelled meanwhile.
      * @property savedName display name the provider reports for the latest successful save, if any.
      * @property savedUri destination of the latest successful save, or null if never saved.
-     * @property shared true once a share sheet was launched for this output.
      */
     data class Done(
         val pages: Int,
@@ -34,7 +33,6 @@ sealed interface JobUiState {
         val saving: Boolean = false,
         val savedName: String? = null,
         val savedUri: Uri? = null,
-        val shared: Boolean = false,
     ) : JobUiState
 
     /** Job failed with [error]; map it to text with [pdfErrorMessage]. */
@@ -49,12 +47,13 @@ val JobUiState.isSaving: Boolean get() = this is JobUiState.Done && saving
 
 /**
  * True when leaving the screen now would lose something: a job in progress, a save in progress,
- * or a result that was neither saved nor shared. The job flow uses it to decide whether leaving
- * asks for confirmation.
+ * or a result that was never saved. Sharing does not count: Android reports no result for a share
+ * sheet, so a dismissed sheet cannot be told apart from a completed one; only a save protects a
+ * result. The job flow uses it to decide whether leaving asks for confirmation.
  */
 fun JobUiState.hasUnsavedWork(): Boolean = when (this) {
     is JobUiState.Running -> true
-    is JobUiState.Done -> saving || (savedUri == null && !shared)
+    is JobUiState.Done -> saving || savedUri == null
     else -> false
 }
 

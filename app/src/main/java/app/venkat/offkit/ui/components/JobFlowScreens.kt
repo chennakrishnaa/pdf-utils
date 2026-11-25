@@ -179,13 +179,13 @@ fun OffkitProcessingScreen(
  *   tile with `ic_check`; `result_smaller` with `result_sizes` under it when the output is
  *   smaller than a known `originalBytes`, otherwise `pages_count` with the size under it.
  * - File card: `suggestedName` and `result_suggested_name`.
- * - Status: `result_not_saved` (unsaved, unshared), `result_shared_only` (shared only), or a green
+ * - Status: `result_not_saved` (not saved, whether or not it was shared), or a green
  *   row "`result_saved_as`" with a trailing `ic_open` + `action_open` button calling [onOpen]
  *   with the saved Uri.
  * - Bottom bar: primary `action_save_as` / `action_save_copy` (tag [TAG_JOB_SAVE]) calling
  *   [onSave]; while saving it is disabled, reads `core_saving` and is tagged [TAG_JOB_SAVING].
  *   Below: tonal `action_share` (tag [TAG_JOB_SHARE]) calling [onShare], and a text button
- *   `action_discard` (unsaved and unshared) or `action_done` (tag [TAG_JOB_RESET]) calling
+ *   `action_discard` (not saved) or `action_done` (saved) (tag [TAG_JOB_RESET]) calling
  *   [onFinish]. Share and the text button are disabled while saving.
  * - Snackbars of [snackbarHostState] (save failures) appear above the bottom bar.
  */
@@ -204,7 +204,7 @@ fun OffkitResultScreen(
     val colors = MaterialTheme.colorScheme
     val success = colorResource(R.color.offkit_success_container)
     val onSuccess = colorResource(R.color.offkit_on_success_container)
-    val unsaved = state.savedUri == null && !state.shared
+    val unsaved = state.savedUri == null
     OffkitScaffold(
         title = title,
         navIcon = OffkitNavIcon.Close,
@@ -313,7 +313,7 @@ fun OffkitResultScreen(
             }
         } else {
             Text(
-                text = stringResource(if (state.shared) R.string.result_shared_only else R.string.result_not_saved),
+                text = stringResource(R.string.result_not_saved),
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.onSurfaceVariant,
                 modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 12.dp),
@@ -487,12 +487,6 @@ private fun ProcessingPreview() {
 @Composable
 private fun ResultUnsavedPreview() {
     OffkitTheme { OffkitResultScreen(stringResource(R.string.tool_compress_title), previewDone, {}, {}, {}, {}, {}) }
-}
-
-@Preview(widthDp = 412, heightDp = 915)
-@Composable
-private fun ResultSharedOnlyPreview() {
-    OffkitTheme { OffkitResultScreen(stringResource(R.string.tool_merge_title), previewDone.copy(originalBytes = null, shared = true), {}, {}, {}, {}, {}) }
 }
 
 @Preview(widthDp = 412, heightDp = 915)
