@@ -84,8 +84,16 @@ data class ReaderLimits(
 
 /** Pure geometry and planning of reader renders. */
 object ReaderPlanner {
-    /** Zoom at or below which no detail is rendered. */
+    /**
+     * Zoom at or below which a detail is rendered only if the base is softer than
+     * [ZOOM1_MIN_SHARPNESS]. On wide items (tablets, landscape, tall pages) the base is capped by
+     * [ReaderLimits.basePagePixels] below the screen's resolution, so the visible part is rendered
+     * at the fit scale too; on a phone in portrait the base is already sharp and no detail is made.
+     */
     private const val NO_DETAIL_ZOOM = 1.001f
+
+    /** Least sharpness (base bitmap pixels per screen pixel) accepted at zoom 1 without a detail. */
+    const val ZOOM1_MIN_SHARPNESS = 0.9f
 
     /** A detail must be at least this much sharper than the base to be worth rendering. */
     private const val MIN_DETAIL_GAIN = 1.05f
@@ -221,16 +229,23 @@ object ReaderPlanner {
 
     /**
      * The detail render of [page] for its on-screen [visible] rect at [zoom], or null when none is
-     * needed (zoom about 1, nothing visible, or the base is already as sharp). The rect plus
+     * needed (nothing visible; the base is already as sharp, within [MIN_DETAIL_GAIN]; or zoom about
+     * 1 and the base at least [ZOOM1_MIN_SHARPNESS] as sharp as the screen). The rect plus
      * [ReaderLimits.detailMargin] is rendered at `fitScale * zoom`, capped at
      * [RenderLimits.MAX_SCALE]; if that exceeds [ReaderLimits.detailPixels], the margin is dropped and
      * then the scale lowered (the rect is never cropped, so the result always covers [visible]).
+     *
+     * Sharpness (`scale / (fitScale * zoom)`) is 1 unless a cap applies: e.g. at 5x on a 2,544 px
+     * tablet item an A4 page needs 21 px/pt, so the detail is capped at [RenderLimits.MAX_SCALE] 16
+     * (sharpness about 0.75). That is accepted: it is still about 1,150 dpi of page.
      */
     fun detailPlan(page: Int, dims: PageDims, itemWidthPx: Int, zoom: Float, visible: ItemRect, limits: ReaderLimits): PlannedRender? {
-        if (!zoom.isFinite() || zoom <= NO_DETAIL_ZOOM || itemWidthPx < 1) return null
+        if (!zoom.isFinite() || itemWidthPx < 1) return null
         val fit = fitScale(dims, itemWidthPx)
         val baseScale = baseRequest(page, dims, itemWidthPx, limits.basePagePixels).scale
         val target = min(fit * max(zoom, 1f), RenderLimits.MAX_SCALE)
+        // About zoom 1: only when the base is clearly softer than the screen needs.
+        if (zoom <= NO_DETAIL_ZOOM && baseScale >= target * ZOOM1_MIN_SHARPNESS) return null
         val pr = pageRect(dims, itemWidthPx)
         // The visible part of the page, relative to the page's top-left corner.
         val pw = pr.width

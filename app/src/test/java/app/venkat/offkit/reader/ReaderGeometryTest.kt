@@ -88,6 +88,36 @@ class ReaderGeometryTest {
         }
     }
 
+    /** Bitmap pixels per screen pixel of the sharpest planned render of page 0 for a [viewportHeight] band. */
+    private fun sharpnessAtZoomOne(dims: PageDims, width: Int, viewportHeight: Int): Pair<Float, Boolean> {
+        val h = ReaderPlanner.itemHeightPx(dims, width)
+        val top = maxOf(0, h / 2 - viewportHeight / 2).toFloat()
+        val band = ItemRect(0f, top, width.toFloat(), minOf(h.toFloat(), top + viewportHeight))
+        val plan = ReaderPlanner.plan(listOf(dims), ReaderViewport(width, 1f, listOf(VisiblePage(0, band))), limits)
+        val detail = plan.firstOrNull { it.kind == RenderKind.DETAIL }
+        detail?.let { assertTrue(it.covers.contains(band, slack = 0.5f)) }
+        val scale = (detail ?: plan.first { it.kind == RenderKind.BASE }).request.scale
+        return scale / ReaderPlanner.fitScale(dims, width) to (detail != null)
+    }
+
+    @Test
+    fun zoomOneIsSharpOnWideItemsAndPhonesGetNoDetail() {
+        val a4 = PageDims(595f, 842f)
+        val tall = PageDims(595f, 595f * 2.5f)
+        // Item width to a typical viewport height: phone portrait, tablet portrait, phone landscape, tablet landscape.
+        val screens = mapOf(1064 to 2200, 1800 to 2700, 2300 to 1000, 2544 to 1500)
+        for (dims in listOf(a4, tall)) {
+            for ((width, height) in screens) {
+                val (sharpness, _) = sharpnessAtZoomOne(dims, width, height)
+                assertTrue("$dims @ $width: sharpness $sharpness", sharpness >= ReaderPlanner.ZOOM1_MIN_SHARPNESS)
+            }
+        }
+        // A 1064 px A4 base is already sharp: no detail work on phones.
+        assertEquals(false, sharpnessAtZoomOne(a4, 1064, 2200).second)
+        // The tablet does need one (base capped at 2.5 MP).
+        assertEquals(true, sharpnessAtZoomOne(a4, 2544, 1500).second)
+    }
+
     @Test
     fun tooTallPageIsCappedNarrowedAndCentred() {
         val dims = PageDims(10f, 14_400f)

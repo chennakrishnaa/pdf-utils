@@ -65,12 +65,13 @@ data class ReaderPageState(val base: Bitmap? = null, val detail: PageDetail? = n
  * Rendering: the screen reports what it shows with [onViewport] whenever scrolling or zooming
  * settles (it may call it often; calls are coalesced, the latest wins). One worker renders, one
  * request at a time, the first missing item of [ReaderPlanner.plan] for the latest viewport:
- * visible pages' bases, then their details (zoom > 1), then neighbours' bases. A render already
+ * visible pages' bases, then their details (zoomed in, or at zoom 1 when the base is softer
+ * than the screen), then neighbours' bases. A render already
  * sent to the engine is never cancelled because it became stale (its result is dropped if no
  * longer wanted); requests not yet sent are simply never sent. Base bitmaps are kept in an LRU
  * bounded by [ReaderLimits.baseCacheBytes] (pages farthest from the viewport go first; visible
  * pages are never evicted). Each visible page has at most one detail bitmap; details of pages
- * that are no longer visible, or all of them when the zoom returns to 1, are dropped.
+ * that the plan no longer wants (not visible, or zoom back to 1 with a sharp base) are dropped.
  *
  * Bitmaps handed out are never recycled: an evicted one is just dropped and left to the GC, so the
  * screen may keep drawing it until it recomposes.
@@ -197,10 +198,12 @@ class ReaderViewModel internal constructor(
 
         fun onViewport(vp: ReaderViewport) {
             viewport = vp
-            val shown = vp.visible.map { it.index }.toSet()
-            val keepDetails = vp.zoom.isFinite() && vp.zoom > 1f
+            // Keep a page's detail only while the new plan still wants one for it (zoomed in, or a
+            // base softer than the screen at zoom 1); it is replaced when the new one arrives.
+            val wanted = ReaderPlanner.plan(doc.pages, vp, limits)
+                .filter { it.kind == RenderKind.DETAIL }.map { it.page }.toSet()
             for ((index, plan) in details.entries.toList()) {
-                if (!keepDetails || index !in shown || plan.itemWidthPx != vp.itemWidthPx) dropDetail(index)
+                if (index !in wanted || plan.itemWidthPx != vp.itemWidthPx) dropDetail(index)
             }
             wake.trySend(Unit)
         }
