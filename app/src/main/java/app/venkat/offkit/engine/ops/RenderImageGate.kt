@@ -112,37 +112,68 @@ internal object RenderImageGate {
     /** Largest decoded content stream scanned for names when narrowing. */
     const val MAX_CONTENT_SCAN_BYTES = 16 shl 20
 
+    /** Content bytes one page check scans for names; beyond, entries are checked without narrowing. */
+    const val MAX_PAGE_SCAN_BYTES = 64L shl 20
+
+    /** Longest dictionary key narrowing can match ([plainKey]). */
+    const val MAX_KEY_CHARS = 127
+
     private fun refuse(): Nothing = throw PdfInputException(PdfError.OutOfMemory)
 
     /**
      * Checks page [index] of [doc] (before `loadPage`). Returns normally when every image it can
      * see is within the limits; throws `PdfInputException(OutOfMemory)` otherwise.
      */
-    fun checkPage(doc: PDFDocument, index: Int) {
-        Walk(doc).use { it.run(index) }
+    fun checkPage(doc: PDFDocument, index: Int, isCancelled: () -> Boolean = { false }) {
+        Walk(doc, isCancelled).use { it.run(index) }
     }
 
-    private class Walk(private val doc: PDFDocument) : AutoCloseable {
+    private class Walk(private val doc: PDFDocument, private val isCancelled: () -> Boolean) : AutoCloseable {
         private val s = Scope()
         private val count = doc.countObjects()
         private val visited = BitSet(count)
         private val budget = ObjectGraph.Budget(MAX_VISITS, MAX_WALK_MILLIS)
         private var pageCost = 0L
         private var inspected = 0L
+        private var scanned = 0L
+        private var nextDirectId = -1L
 
-        /** A resource dictionary to walk, the streams whose names may narrow it, and its level. */
-        private class Item(val resources: PDFObject, val contents: List<PDFObject>?, val level: Int)
+        /**
+         * One resource dictionary, listed once per page check: its `/XObject` keys, whether they may
+         * be narrowed ([plainKey]), which entries were already checked, and whether the other
+         * sections (patterns, soft masks, Type 3 fonts, colour spaces) were walked.
+         */
+        private class ResInfo(val dict: PDFObject, val xobject: PDFObject?, val keys: List<String>, val narrowable: Boolean) {
+            val keySet: Set<String> by lazy { keys.toHashSet() }
+            val checked = HashSet<String>()
+            var allChecked = xobject == null
+            var othersDone = false
+        }
+
+        private val infos = HashMap<Long, ResInfo>()
+
+        /** RF-2: (resource-less form/pattern/group/font object, parent resources id) pairs walked. */
+        private val pairs = HashSet<Pair<Int, Long>>()
+
+        /** A resource dictionary ([id] into [infos]) to walk with the streams that may narrow it. */
+        private class Item(val id: Long, val contents: List<PDFObject>?, val level: Int)
 
         private val stack = ArrayList<Item>()
 
         override fun close() = s.close()
 
+        /** Charges [n] budget units (0: only the clock) and polls cancellation. */
+        private fun tick(n: Int = 1) {
+            if (isCancelled()) throw PdfInputException(PdfError.Cancelled)
+            budget.spend(n)
+        }
+
         fun run(index: Int) {
             val page = s.add(doc.findPage(index))
-            val pageContents = streamsOf(s.add(page.get("Contents")))
             val pageRes = s.add(page.getInheritable("Resources"))
-            push(pageRes, pageContents, 1)
-            annotations(s.add(page.get("Annots")), pageRes)
+            val pageId = idOf(pageRes)
+            push(pageId, pageRes, streamsOf(s.add(page.get("Contents"))), 1)
+            annotations(s.add(page.get("Annots")), pageId, pageRes)
             while (stack.isNotEmpty()) resources(stack.removeAt(stack.size - 1))
         }
 
@@ -156,95 +187,108 @@ internal object RenderImageGate {
         }
 
         /**
-         * A form, pattern or Type 3 font without `/Resources` uses its parent's: the parent is walked
-         * again with [contents] as the names (a narrowed parent is revisitable, a small one was
-         * already walked in full).
+         * Id of a resource dictionary: its object number, or a fresh negative id for a direct one
+         * (a direct dictionary is reached only through its owner, which is itself deduplicated).
          */
-        private fun pushOwnOrParent(own: PDFObject, parent: PDFObject, contents: List<PDFObject>?, level: Int) =
-            push(if (own.isNull) parent else own, contents, level)
+        private fun idOf(res: PDFObject): Long = if (res.isIndirect) res.asIndirect().toLong() else nextDirectId--
 
-        private fun push(res: PDFObject, contents: List<PDFObject>?, level: Int) {
-            budget.spend()
-            if (res.isNull || !firstVisitAllowRevisitWithNarrowing(res)) return
+        private fun push(id: Long, res: PDFObject, contents: List<PDFObject>?, level: Int) {
+            tick()
+            if (res.isNull || !res.isDictionary) return
             if (level > MAX_NESTING) refuse()
-            if (!res.isDictionary) return
-            stack.add(Item(res, contents, level))
+            val info = infos.getOrPut(id) {
+                val xo = s.add(res.get("XObject")).let { if (it.isIndirect) s.add(it.resolve()) else it }
+                val keys = if (xo.isDictionary) keys(xo) else emptyList()
+                tick(keys.size / 64)
+                ResInfo(res, if (xo.isDictionary) xo else null, keys, keys.size > NARROW_ABOVE && keys.all(::plainKey))
+            }
+            if (info.allChecked && info.othersDone) return
+            stack.add(Item(id, contents, level))
         }
 
         /**
-         * Resource dictionaries may be shared by forms whose content uses different names; a
-         * narrowed walk is therefore not recorded as complete, so a resource dictionary is only
-         * skipped on a revisit when it is small (never narrowed).
+         * A form, tiling pattern, soft-mask group or Type 3 font [obj] reached from resources
+         * [parentId]: with its own `/Resources` it is walked once (by object number); without, MuPDF
+         * runs it with its caller's resources, so the parent is walked again with [contents] as
+         * the names, once per (object, parent) pair (RF-2).
          */
-        private fun firstVisitAllowRevisitWithNarrowing(res: PDFObject): Boolean {
-            if (!res.isIndirect) return true
-            val xo = s.add(res.get("XObject"))
-            if (xo.isDictionary && xo.size() > NARROW_ABOVE) return true // entries themselves are deduplicated
-            return firstVisit(res)
+        private fun child(obj: PDFObject, contents: List<PDFObject>?, level: Int, parentId: Long, parentRes: PDFObject) {
+            val own = s.add(obj.get("Resources"))
+            if (own.isNull) {
+                if (!obj.isIndirect || pairs.add(obj.asIndirect() to parentId)) push(parentId, parentRes, contents, level)
+            } else if (firstVisit(obj)) {
+                push(idOf(own), own, contents, level)
+            }
         }
 
-        private fun annotations(annots: PDFObject, pageRes: PDFObject) {
+        private fun annotations(annots: PDFObject, pageId: Long, pageRes: PDFObject) {
             if (!annots.isArray) return
             for (i in 0 until annots.size()) {
-                budget.spend()
+                tick()
                 val a = s.add(annots.get(i))
                 if (!firstVisit(a) || !a.isDictionary) continue
                 val ap = s.add(a.get("AP"))
                 if (!ap.isDictionary) continue
                 for (key in APPEARANCE_KEYS) {
                     val v = s.add(ap.get(key))
-                    if (v.isStream) xobject(v, 1, pageRes)
-                    else if (v.isDictionary && firstVisit(v)) for (k in keys(v)) xobject(s.add(v.get(k)), 1, pageRes)
+                    if (v.isStream) xobject(v, 1, pageId, pageRes)
+                    else if (v.isDictionary && firstVisit(v)) for (k in keys(v)) xobject(s.add(v.get(k)), 1, pageId, pageRes)
                 }
             }
         }
 
         private fun resources(item: Item) {
-            val res = item.resources
-            val xo = s.add(res.get("XObject"))
-            if (xo.isDictionary) {
-                val names = keys(xo)
-                val wanted = if (names.size > NARROW_ABOVE) item.contents?.let { usedNames(it) } else null
-                for (name in names) {
-                    budget.spend()
-                    if (wanted != null && name !in wanted) continue
-                    xobject(s.add(xo.get(name)), item.level, res)
+            val info = infos.getValue(item.id)
+            val res = info.dict
+            val xo = info.xobject
+            if (xo != null && !info.allChecked) {
+                val wanted = if (info.narrowable) item.contents?.let { usedKeys(it, info.keySet) } else null
+                for (name in wanted ?: info.keys) {
+                    if (!info.checked.add(name)) continue
+                    tick()
+                    xobject(s.add(xo.get(name)), item.level, item.id, res)
                 }
+                if (wanted == null) info.allChecked = true
             }
+            if (info.othersDone) return
+            info.othersDone = true
             val pat = s.add(res.get("Pattern"))
             if (pat.isDictionary) for (k in keys(pat)) {
-                budget.spend()
+                tick()
                 val p = s.add(pat.get(k))
-                if (!firstVisit(p) || !p.isStream) continue
-                pushOwnOrParent(s.add(p.get("Resources")), res, listOf(p), item.level + 1)
+                if (p.isStream) child(p, listOf(p), item.level + 1, item.id, res)
             }
             val gs = s.add(res.get("ExtGState"))
             if (gs.isDictionary) for (k in keys(gs)) {
-                budget.spend()
+                tick()
                 val g = s.add(gs.get(k))
-                if (!firstVisit(g) || !g.isDictionary) continue
+                if (!g.isDictionary) continue
                 val sm = s.add(g.get("SMask"))
-                if (!firstVisit(sm) || !sm.isDictionary) continue
-                xobject(s.add(sm.get("G")), item.level, res)
+                if (sm.isDictionary) xobject(s.add(sm.get("G")), item.level, item.id, res)
             }
             val fonts = s.add(res.get("Font"))
             if (fonts.isDictionary) for (k in keys(fonts)) {
-                budget.spend()
+                tick()
                 val f = s.add(fonts.get(k))
-                if (!firstVisit(f) || !f.isDictionary) continue
-                if (nameOf(s.add(f.get("Subtype"))) != "Type3") continue
+                if (!f.isDictionary || nameOf(s.add(f.get("Subtype"))) != "Type3") continue
                 // Glyph procedures are not scanned for names: their resources are walked in full.
-                pushOwnOrParent(s.add(f.get("Resources")), res, null, item.level + 1)
+                child(f, null, item.level + 1, item.id, res)
+            }
+            // RF-6: ICC profiles (also under Indexed) of the colour-space resources.
+            val cs = s.add(res.get("ColorSpace"))
+            if (cs.isDictionary) for (k in keys(cs)) {
+                tick()
+                Scope().use { t -> components(t, t.add(cs.get(k))) }
             }
         }
 
-        /** An XObject reference found at resource [level]: an image is checked, a form is queued. */
-        private fun xobject(v: PDFObject, level: Int, parent: PDFObject) {
-            budget.spend()
-            if (!v.isStream || !firstVisit(v)) return
+        /** An XObject reference found in resources [parentId]: an image is checked, a form is queued. */
+        private fun xobject(v: PDFObject, level: Int, parentId: Long, parentRes: PDFObject) {
+            tick()
+            if (!v.isStream) return
             when (nameOf(s.add(v.get("Subtype")))) {
-                "Image" -> image(v, mask = false)
-                "Form" -> pushOwnOrParent(s.add(v.get("Resources")), parent, listOf(v), level + 1)
+                "Image" -> if (firstVisit(v)) image(v, mask = false)
+                "Form" -> child(v, listOf(v), level + 1, parentId, parentRes)
             }
         }
 
@@ -253,7 +297,7 @@ internal object RenderImageGate {
             if (mask) return
             for (k in MASK_KEYS) {
                 val m = s.add(img.get(k))
-                budget.spend()
+                tick()
                 if (m.isStream && firstVisit(m)) image(m, mask = true)
             }
         }
@@ -400,16 +444,24 @@ internal object RenderImageGate {
             }
         }
 
-        /** Names that occur as `/Name` tokens in [streams] (#xx decoded), or null if one cannot be scanned. */
-        private fun usedNames(streams: List<PDFObject>): Set<String>? {
-            val names = HashSet<String>()
+        /**
+         * The keys of [keySet] that occur as name tokens in [streams] (RF-1/RF-5), or null when a
+         * stream cannot be scanned (not raw or plain Flate, larger than [MAX_CONTENT_SCAN_BYTES]
+         * decoded, or the page's [MAX_PAGE_SCAN_BYTES] are spent): the caller then checks every
+         * entry. Each stream object is scanned once per call; only matched keys are kept.
+         */
+        private fun usedKeys(streams: List<PDFObject>, keySet: Set<String>): Set<String>? {
+            val found = HashSet<String>()
+            val seen = HashSet<Int>()
             for (st in streams) {
+                tick()
                 if (!st.isStream) return null
+                if (st.isIndirect && !seen.add(st.asIndirect())) continue
                 val data = Scope().use { t ->
                     val filters = filterNames(t, st) ?: return null
                     if (!t.add(geta(t, st, "DecodeParms", "DP")).isNull) return null
                     val len = intOf(t, t.add(st.get("Length")))
-                    if (len < 0 || len > MAX_CONTENT_SCAN_BYTES) return null
+                    if (len < 0 || len > MAX_CONTENT_SCAN_BYTES || scanned + len > MAX_PAGE_SCAN_BYTES) return null
                     val raw = st.readRawStream()
                     when {
                         filters.isEmpty() -> raw
@@ -417,14 +469,17 @@ internal object RenderImageGate {
                         else -> return null
                     }
                 }
-                collectNames(data, names)
+                scanned += data.size
+                if (scanned > MAX_PAGE_SCAN_BYTES) return null
+                matchNames(data, keySet, found) { tick(0) }
+                if (found.size == keySet.size) break
             }
-            return names
+            return found
         }
 
         private fun streamsOf(contents: PDFObject): List<PDFObject>? = when {
             contents.isStream -> listOf(contents)
-            contents.isArray -> (0 until minOf(contents.size(), MAX_VISITS)).map { budget.spend(); s.add(contents.get(it)) }
+            contents.isArray -> (0 until minOf(contents.size(), MAX_VISITS)).map { tick(); s.add(contents.get(it)) }
             else -> null
         }
 
@@ -491,26 +546,60 @@ internal object RenderImageGate {
         }
     }
 
-    /** Adds every `/Name` token of content-stream bytes [data] to [out] (superset of names looked up). */
-    internal fun collectNames(data: ByteArray, out: MutableSet<String>) {
+    /**
+     * RF-1: a dictionary key that name narrowing can match exactly: 1..[MAX_KEY_CHARS] characters,
+     * each printable ASCII (0x21-0x7E), no `#`. For such a key, a content token denotes it in
+     * MuPDF's lexer (`pdf-lex.c` `lex_name`) iff [matchNames] decodes it to the same bytes. Any
+     * other key (control or non-ASCII bytes, which `asName` returns UTF-8 decoded; a literal `#`,
+     * e.g. MuPDF's undecoded `#00`; names MuPDF truncates at 4,095 bytes) disables narrowing.
+     */
+    internal fun plainKey(k: String): Boolean =
+        k.length in 1..MAX_KEY_CHARS && k.all { it in '!'..'~' && it != '#' }
+
+    /**
+     * Adds to [out] every key of [keys] (all [plainKey]s) that occurs as a name token in content
+     * bytes [data], tokenised as MuPDF does: a name runs from `/` to NUL, TAB, LF, FF, CR, space,
+     * a delimiter `()<>[]{}/%` or the end; `#hh` is one byte except `#00`, and a `#` not followed
+     * by two hex digits (or by `00`) is kept literally. Tokens that cannot equal a plain key are
+     * dropped as soon as that is clear; every `/` in the data starts a token, so names in strings
+     * or comments are included too (a superset). [onMiB] runs after each MiB scanned.
+     */
+    internal fun matchNames(data: ByteArray, keys: Set<String>, out: MutableSet<String>, onMiB: () -> Unit = {}) {
+        val buf = ByteArray(MAX_KEY_CHARS)
         var i = 0
-        val sb = StringBuilder()
+        var nextTick = 1 shl 20
         while (i < data.size) {
+            if (i >= nextTick) {
+                onMiB()
+                nextTick += 1 shl 20
+            }
             if (data[i] != '/'.code.toByte()) { i++; continue }
             i++
-            sb.setLength(0)
+            var len = 0
+            var ok = true
             while (i < data.size) {
                 val c = data[i].toInt() and 0xFF
-                if (c <= 0x20 || c in DELIMITERS) break
-                if (c == '#'.code && i + 2 < data.size + 0 && hex(data.getOrNull(i + 1)) >= 0 && hex(data.getOrNull(i + 2)) >= 0) {
-                    sb.append(((hex(data[i + 1]) shl 4) or hex(data[i + 2])).toChar())
-                    i += 3
+                if (c in WHITE || c in DELIMITERS) break
+                var b = c
+                if (c == '#'.code) {
+                    val h1 = hex(data.getOrNull(i + 1))
+                    val h2 = hex(data.getOrNull(i + 2))
+                    if (h1 >= 0 && h2 >= 0 && (h1 != 0 || h2 != 0)) {
+                        b = (h1 shl 4) or h2
+                        i += 3
+                    } else {
+                        i++ // MuPDF keeps the '#' and re-reads what follows
+                    }
                 } else {
-                    sb.append(c.toChar())
                     i++
                 }
+                if (b < 0x21 || b > 0x7E || b == '#'.code || len == MAX_KEY_CHARS) ok = false
+                if (ok) buf[len++] = b.toByte()
             }
-            out.add(sb.toString())
+            if (ok && len > 0) {
+                val name = String(buf, 0, len, Charsets.ISO_8859_1)
+                if (name in keys) out.add(name)
+            }
         }
     }
 
@@ -524,6 +613,7 @@ internal object RenderImageGate {
         }
     }
 
+    private val WHITE = setOf(0x00, 0x09, 0x0A, 0x0C, 0x0D, 0x20)
     private val DELIMITERS = "()<>[]{}/%".map { it.code }.toSet()
 
     /**
