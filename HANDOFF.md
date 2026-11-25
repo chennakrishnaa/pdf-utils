@@ -22,7 +22,7 @@ Written 2026-11-25 at the end of the UI redesign. The redesign is merged, built,
 - **Add controls (owner request after a phone test):** tonal "Add" pill in the section header, a dashed Add tile after the last image, a dashed "Add PDFs" row after the last PDF.
 - **Image picker (owner request):** the system file picker (`OpenMultipleDocuments`, `image/*`), so any folder can be browsed. The photo picker is no longer used. The file picker does not promise selection order.
 - **Thumbnails are placeholders.** The UI process decodes no images; a real preview would mean decoding untrusted images outside the `:engine` process.
-- **Core changes the owner approved:** `core/JobViewModel.kt`, `core/PdfJobs.kt`, `core/UriIo.kt`, and the manifest's provider entry. `engine/**`, `scripts/**` and all Gradle files are unchanged.
+- **Core changes the owner approved:** `core/JobViewModel.kt`, `core/PdfJobs.kt`, `core/UriIo.kt`, and the manifest's provider entry. The redesign left `engine/**`, `scripts/**` and all Gradle files unchanged. Branch `pdf-reader` does change `engine/` (new render ops, the image gate, the scan memo, reader requests in `engine/remote/`) and `core/` (`PdfReader.kt` new; `PdfJobs.kt`, `UriIo.kt`); `scripts/**` and Gradle files are still unchanged there.
 
 ## How the owner wants work done
 
@@ -90,13 +90,21 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 8. **Wording not in the pack.** 21 strings were added; the list is in `REVIEW.md` under "Strings added by the redesign that are not in the pack".
 9. **Deviations from the pictures.** Merge shows no page counts before the job; the onboarding hero lost its blue background, arrow and label animation; the licence text is not monospace and is reflowed for display; quality rows show nothing while an estimate loads; a Compress result with no size gain cannot be saved; the Result screen returns to Home on Done, Close and Discard.
 10. **Add images with no PDF chosen** shows two dashed boxes (the PDF slot and the Add tile). Say if that looks cluttered.
+11. **Reader: first upload or later.** Ship the reader in the first Play upload or in a later version. The signed 1.0.0 build and `main` do not contain it, but `docs/play-listing.md` on `pdf-reader` already describes it; the listing must match whichever build is uploaded.
+12. **Reader: Home entry.** It is a fifth, full-width card under the 2x2 tool grid. Confirm or choose another place.
+13. **Reader: Recents and Open.** Recents and the Result screen's Open still hand the file to an external viewer. Switch them to the in-app reader or not.
+14. **Reader: "Open with Offkit".** Not built. It needs an intent filter on `MainActivity`, which changes the hostile-intent hardening (`security/platform-audit.md`).
+15. **Reader: password-protected PDFs.** Not supported; there is no password entry.
+16. **Reader: cancelled picker on the error screen.** Cancelling the picker opened from the reader's error screen stays on the error screen.
+17. **Reader wording.** `res/values/strings_reader.xml` and `strings_reader_zoom.xml`.
+18. **Reader: review of F4.** F4 reworked the image gate's walk after the second review and has had no independent review. Decide whether it needs one before release.
 
 ## Open items
 
 - **Real-phone checks.** The owner has tried the debug build on a phone and asked for the Add controls and the folder picker. Still unconfirmed: TalkBack focus on the bottom-bar buttons (the emulator's accessibility dump clips the bottom 126 px, probably the test image), a receiving app reading a shared file, the real save dialog end to end, content behind the system bars, the Processing and Error screens, and the notices screen's opening time (about 2 seconds on the emulator).
 - **The signed release build has only been launched, never used.** `release-smoke.sh` starts the app and checks it stays up; no gate runs a PDF job in the release build.
 - **No independent review** of the last changes: the saved-name rule, the licence reflow rules, the Add controls and the picker change. See `REVIEW.md`, "After the redesign review".
-- **Watchdog limits** (`engine/remote/EngineLimits.kt`): 90 seconds without progress, 15 minutes total, memory cap of 1.5 GB or 40% of RAM. Unproven against very large legitimate files on slow phones.
+- **Watchdog limits** (`engine/remote/EngineLimits.kt`): 90 seconds without progress, 15 minutes total, memory cap of 1.5 GB or 40% of RAM; on `pdf-reader`, 30 seconds per page render and 60 seconds to open a document in the reader. Unproven against very large legitimate files on slow phones.
 - **Merge output size:** duplicate removal is skipped above 5,000 objects; the size effect on ordinary merges is unmeasured.
 - **Leaving the app during a long job** can interrupt it, because keeping it alive would need a permission. The Processing screen says to keep the app open.
 - **Two hostile-file cases not run on a device:** the forms file merged with itself, and Add images with the hostile set. `security/engine-audit.md` describes each file well enough to regenerate it.
@@ -105,23 +113,20 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 
 ## PDF reader
 
-Built on branch `pdf-reader` after the 1.0.0 build; not merged. On that branch `VERIFY OK`, the emulator smoke (`tests=32`) and `ISOLATION SMOKE OK` pass. **It has never been tried on a real phone.**
+Built on branch `pdf-reader` after the 1.0.0 build; not merged. Reviewed twice; the fixes F1 to F4 are merged on the branch, and the last of them (F4) has had no independent review. At `6adc734` `VERIFY OK`, the emulator smoke (`tests=32`) and `ISOLATION SMOKE OK` pass. **It has never been tried on a real phone.**
 
 - **What it does:** a fifth Home card, "Read a PDF", below the tool grid. It opens the system file picker for one PDF and shows its pages in a continuous vertical list with pinch-to-zoom (1x to 5x), double-tap zoom, a page indicator and "Open another PDF". Read-only: nothing is changed or saved, and the file is not added to Recents.
-- **How:** MuPDF renders pages in the `:engine` process (`engine/PdfPageRenderer.kt`, `engine/ops/RenderPageOp.kt`, new calls in `engine/remote/`) and sends raw pixels to the UI. `core/PdfReader.kt` holds the private copy and runs reader calls on `PdfJobs`' engine thread. `feature/reader/` has the screen, `ReaderViewModel` and the render planner; `ui/reader/` has the zoomable list and its maths. No new permission, component, network access or "open with" intent filter. PDFs over 1 GiB are refused, as in the tools.
+- **How:** MuPDF renders pages in the `:engine` process (`engine/PdfPageRenderer.kt`, `engine/ops/RenderPageOp.kt`, new calls in `engine/remote/`) and sends raw pixels to the UI. `core/PdfReader.kt` holds the private copy and runs reader calls on `PdfJobs`' engine thread. `feature/reader/` has the screen, `ReaderViewModel` and the render planner; `ui/reader/` has the zoomable list and its maths. No new permission, component, network access or "open with" intent filter. PDFs over 1 GiB are refused before or during the copy, as in the tools.
+- **Image gate:** before a page is drawn, `engine/ops/RenderImageGate.kt` checks the images it can draw (through forms, patterns, soft masks, Type 3 fonts and annotation appearances). A page is refused as "too large or complex" when an image is over 256 MiB decoded, a JPX image over 64 M samples, a JPEG or JPX stream over 32 MiB or with an unreadable header, a JPEG behind any filter but one Flate, or the walk over its budget (20,000 visits, 2 s); the full list is in `REVIEW.md`.
+- **Speed:** `ScanMemo` (`engine/PdfInputs.kt`) remembers the passed pre-scan and image-gate pages of the open document, so each tile does not re-scan the whole file. The viewport is reported 120 ms after it settles. Wide items get a sharper detail render at zoom 1.
+- **Odd page sizes:** page sizes are clamped to 1 to 2,880,000 pt; items are at most 60,000 px tall and 8,191 px wide, and a longer page is shrunk into its item.
 - **New icons:** `ic_tool_read.xml`, `ic_tool_read_badge.xml`, `ic_folder_open.xml`, `ic_refresh.xml`, drawn for the project; `THIRD_PARTY_NOTICES.md` names them as original.
-- **Open items:**
-  - Not tried on a real phone: pinch and pan feel, performance on large PDFs, content behind the system bars, TalkBack, the real system picker.
-  - Text without embedded fonts (the base-14 fonts and CJK) is unverified on a device.
-  - Password-protected PDFs cannot be opened; there is no password entry.
-  - Other apps cannot open a PDF in Offkit ("open with"); there is no intent filter.
-  - Recents and the Result screen's Open still hand the file to an external viewer.
-  - The strings to review are in `res/values/strings_reader.xml` and `strings_reader_zoom.xml`.
+- **Open items:** the owner's decisions 11 to 18 above; the open findings in `REVIEW.md` (RDR-6 copy progress, RDR-7 tests, RF-4, RF-6 remainder, RF-8); not tried on a real phone (pinch and pan feel, performance on large PDFs, low memory, content behind the system bars, TalkBack, the real picker, text without embedded fonts including CJK); a very tall strip may draw blank on a GPU with a smaller texture limit; the render path has not been run against the hostile-file set.
 
 ## Where to read more
 
-- `REVIEW.md`: review history, ending with "PI4 review (PI4R)", "Redesign review (RD)" and "After the redesign review".
-- `security/engine-audit.md`, `security/platform-audit.md`: what was audited and what remains. The platform audit has a redesign addendum for the share provider and the picker change.
+- `REVIEW.md`: review history, including "Redesign review (RD)", "After the redesign review" and, on `pdf-reader`, "PDF reader review (RDR, RF)" at the end.
+- `security/engine-audit.md`, `security/platform-audit.md`: what was audited and what remains. The platform audit has a redesign addendum for the share provider and the picker change. On `pdf-reader` the engine audit ends with a "Reader render path" addendum.
 - `RELEASING.md`: the release procedure.
 - `docs/play-listing.md`: store text, including the limits shown to users.
 - `offkit-handoff/SPEC.md`: the design spec.
