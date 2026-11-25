@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Accessibility actions on the zoomable reader list -->
+    <string name="reader_zoom_in">Zoom in</string>
+    <string name="reader_zoom_out">Zoom out</string>
+</resources>
