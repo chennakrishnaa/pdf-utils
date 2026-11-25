@@ -70,6 +70,7 @@ import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.components.pdfErrorBody
 import app.venkat.offkit.ui.components.pdfErrorTitle
 import app.venkat.offkit.ui.components.thumbTag
+import app.venkat.offkit.ui.assertOpensImageDocumentPicker
 import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -260,14 +261,12 @@ class ImagesToPdfScreenTest {
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_IMAGESTOPDF_ADD)
         val header = shadowOf(rule.activity).nextStartedActivity
-        assertNotNull(header)
+        assertOpensImageDocumentPicker(header, "the header Add")
         rule.onNodeWithTag(TAG_IMAGESTOPDF_ADD).performScrollTo()
         rule.onNodeWithTag(TAG_THUMB_ADD).performScrollTo().performClick()
         rule.waitForIdle()
         val tile = shadowOf(rule.activity).nextStartedActivity
-        assertNotNull("the Add tile opened no picker", tile)
-        assertEquals(header.action, tile.action)
-        assertEquals(header.type, tile.type)
+        assertOpensImageDocumentPicker(tile, "the Add tile")
 
         // Move/remove still treat c.jpg as the last image.
         onTile(2, TAG_THUMB_MOVE_EARLIER)

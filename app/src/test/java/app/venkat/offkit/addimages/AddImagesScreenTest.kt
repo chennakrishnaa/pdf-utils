@@ -51,12 +51,14 @@ import app.venkat.offkit.ui.components.TAG_JOB_SAVING
 import app.venkat.offkit.ui.components.TAG_JOB_SUMMARY
 import app.venkat.offkit.ui.components.TAG_LEAVE_CONFIRM
 import app.venkat.offkit.ui.components.TAG_LEAVE_STAY
+import app.venkat.offkit.ui.components.TAG_THUMB_ADD
 import app.venkat.offkit.ui.components.TAG_THUMB_MOVE_EARLIER
 import app.venkat.offkit.ui.components.TAG_THUMB_MOVE_LATER
 import app.venkat.offkit.ui.components.TAG_THUMB_REMOVE
 import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.components.pdfErrorBody
 import app.venkat.offkit.ui.components.thumbTag
+import app.venkat.offkit.ui.assertOpensImageDocumentPicker
 import app.venkat.offkit.ui.nav.AppNavHost
 import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
@@ -71,6 +73,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -241,6 +244,16 @@ class AddImagesScreenTest {
         rule.onNodeWithTag(TAG_ADDIMAGES_ROOT).assertExists()
         rule.onNodeWithTag(TAG_ADDIMAGES_CHOOSE_PDF).performScrollTo().assertIsDisplayed()
         rule.onNodeWithTag(TAG_ADDIMAGES_ADD_IMAGES).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun headerAddAndAddTileOpenTheSystemFilePickerForImages() {
+        addImages(image("a.jpg"))
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_ADDIMAGES_ADD_IMAGES)
+        assertOpensImageDocumentPicker(shadowOf(rule.activity).nextStartedActivity, "the header Add")
+        click(TAG_THUMB_ADD)
+        assertOpensImageDocumentPicker(shadowOf(rule.activity).nextStartedActivity, "the Add tile")
     }
 
     @Test
