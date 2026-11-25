@@ -106,7 +106,7 @@ const val TAG_HOME_PRIVACY = "home_privacy"
 /** Test tag of the recent-files section. */
 const val TAG_RECENT_SECTION = "recent_section"
 
-/** Test tag of the "Files you save or share show up here." hint. */
+/** Test tag of the "Files you save show up here." hint. */
 const val TAG_RECENT_EMPTY = "recent_empty"
 
 /** Test tag of the "Clear" action of the recent-files section. */

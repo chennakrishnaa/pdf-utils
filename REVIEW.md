@@ -401,7 +401,7 @@ Written 2026-11-25 by the conductor from the workers' reports. This section reco
 | RD-2 | Fixed | The share file name is capped at 200 UTF-8 bytes. |
 | RD-3 | Fixed | One shared copy per result is reused. |
 | RD-4 | Fixed | The flow ignores Save taps while the save dialog is open; an extra empty destination is deleted. |
-| RD-5 | **Open (owner decision)** | `recent_empty` says "save or share"; only saves are listed. |
+| RD-5 | Fixed | `recent_empty` now reads "Files you save show up here." (owner decision, 2026-11-25). |
 | RD-6 | **Open (accepted so far)** | Shared copies are deleted when the next job starts, as the spec says. |
 | RD-7 | Fixed (see PR-1) | The saved row shows a name only when the provider reports one; otherwise "Saved". |
 | RD-8 | Fixed | The flake was `FileProvider`'s static cache across Robolectric tests; tests now clear it in set-up. |

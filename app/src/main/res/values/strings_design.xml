@@ -13,7 +13,7 @@
     <string name="tool_add_pages_desc">New pages at the end</string>
     <string name="recent_title">Recent</string>
     <string name="recent_clear">Clear</string>
-    <string name="recent_empty">Files you save or share show up here.</string>
+    <string name="recent_empty">Files you save show up here.</string>
     <string name="recent_meta">%1$s · %2$s · %3$s</string>
     <string name="cd_open_file">Open %1$s</string>
     <string name="cd_share_file">Share %1$s</string>

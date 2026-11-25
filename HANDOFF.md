@@ -80,7 +80,7 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 
 1. **Icon licence (blocks the Play upload).** `THIRD_PARTY_NOTICES.md` still credits Material Symbols for icons the design pack replaced. The pack icons' origin and licence are needed, and the Manrope version line ("4.505") should be confirmed.
 2. **Dismissed share sheet (RD-1, Medium).** Backing out of the share sheet still counts as "shared", so Done drops an unsaved result without the discard dialog. Recommended: ask whenever the result is unsaved.
-3. **Recent wording (RD-5).** The empty state says "Files you save or share show up here"; only saved files are listed.
+3. **Recent wording (RD-5): decided.** The empty state now reads "Files you save show up here."
 4. **Shared copies (RD-6).** They are deleted when the next job starts, as the spec says; an app that reads the file late could lose it.
 5. **PI4R-1 (Low, `engine/remote`).** A scheduling gap over 2 seconds can report a real engine crash as "interrupted, try again". Recommended before release; needs the owner's go-ahead to touch the engine.
 6. **Thumbnails.** Keep placeholders, or choose a route for real previews that keeps decoding in the `:engine` process.
