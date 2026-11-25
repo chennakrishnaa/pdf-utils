@@ -458,9 +458,9 @@ Findings from the T22 review:
 
 | Id | Severity | What | Status |
 |---|---|---|---|
-| T22R-1 | Low | A freeze of 2 to 10 s that ends with the app back in the foreground, with the engine killed in that window, is now shown as `EngineCrashed` (it was `EngineUnavailable`). `inBackground()` is read only when the death is handled. Suggested: remember the background state seen on each tick. | Open. |
+| T22R-1 | Low | A freeze of 2 to 10 s that ends with the app back in the foreground, with the engine killed in that window, is now shown as `EngineCrashed` (it was `EngineUnavailable`). `inBackground()` is read only when the death is handled. Suggested: remember the background state seen on each tick. | Fixed (T24): the watchdog samples the background state about once a second; a gap over 2 s that began while the app was cached counts as a thaw. |
 | T22R-2 | Info (older) | An engine death during the cancel grace returns the death error, not `Cancelled`. | Open. |
-| T22R-3 | Info | KDoc says RSS is sampled on the first wake-up after a gap; not during the cancel grace. | Open. |
+| T22R-3 | Info | KDoc says RSS is sampled on the first wake-up after a gap; not during the cancel grace. | Fixed (T24). |
 | T22R-4 | Info | `FROZEN_DEATH_GAP_MS` is a fixed constant, not a constructor parameter like `freezeGapMs`. Production is unaffected. | Open. |
-| T22R-5 | Info | `rssIsSampledOnTheFirstTickAfterAGapAndTheCapStillKills` depends on real time and could fail on a heavily loaded machine. | Open. |
+| T22R-5 | Info | `rssIsSampledOnTheFirstTickAfterAGapAndTheCapStillKills` depends on real time and could fail on a heavily loaded machine. | Fixed (T24): the test uses a hand-moved clock. |
 | T22R-6 | Info | Untested: a death more than 5 s after a long gap; deadline shifts for 2 to 10 s gaps; several short gaps in a row; the cancel-grace interaction. | Open. |

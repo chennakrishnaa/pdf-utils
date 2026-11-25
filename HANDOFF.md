@@ -82,7 +82,7 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 2. **Dismissed share sheet (RD-1): fixed.** Only a save protects a result now; an unsaved result always asks before it is discarded, whether or not Share was used. The discard dialog reads "It hasn't been saved. Your original file isn't affected."
 3. **Recent wording (RD-5): decided.** The empty state now reads "Files you save show up here."
 4. **Shared copies (RD-6).** They are deleted when the next job starts, as the spec says; an app that reads the file late could lose it.
-5. **PI4R-1: fixed and reviewed (sound to ship).** An engine death is reported as "interrupted" only when the app is in the background or within 5 seconds of a pause of at least 10 seconds. Open follow-up T22R-1 (Low): a freeze of 2 to 10 seconds that ends with the app in the foreground now shows a real kill as a crash; the reviewer suggests remembering the background state seen on each watchdog tick.
+5. **PI4R-1: fixed and reviewed (sound to ship).** An engine death is reported as "interrupted" only when the app is in the background or within 5 seconds of a pause of at least 10 seconds. The follow-up T22R-1 is fixed too: a pause over 2 seconds that began while the app was in the background also counts as a freeze. Tested on the JVM only, never against a real device freeze.
 6. **Thumbnails.** Keep placeholders, or choose a route for real previews that keeps decoding in the `:engine` process.
 7. **Unused dependency: removed.** `material-icons-core` is gone from the Gradle files and from the notices.
 8. **Wording not in the pack.** 21 strings were added; the list is in `REVIEW.md` under "Strings added by the redesign that are not in the pack".
