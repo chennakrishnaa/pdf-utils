@@ -88,7 +88,7 @@
     <string name="action_done">Done</string>
     <string name="action_open">Open</string>
     <string name="discard_title">Discard this PDF?</string>
-    <string name="discard_body">It hasn\'t been saved or shared. Your original file isn\'t affected.</string>
+    <string name="discard_body">It hasn\'t been saved. Your original file isn\'t affected.</string>
     <string name="keep">Keep</string>
     <string name="error_locked_title">This PDF is password-protected</string>
     <string name="error_locked_body">Offkit can\'t open locked PDFs. Remove the password in the app that created it, then try again.</string>
