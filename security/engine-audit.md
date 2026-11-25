@@ -459,3 +459,33 @@ Written by the FR final review (`REVIEW.md`, "Final review: process isolation (F
 | SR3-5 (allocation failure reported as `Corrupt`; append `/Parent` cycle reported as `Io`) | **Fixed** (as reported) | [author] commit "Map allocation failures in open to OutOfMemory, /Parent cycles to Corrupt (SR3-5)". Not checked by me. | Message accuracy only. |
 
 New items from FR that touch engine robustness: FR-1 (the watchdog counts frozen background time) and FR-2 (after the UI dies, an orphan engine job runs with no watchdog and shares its process with the next one). See `REVIEW.md`.
+
+## Reader render path (branch `pdf-reader`, 2026-11-25)
+
+Addendum written from the code at `6adc734` and the reader reviews (`REVIEW.md`, "PDF reader review (RDR, RF)"). Not merged to `main`. Nothing here was measured: no hostile input was built or run for this addendum.
+
+### What is new
+
+- Two read-only engine requests: `PageInfo` (open, count pages, read every page's size) and `RenderPage` (draw one tile of one page into a file of raw RGBA).
+- **Before this branch the engine never rasterised a page.** `RenderPageOp` calls `Page.run` with a `DrawDevice`, which decodes every image, font, shading and pattern the page draws, and its annotations and form widgets. This is MuPDF's largest decoder surface, reached from any picked PDF.
+
+### Bounds that apply
+
+- **Paths.** Both paths of a request must resolve (canonical) strictly inside `cacheDir/jobs`, as for the other requests. A render's output file is deleted on every outcome other than `Ok`.
+- **`RenderLimits`** (checked when the request is decoded and again against the page's size): at most 8,000,000 pixels per tile, scale in (0, 16], a rectangle inside the scaled page; at most 50,000 pages.
+- **Annotations.** All pages' `/Annots` lengths are charged to the walk budget in `PageInfo`; a page over 10,000 annotations is refused before `loadPage` in both ops.
+- **`PdfInputs.open`** pre-checks on every call: 1 GiB file cap, `ObjStmScan`, encryption, object count. `ScanMemo` remembers only a passed pre-scan and passed image-gate pages for one document (key: canonical path, length, mtime, CRC-32 of the first and last 64 KiB); a failure is never remembered.
+- **`RenderImageGate`** before `Page.run`: per image 256 MiB decoded and 65,500 px per edge; 1 GiB per page; JPEG SOF and JPX SIZ read from the stream (32 MiB per stream, 256 MiB per page); JPX 64 M samples; predictor rows 1 MiB; ICC profiles 1 MiB raw / 4 MiB inflated; walk budget 32 levels, 20,000 visits, 2 s; cancellation polled. Over a limit is `OutOfMemory`; an unparsable object is `Corrupt`. Details and the walk's reach are in the gate's KDoc.
+- **Cancel.** A watcher thread polls every 50 ms during `Page.run` and calls `Cookie.abort()`; MuPDF checks it only between content-stream operators, so one expensive operator is not interrupted.
+- **Client watchdog** (`RemoteEngine`, `EngineLimits`): 30 s total per render, 60 s per page-info request, no stall limit for either (they report no progress); the RSS cap (min(1.5 GiB, 40 % of RAM)) kills the engine with `OutOfMemory`. A request is re-sent only if it never reached the engine.
+- **No automatic retry.** A failed page is not requested again until the user taps Retry.
+- **UI-side checks of replies.** Page sizes must be finite and > 0, at most 50,000 pages, then clamped to [1, 2,880,000] pt. A tile file must hold exactly `width x height x 4` bytes before a buffer is allocated. Item sizes are capped (60,000 x 8,191 px).
+
+### Not covered
+
+- From the gate's KDoc: inline images (including an inline DCT whose SOF lies); JBIG2 internals and `/JBIG2Globals` (the dictionary size is checked); DeviceN/Separation tint functions; shading patterns and `sh`; fonts other than Type 3; `/MK` icons of widgets without an appearance stream; an image's `/Alternates`; appearances MuPDF synthesises; colour-space lookups for inline images.
+- RF-4: a stream longer than its `/Length` is read to `endstream` before the size checks.
+- RF-6 remainder: ICC profiles of `/Shading`, `/Group /CS`, DeviceN/Separation alternates and an ICC stream's own `/Alternate`.
+- RF-8 (unverified): an xref repair during `Page.run` might re-point an image the gate passed to a later duplicate.
+- F4, the current form of the gate's walk, **has not been independently reviewed**.
+- **None of the render path has been run against this audit's hostile-file set on a device**, or on the host. The SR/SR2/SR3 reproducers were built for Compress, Merge and Add images.

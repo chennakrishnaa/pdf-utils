@@ -477,3 +477,67 @@ Independent review of `git diff 0c7da77 deb6112`: **sound to ship**; T22R-1 is f
 | T24R-4 | Info | `nextCachedSample = now` after a gap has no effect with production values. | Open. |
 | T24R-5 | Info | No test counts `inBackground` calls or covers a throwing or slow callback, or the stale-sample boundary. | Open. |
 | T24R-6 | Info | One KDoc line is not wrapped; the cancel-grace clause omits an engine death. | Open. |
+
+## PDF reader review (RDR, RF)
+
+Written 2026-11-25 by a docs worker from the conductor's summary and the reviewers' findings, each statement checked by reading the code at `6adc734`. Test counts, timings, pixel ratios and gate lines are as reported; nothing was re-run for this section.
+
+**Scope.** The in-app PDF reader, built on branch `pdf-reader`. **Not merged to `main`**; the signed 1.0.0 build does not contain it. Tasks:
+
+| Task | Change |
+|---|---|
+| A | `PdfPageRenderer` contract and cross-process plumbing (`EngineWire`, `EngineServer`, `RemoteEngine`, `RenderLimits`). |
+| B | `ZoomableList`: a pinch-to-zoom vertical list (1x to 5x) and its maths (`ZoomMath`). |
+| C | MuPDF ops: `PageInfoOp` and `RenderPageOp` (`engine/ops/RenderPageOp.kt`). |
+| D1 | `core/PdfReader.kt` (private copy, tiles to bitmaps) and `ReaderViewModel` with the render planner. |
+| D2 | Reader screen, reader route and the Home "Read a PDF" card. |
+
+**History.**
+1. First independent review at `2990cd6` (657 unit tests passing): **not sound to merge as is**. Findings RDR-1 to RDR-9.
+2. Fixes: F1 (UI side: RDR-1, 2, 4 in part, 5, 6, 7 in part), F2 (engine: RDR-3 image gate, RDR-4 scan memo), F3 (docs: RDR-8).
+3. Second review, read-only, of the fixes at `db26898`: **can merge; fix RF-1 to RF-3 and the over-refusal before public release**. Findings RF-1 to RF-8.
+4. F4: a rework of the `RenderImageGate` walk (RF-1, 2, 3, 5, 6 in part, 7 and the over-refusal).
+5. Gates at `6adc734`: `VERIFY OK`; emulator smoke `tests=32 failures=0 errors=0`; `ISOLATION SMOKE OK`.
+
+**F4 itself has not been independently reviewed.** It rests on its own tests (`RenderImageGateTest`) and the gates only.
+
+### Findings
+
+| Id | Severity | What | Status |
+|---|---|---|---|
+| RDR-1 | Blocker | A page with an extreme aspect ratio (for example 10 x 14,400 pt) crashed the UI process in `Constraints.fixed`. | Fixed (F1): item height capped at 60,000 px (`ReaderPlanner.MAX_ITEM_HEIGHT_PX`) and width at 8,191 px (`MAX_ITEM_WIDTH_PX`); the page is fitted inside the item, keeping its aspect ratio. Page sizes are clamped to [1, 2,880,000] pt on open (`PdfReader.sanePageDims`). Overflow-safe arithmetic. |
+| RDR-2 | Should fix | Text soft at zoom 1 on wide items: the base bitmap is capped at 2.5 M pixels (`ReaderLimits.basePagePixels`), which gives 0.52 bitmap px per screen px on a 2544 px tablet (reported). | Fixed (F1): a detail render at zoom 1 when sharpness is below 0.9 (`ZOOM1_MIN_SHARPNESS`). At 5x on a tablet the detail reaches `RenderLimits.MAX_SCALE` 16 (about 0.75, reported). Accepted. |
+| RDR-3 | Should fix | Images on the render path were bounded only by the engine's RSS watchdog. | Fixed (F2, reworked in F4): `RenderImageGate` checks the images a page can draw before `Page.run`. Limits and what it does not cover: see below and the KDoc of `engine/ops/RenderImageGate.kt`. |
+| RDR-4 | Should fix | Every tile re-ran the whole-file object-stream pre-scan (reported: about 2 s per open for a 200 MB photo PDF; 160-230 ms for a damaged 16 MB file that MuPDF repairs), and the viewport was reported every frame while panning zoomed. | Fixed: `ScanMemo` (F2) remembers one document: that its pre-scan passed and which pages passed the image gate (at most 4,096). A failed check is never remembered, so a refused page is walked again on every request. 120 ms viewport debounce (F1, `VIEWPORT_SETTLE_MS`). MuPDF's own repair cost per open cannot be avoided: documents are not kept open across ops. |
+| RDR-5 | Minor | Page errors gave no reason. | Fixed (F1): a failed page shows "This page could not be shown." and the error's title. An `OutOfMemory` or `TimedOut` page shows "This page is too large or complex to show." with no reason line. |
+| RDR-6 | Minor | No size check before copying the picked PDF. | Fixed (F1): over 1 GiB is refused before the copy when the provider reports a size, else during the copy once it passes 1 GiB. No copy progress UI: **open**. |
+| RDR-7 | Minor (tests) | (a) `ReaderScreenTest.rendered(index)` did not match the page it named; (b) `Thread.sleep`-based "nothing happened" assertions in `ReaderViewModelTest`; (c) no pure geometry tests; (d) no check of detail placement by pixel. | (a) Fixed; (c) fixed (`ReaderGeometryTest`). (b) **Open** (two `Thread.sleep` calls remain). (d) **Open**: a fake that paints a gradient would allow it. |
+| RDR-8 | Minor | Stale docs. | Fixed (F3). |
+| RDR-9 | Note | A compromised engine (same UID) could substitute a tile file. It gains nothing it cannot already read, and the UI checks each tile's length (exactly `width x height x 4` bytes) before allocating. | Accepted. |
+| RF-1 | Should fix | Name narrowing (dictionaries with more than 32 `/XObject` entries are narrowed to the names the content uses) did not tokenise like MuPDF: control bytes, non-ASCII, `#00`, names over 4,095 bytes. An image could be skipped. | Fixed (F4): narrowing applies only when every key is plain printable ASCII without `#` and at most 127 characters, and the content streams are raw or plain Flate within the scan caps; names are matched as MuPDF's lexer tokenises them. Otherwise every entry is checked. |
+| RF-2 | Should fix | A form, pattern, soft-mask group or Type 3 font without its own `/Resources` was checked only under the first parent's resources. | Fixed (F4): visits are tracked per (object, parent dictionary) pair. |
+| RF-3 | Should fix | The JPX size was read from the first SIZ marker anywhere in the stream. | Fixed (F4): SOC + SIZ at offset 0, or at the start of the first `jp2c` box. |
+| Over-refusal | Should fix | A large shared resource dictionary revisited by resource-less forms exhausted the visit budget, refusing ordinary pages. | Fixed (F4): each dictionary is listed once per check and only entries actually checked are charged. |
+| RF-4 | Minor | A stream whose real extent runs past `/Length` is read to `endstream` (`readRawStream`) before the gate's size check, as in Compress. | Documented only (gate KDoc). **Open.** |
+| RF-5 | Minor | The name scan ran off the visit budget and could not be cancelled. | Fixed (F4). |
+| RF-6 | Minor | ICC profiles outside image colour spaces were not vetted. | Partly fixed (F4): `/ColorSpace` resources. `/Shading`, `/Group /CS`, DeviceN/Separation alternates and an ICC stream's own `/Alternate`: documented only. **Open.** |
+| RF-7 | Minor | A Flate predictor in front of DCT: the SOF was read without the predictor MuPDF applies. | Fixed (F4): a Flate or LZW predictor in a chain with DCT is refused. |
+| RF-8 | Note, unverified | A MuPDF xref repair triggered during `Page.run`, after the gate passed, might re-point an image object to a later duplicate. | Not fixed, not tested. **Open.** |
+
+### Known refusals a user can meet
+
+All image-gate refusals are `OutOfMemory` and show "This page is too large or complex to show." A damaged object met during the walk is `Corrupt` and shows "This page could not be shown." with the reason. Other pages of the document still show. Limits from `RenderImageGate`:
+
+- One image over 256 MiB decoded (`w x h x components`, doubled above 8 bits per component). At 300 dpi an A1 CMYK image (about 279 MB) and an A0 RGB or CMYK image are refused; A1 RGB (about 209 MB) passes. More than 1 GiB over the distinct images of one page.
+- An image edge over 65,500 px (declared, or in the JPEG/JPX header).
+- JPX over 64 M samples (for example a 600 dpi A4 colour scan, about 104 M samples); JPX with any other filter; JPX whose SIZ is not at offset 0 or at the start of the first `jp2c` box.
+- DCT/JPX streams over 32 MiB, or over 256 MiB of such streams read on one page.
+- DCT that is not the last filter, or behind anything but a single Flate (ASCII85, ASCIIHex, LZW, RunLength, two Flates...); a Flate or LZW predictor with DCT; a missing or unparsable JPEG header; a JPEG over the progressive/multi-scan limits of `ImageLimits.jpeg`.
+- A predictor row over 1 MiB; CCITT `/Columns` over 65,500; a `/Filter` that is neither a name nor an array.
+- An ICC profile over 1 MiB raw or 4 MiB inflated, or with any filter chain other than none or one Flate.
+- A walk over 32 nested resource levels, 20,000 visits or 2 s.
+- More than 10,000 annotations on the page (a separate check before `loadPage`); more than 50,000 pages in the document (on open).
+
+### Not verified on any device
+
+Never tried on a real phone: gesture feel, performance on large PDFs, low-memory behaviour when the engine nears its RSS cap, content behind the system bars, TalkBack, the real system picker, text without embedded fonts (base-14 and CJK). A tall-strip bitmap over the GPU texture limit may draw blank. None of the render path has been run against the hostile-file set of `security/engine-audit.md`; see its "Reader render path" addendum.
