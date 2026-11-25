@@ -378,6 +378,70 @@ class RemoteEngineTest {
         val offset = java.util.concurrent.atomic.AtomicLong()
         fun now() = System.nanoTime() + offset.get()
         fun jumpMinutes(m: Long) { offset.addAndGet(TimeUnit.MINUTES.toNanos(m)) }
+        fun jumpMs(ms: Long) { offset.addAndGet(TimeUnit.MILLISECONDS.toNanos(ms)) }
+    }
+
+    /** Compress on a hanging engine whose death arrives right after [jump] moves the clock. */
+    private fun deathAfterGap(clock: () -> Long, jump: () -> Unit, background: Boolean = false): PdfResult {
+        val conn = FakeConnector { hangingService() }
+        val engine = RemoteEngine(conn, nanoTime = clock, inBackground = { background })
+        val job = object : JobControl {
+            override fun progress(done: Int, total: Int) {
+                jump()
+                conn.onLost!!.invoke()
+            }
+            override fun isCancelled() = false
+        }
+        val (_, input, out) = jobDir()
+        return engine.compress(input, CompressionLevel.LOW, out, job)
+    }
+
+    @Test
+    fun foregroundDeathAfterAShortSchedulingGapIsEngineCrashed() {
+        // PI4R-1: a 3 s pause (GC, loaded CPU) in the foreground is not a freeze; the crash is the file's.
+        val clock = JumpClock()
+        assertEquals(PdfResult.Err(PdfError.EngineCrashed), deathAfterGap(clock::now, { clock.jumpMs(3_000) }))
+        // The same short gap while the app is cached: the system may have killed the engine.
+        assertEquals(
+            PdfResult.Err(PdfError.EngineUnavailable),
+            deathAfterGap(clock::now, { clock.jumpMs(3_000) }, background = true),
+        )
+        // A long freeze (app was frozen, now foreground again): still EngineUnavailable.
+        assertEquals(PdfResult.Err(PdfError.EngineUnavailable), deathAfterGap(clock::now, { clock.jumpMinutes(10) }))
+    }
+
+    @Test
+    fun frozenDeathGapBoundaryIsExact() {
+        // A manual clock: only the jump moves it, so the gap is exactly the jump.
+        val t = java.util.concurrent.atomic.AtomicLong(1_000_000_000L)
+        val threshold = TimeUnit.MILLISECONDS.toNanos(EngineLimits.FROZEN_DEATH_GAP_MS)
+        assertEquals(
+            PdfResult.Err(PdfError.EngineCrashed),
+            deathAfterGap(t::get, { t.addAndGet(threshold - TimeUnit.MILLISECONDS.toNanos(1)) }),
+        )
+        assertEquals(PdfResult.Err(PdfError.EngineUnavailable), deathAfterGap(t::get, { t.addAndGet(threshold) }))
+    }
+
+    @Test
+    fun rssIsSampledOnTheFirstTickAfterAGapAndTheCapStillKills() {
+        val clock = JumpClock()
+        val samples = AtomicInteger()
+        val conn = FakeConnector { hangingService() }
+        val engine = RemoteEngine(
+            conn,
+            // Next regular sample only after 60 s; the stall limit would end the call after 3 s.
+            limits = EngineLimits(stallMs = 3_000, memoryBytes = 1_000, memorySampleMs = 60_000),
+            rssBytes = { if (samples.incrementAndGet() == 1) 10L else 2_000L },
+            nanoTime = clock::now,
+        )
+        Thread { Thread.sleep(300); clock.jumpMinutes(10) }.start()
+        val (_, input, out) = jobDir()
+        val t0 = System.nanoTime()
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.compress(input, CompressionLevel.LOW, out, Job()))
+        val ms = elapsedMs(t0)
+        assertTrue("took $ms ms", ms < 2_000) // the 3 s stall limit did not end it
+        assertEquals(2, samples.get())
+        assertEquals(listOf(4242), conn.killed)
     }
 
     @Test

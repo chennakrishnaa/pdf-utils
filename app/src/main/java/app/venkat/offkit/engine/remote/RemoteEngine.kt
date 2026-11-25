@@ -56,13 +56,16 @@ import java.util.concurrent.locks.ReentrantLock
  * **Freeze gaps (FR-1).** `CLOCK_MONOTONIC` keeps running while this process is frozen by the
  * cached-apps freezer or simply not scheduled. The `:engine` process is bound only by this app,
  * so it is cached and frozen with it. The wait loop wakes about every [pollMs]; when two
- * consecutive wake-ups are more than [freezeGapMs] apart, this process was frozen, and the gap
- * minus one [pollMs] is not counted toward the stall, total or image limits, the cancel grace or
- * the memory sampling (their deadlines are shifted by it). Bound: at most [maxFrozenMs] per call
- * is discounted in all; beyond that, gaps count as ordinary time. So even if the engine really
- * did run during every "gap" (it should not: it is frozen with us), a call ends after at most
- * its limit plus [maxFrozenMs] of wall time, and every loop iteration still counts at least
- * [pollMs], so the limits can never be postponed forever.
+ * consecutive wake-ups are more than [freezeGapMs] apart, this process may have been frozen, and
+ * the gap minus one [pollMs] is not counted toward the stall, total or image limits or the cancel
+ * grace (their deadlines are shifted by it). The memory check is not postponed: RSS is sampled on
+ * the first wake-up after such a gap. An engine death noticed within [THAW_WINDOW_MS] of a gap of
+ * at least [EngineLimits.FROZEN_DEATH_GAP_MS] is `EngineUnavailable`; after a shorter gap (a GC
+ * pause, a busy CPU) it is `EngineCrashed` unless [inBackground] says the app is cached (PI4R-1).
+ * Bound: at most [maxFrozenMs] per call is discounted in all; beyond that, gaps count as
+ * ordinary time. So even if the engine really did run during every "gap" (it should not: it is
+ * frozen with us), a call ends after at most its limit plus [maxFrozenMs] of wall time, and every
+ * loop iteration still counts at least [pollMs], so the limits can never be postponed forever.
  *
  * Calls are serialised (one request at a time). A call waiting for an earlier one still polls
  * `job.isCancelled()` about every [pollMs] and returns `Cancelled` if it is set. Do not call on
@@ -73,7 +76,8 @@ import java.util.concurrent.locks.ReentrantLock
  * @param rssBytes resident set size in bytes of an engine pid, or null if unknown.
  * @param nanoTime monotonic clock for every deadline here (polling itself waits in real time).
  * @param freezeGapMs a gap between two wake-ups of the wait loop longer than this means this
- *   process was frozen or not scheduled.
+ *   process was frozen or not scheduled; it shifts the time limits but alone does not change how
+ *   an engine death is reported.
  * @param maxFrozenMs most frozen time discounted from the limits in one call.
  * @param inBackground true if this process is cached (in the background); then an engine death
  *   is reported as `EngineUnavailable`, since the system may have killed the cached engine.
@@ -280,6 +284,7 @@ class RemoteEngine(
         val pollNs = TimeUnit.MILLISECONDS.toNanos(pollMs)
         val gapNs = TimeUnit.MILLISECONDS.toNanos(freezeGapMs)
         val thawWindowNs = TimeUnit.MILLISECONDS.toNanos(THAW_WINDOW_MS)
+        val frozenDeathGapNs = TimeUnit.MILLISECONDS.toNanos(EngineLimits.FROZEN_DEATH_GAP_MS)
         val totalNs = TimeUnit.MILLISECONDS.toNanos(if (request.isImageRequest()) limits.imageTotalMs else limits.totalMs)
         val stallNs = TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
         var sentAt = nanoTime()
@@ -293,9 +298,11 @@ class RemoteEngine(
 
         /**
          * Reads the clock; if the loop went more than [freezeGapMs] since the last read, this
-         * process was frozen: shift every deadline by the gap (minus one poll, within the
-         * [maxFrozenMs] budget). Called after the wait and before the limit checks, so a freeze
-         * anywhere in the loop (in the wait or in `job.progress`) is caught before it is judged.
+         * process may have been frozen: shift the time deadlines by the gap (minus one poll,
+         * within the [maxFrozenMs] budget) and sample RSS on this tick. Only a gap of at least
+         * [EngineLimits.FROZEN_DEATH_GAP_MS] counts as a thaw for classifying a death (PI4R-1).
+         * Called after the wait and before the limit checks, so a freeze anywhere in the loop (in
+         * the wait or in `job.progress`) is caught before it is judged.
          */
         fun wake(): Long {
             val now = nanoTime()
@@ -307,11 +314,11 @@ class RemoteEngine(
                     discountLeftNs -= discount
                     sentAt += discount
                     lastActivity += discount
-                    nextRssSample += discount
                     if (cancelDeadline != 0L) cancelDeadline += discount
                 }
-                thawedAt = now
+                nextRssSample = now // the engine was not watched during the gap: check it now
             }
+            if (gap >= frozenDeathGapNs) thawedAt = now
             return now
         }
         try {
@@ -424,13 +431,19 @@ class RemoteEngine(
     companion object {
         private const val TAG = "OffkitEngine"
 
-        /** A wait-loop gap longer than this (the loop wakes every ~100 ms) means a frozen process. */
+        /**
+         * A wait-loop gap longer than this (the loop wakes every ~100 ms) is not counted toward the
+         * time limits. Classifying a death needs a longer gap: [EngineLimits.FROZEN_DEATH_GAP_MS].
+         */
         const val FREEZE_GAP_MS = 2_000L
 
         /** At most one hour of frozen time is discounted per call (see the class KDoc). */
         const val MAX_FROZEN_MS = 60 * 60_000L
 
-        /** A death noticed this soon after a thaw happened while frozen: `EngineUnavailable`. */
+        /**
+         * A death noticed this soon after a gap of at least [EngineLimits.FROZEN_DEATH_GAP_MS]
+         * happened while frozen: `EngineUnavailable`.
+         */
         const val THAW_WINDOW_MS = 5_000L
     }
 }
