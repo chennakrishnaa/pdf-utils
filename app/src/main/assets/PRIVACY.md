@@ -1,7 +1,7 @@
 OFFKIT PRIVACY POLICY
 =====================
 
-Effective date: 23 November 2026
+Effective date: 25 November 2026
 
 Offkit is an offline PDF and image toolkit for Android. This policy explains what the app does with your information. In short: no data collected. Works offline.
 
