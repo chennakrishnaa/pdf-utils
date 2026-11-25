@@ -28,6 +28,7 @@ import app.venkat.offkit.ui.components.OffkitJobFlow
 import app.venkat.offkit.ui.components.OffkitNavIcon
 import app.venkat.offkit.ui.components.OffkitPrimaryButton
 import app.venkat.offkit.ui.components.OffkitScaffold
+import app.venkat.offkit.ui.components.OffkitHeaderActionStyle
 import app.venkat.offkit.ui.components.OffkitSectionHeader
 import app.venkat.offkit.ui.components.OffkitSelectableFileList
 import app.venkat.offkit.ui.components.TAG_FILE_LIST_EMPTY
@@ -163,6 +164,7 @@ private fun MergeOptions(
             onAction = onAdd,
             actionIcon = AppIcons.add,
             actionTestTag = TAG_MERGE_ADD,
+            actionStyle = OffkitHeaderActionStyle.Tonal,
         )
         Text(
             text = stringResource(R.string.merge_hint),
@@ -175,18 +177,19 @@ private fun MergeOptions(
                 text = stringResource(R.string.merge_empty),
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).testTag(TAG_FILE_LIST_EMPTY),
-            )
-        } else {
-            OffkitSelectableFileList(
-                rows = rows,
-                selectedIndex = selectedIndex,
-                onSelect = onSelect,
-                onMoveUp = onMoveUp,
-                onMoveDown = onMoveDown,
-                onRemove = onRemove,
+                modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 12.dp).testTag(TAG_FILE_LIST_EMPTY),
             )
         }
+        // With no PDFs the list is just the dashed Add row, under the explanation above.
+        OffkitSelectableFileList(
+            rows = rows,
+            selectedIndex = selectedIndex,
+            onSelect = onSelect,
+            onMoveUp = onMoveUp,
+            onMoveDown = onMoveDown,
+            onRemove = onRemove,
+            onAdd = onAdd,
+        )
         OffkitInfoNote(
             text = stringResource(R.string.merge_note),
             modifier = Modifier.padding(top = OffkitDimens.screenPadding),

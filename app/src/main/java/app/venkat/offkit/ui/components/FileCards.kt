@@ -24,6 +24,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.painter.Painter
@@ -33,10 +34,28 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
 import app.venkat.offkit.ui.theme.OffkitDimens
 import app.venkat.offkit.ui.theme.OffkitTheme
+
+/**
+ * The dashed outline of the "add" affordances ([OffkitFileSlot], the Add tile of
+ * [OffkitThumbnailRow], the Add row of [OffkitSelectableFileList]): a 2dp ([OffkitDimens.controlBorder])
+ * [color] stroke, 6dp dashes with 4dp gaps, drawn inside the bounds with corner [radius]. Clip to
+ * the same radius before it.
+ */
+internal fun Modifier.dashedBorder(color: Color, radius: Dp): Modifier = drawBehind {
+    val w = OffkitDimens.controlBorder.toPx()
+    drawRoundRect(
+        color = color,
+        topLeft = Offset(w / 2, w / 2),
+        size = Size(size.width - w, size.height - w),
+        cornerRadius = CornerRadius(radius.toPx() - w / 2),
+        style = Stroke(width = w, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))),
+    )
+}
 
 /**
  * Empty file slot (SPEC §2): a dashed card (2dp `outline` dash, 20dp radius, white) at least
@@ -63,16 +82,7 @@ fun OffkitFileSlot(
             .heightIn(min = 120.dp)
             .clip(shape)
             .background(colors.surfaceContainerLowest)
-            .drawBehind {
-                val w = OffkitDimens.controlBorder.toPx()
-                drawRoundRect(
-                    color = dash,
-                    topLeft = Offset(w / 2, w / 2),
-                    size = Size(size.width - w, size.height - w),
-                    cornerRadius = CornerRadius(OffkitDimens.cardRadius.toPx() - w / 2),
-                    style = Stroke(width = w, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))),
-                )
-            }
+            .dashedBorder(dash, OffkitDimens.cardRadius)
             .clickable(role = Role.Button, onClick = onClick)
             .optionalTestTag(testTag)
             .padding(20.dp),

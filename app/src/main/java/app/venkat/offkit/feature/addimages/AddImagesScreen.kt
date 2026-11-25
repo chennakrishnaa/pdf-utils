@@ -35,6 +35,7 @@ import app.venkat.offkit.ui.components.OffkitJobFlow
 import app.venkat.offkit.ui.components.OffkitNavIcon
 import app.venkat.offkit.ui.components.OffkitPrimaryButton
 import app.venkat.offkit.ui.components.OffkitScaffold
+import app.venkat.offkit.ui.components.OffkitHeaderActionStyle
 import app.venkat.offkit.ui.components.OffkitSectionHeader
 import app.venkat.offkit.ui.components.OffkitThumbnailRow
 import app.venkat.offkit.ui.components.TAG_JOB_RUN
@@ -197,6 +198,7 @@ private fun AddImagesOptions(
             onAction = onAddImages,
             actionIcon = AppIcons.add,
             actionTestTag = TAG_ADDIMAGES_ADD_IMAGES,
+            actionStyle = OffkitHeaderActionStyle.Tonal,
         )
         // Shown with or without images (design 07c), so the header is never followed by a gap.
         Text(
@@ -205,18 +207,19 @@ private fun AddImagesOptions(
             color = colors.onSurfaceVariant,
             modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
         )
-        if (count > 0) {
-            OffkitThumbnailRow(
-                count = count,
-                selectedIndex = selectedIndex,
-                onSelect = onSelect,
-                onMoveEarlier = onMoveEarlier,
-                onMoveLater = onMoveLater,
-                onRemove = onRemove,
-                key = { imageKeys[it] },
-            ) {
-                ImagePlaceholder()
-            }
+        // With no images the dashed Add tile alone is the empty state (the dashed slot above is
+        // for choosing the PDF, not for the images).
+        OffkitThumbnailRow(
+            count = count,
+            selectedIndex = selectedIndex,
+            onSelect = onSelect,
+            onMoveEarlier = onMoveEarlier,
+            onMoveLater = onMoveLater,
+            onRemove = onRemove,
+            key = { imageKeys[it] },
+            onAdd = onAddImages,
+        ) {
+            ImagePlaceholder()
         }
         OffkitInfoNote(
             text = stringResource(R.string.add_pages_note),

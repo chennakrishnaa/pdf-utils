@@ -60,7 +60,8 @@ data class OffkitOption(
  * gap under the app bar). With [actionLabel] and [onAction], a trailing [OffkitTextButton]
  * (optional leading [actionIcon], e.g. `ic_add`; tag [actionTestTag]) sits on the right, centred
  * on the title line; the header keeps the same space above and has none below (the 48dp button
- * already pads it). Example: "Images · 3" + "Add".
+ * already pads it). Example: "Images · 3" + "Add". [actionStyle] picks the action's look
+ * ([OffkitHeaderActionStyle]; default the text button).
  */
 @Composable
 fun OffkitSectionHeader(
@@ -71,12 +72,22 @@ fun OffkitSectionHeader(
     actionIcon: Painter? = null,
     actionTestTag: String? = null,
     first: Boolean = false,
+    actionStyle: OffkitHeaderActionStyle = OffkitHeaderActionStyle.Text,
 ) {
     val hasAction = actionLabel != null && onAction != null
+    val tonal = hasAction && actionStyle == OffkitHeaderActionStyle.Tonal
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = 8.dp, top = if (first) 0.dp else OffkitDimens.sectionGap, bottom = if (hasAction) 0.dp else 8.dp),
+            .padding(
+                start = 8.dp,
+                top = if (first) 0.dp else OffkitDimens.sectionGap,
+                bottom = when {
+                    tonal -> 4.dp
+                    hasAction -> 0.dp
+                    else -> 8.dp
+                },
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -85,10 +96,25 @@ fun OffkitSectionHeader(
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f).semantics { heading() },
         )
-        if (hasAction) {
+        if (tonal) {
+            OffkitTonalButton(text = actionLabel!!, onClick = onAction!!, icon = actionIcon, testTag = actionTestTag)
+        } else if (hasAction) {
             OffkitTextButton(text = actionLabel!!, onClick = onAction!!, icon = actionIcon, testTag = actionTestTag)
         }
     }
+}
+
+/** Look of the trailing action of an [OffkitSectionHeader]. */
+enum class OffkitHeaderActionStyle {
+    /** Link-coloured [OffkitTextButton] (the default). */
+    Text,
+
+    /**
+     * [OffkitTonalButton] pill (`secondaryContainer`, `onSurface` content, fully rounded, 48dp
+     * min): the primary "Add" action of the list screens (Images to PDF, Add images, Merge), an
+     * owner-approved deviation from the design pack so it is easy to spot. Keeps 4dp below it.
+     */
+    Tonal,
 }
 
 /**
@@ -293,7 +319,7 @@ private fun OffkitSectionHeaderPreview() {
     OffkitTheme {
         Column(Modifier.background(MaterialTheme.colorScheme.background).padding(horizontal = 16.dp)) {
             OffkitSectionHeader(stringResource(R.string.section_compression_level))
-            OffkitSectionHeader(stringResource(R.string.screen_images), actionLabel = stringResource(R.string.add), onAction = {}, actionIcon = AppIcons.add)
+            OffkitSectionHeader(stringResource(R.string.screen_images), actionLabel = stringResource(R.string.add), onAction = {}, actionIcon = AppIcons.add, actionStyle = OffkitHeaderActionStyle.Tonal)
         }
     }
 }

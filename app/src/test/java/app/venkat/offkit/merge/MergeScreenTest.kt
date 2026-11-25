@@ -37,7 +37,11 @@ import app.venkat.offkit.feature.merge.TAG_MERGE_NOTE
 import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.TAG_ACTION_BACK
 import app.venkat.offkit.ui.components.TAG_ACTION_CLOSE
+import app.venkat.offkit.ui.components.TAG_FILE_LIST_ADD
 import app.venkat.offkit.ui.components.TAG_FILE_LIST_EMPTY
+import androidx.compose.ui.test.getBoundsInRoot
+import org.junit.Assert.assertNotNull
+import org.robolectric.Shadows.shadowOf
 import app.venkat.offkit.ui.components.TAG_JOB_CANCEL
 import app.venkat.offkit.ui.components.TAG_JOB_ERROR
 import app.venkat.offkit.ui.components.TAG_JOB_PROGRESS
@@ -215,6 +219,30 @@ class MergeScreenTest {
         rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled().assertTextEquals(app.getString(R.string.action_merge))
         rule.onNodeWithText(app.resources.getQuantityString(R.plurals.files_count, 0, 0)).assertIsDisplayed()
         rule.onNodeWithText(app.getString(R.string.merge_need_two)).assertIsDisplayed()
+    }
+
+    @Test
+    fun addRowAfterFilesOpensTheSamePicker() {
+        // Empty: the explanation, then the Add row alone.
+        rule.onNodeWithTag(TAG_FILE_LIST_ADD).performScrollTo().assertIsDisplayed()
+            .assertTextEquals(app.getString(R.string.add_pdfs))
+        addAll(pdf("a.pdf"), pdf("b.pdf"))
+        rule.onNodeWithTag(fileRowTag(2)).assertDoesNotExist()
+        rule.onNodeWithText(app.getString(R.string.merge_section_count, 2)).assertExists()
+        rule.onNodeWithTag(TAG_FILE_LIST_ADD).assertIsDisplayed()
+        assertTrue(
+            rule.onNodeWithTag(TAG_FILE_LIST_ADD).getBoundsInRoot().top >= rule.onNodeWithTag(fileRowTag(1)).getBoundsInRoot().bottom,
+        )
+
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_MERGE_ADD)
+        val header = shadowOf(rule.activity).nextStartedActivity
+        assertNotNull(header)
+        click(TAG_FILE_LIST_ADD)
+        val row = shadowOf(rule.activity).nextStartedActivity
+        assertNotNull("the Add row opened no picker", row)
+        assertEquals(header.action, row.action)
+        assertEquals(header.type, row.type)
     }
 
     @Test
