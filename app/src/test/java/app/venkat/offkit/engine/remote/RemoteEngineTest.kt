@@ -431,16 +431,17 @@ class RemoteEngineTest {
             conn,
             // Next regular sample only after 60 s; the stall limit would end the call after 3 s.
             limits = EngineLimits(stallMs = 3_000, memoryBytes = 1_000, memorySampleMs = 60_000),
-            // The first sample is under the cap and is followed by a 10-minute freeze (T22R-5: the
-            // jump is driven by the sample itself, not by a timer thread).
+            // The first sample is under the cap and is followed by a 30 s freeze, shorter than the
+            // sample interval (T22R-5: the jump is driven by the sample itself, not by a timer).
             rssBytes = {
-                if (samples.incrementAndGet() == 1) 10L.also { clock.jumpMinutes(10) } else 2_000L
+                if (samples.incrementAndGet() == 1) 10L.also { clock.jumpMs(30_000) } else 2_000L
             },
             nanoTime = clock::now,
         )
         val (_, input, out) = jobDir()
-        // Without the sample right after the gap the call would end TimedOut by the 3 s stall
-        // limit (a real stall of over 2 s is itself a gap, which samples too), never OutOfMemory.
+        // Without the sample right after the gap the next one would be due 30 s later, so the call
+        // would end TimedOut by the 3 s stall limit (a real stall of over 2 s is itself a gap,
+        // which samples too), never OutOfMemory. So no wall-time assertion is needed.
         assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.compress(input, CompressionLevel.LOW, out, Job()))
         assertEquals(2, samples.get())
         assertEquals(listOf(4242), conn.killed)
@@ -500,7 +501,7 @@ class RemoteEngineTest {
             crashed,
             deathAfterSteps({ cached.set(true); ms(1_000) }, { cached.set(false); ms(1_000) }, { ms(3_000) }),
         )
-        // Cached for under a sample interval, then a gap of exactly the freeze gap (not longer).
+        // Seen cached, then a gap of exactly the freeze gap: not longer than it, so not a thaw.
         assertEquals(crashed, deathAfterSteps({ cached.set(true); ms(1_000) }, { cached.set(false); ms(RemoteEngine.FREEZE_GAP_MS) }))
     }
 

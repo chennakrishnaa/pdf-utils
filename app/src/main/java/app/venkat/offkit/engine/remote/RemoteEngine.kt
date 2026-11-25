@@ -59,8 +59,8 @@ import java.util.concurrent.locks.ReentrantLock
  * consecutive wake-ups are more than [freezeGapMs] apart, this process may have been frozen, and
  * the gap minus one [pollMs] is not counted toward the stall, total or image limits or the cancel
  * grace (their deadlines are shifted by it). The memory check is not postponed: RSS is sampled on
- * the first wake-up after such a gap, unless the call is in its cancel grace (which ends in a kill
- * anyway). A gap counts as a thaw if it is at least [EngineLimits.FROZEN_DEATH_GAP_MS], or if it
+ * the first wake-up after such a gap, unless the call is in its cancel grace (which ends within
+ * [cancelGraceMs] of observed time, by a result or a kill). A gap counts as a thaw if it is at least [EngineLimits.FROZEN_DEATH_GAP_MS], or if it
  * is longer than [freezeGapMs] and [inBackground] (sampled when the call starts and about every
  * [BACKGROUND_SAMPLE_MS] of wake-ups) last said, before the gap, that the app was cached: only a
  * cached process is frozen (T22R-1). An engine death noticed within [THAW_WINDOW_MS] of a thaw is
@@ -450,7 +450,8 @@ class RemoteEngine(
 
         /**
          * A wait-loop gap longer than this (the loop wakes every ~100 ms) is not counted toward the
-         * time limits. Classifying a death needs a longer gap: [EngineLimits.FROZEN_DEATH_GAP_MS].
+         * time limits. For classifying a death such a gap is a thaw only if the app was cached
+         * before it; otherwise it takes [EngineLimits.FROZEN_DEATH_GAP_MS].
          */
         const val FREEZE_GAP_MS = 2_000L
 
@@ -458,15 +459,16 @@ class RemoteEngine(
         const val MAX_FROZEN_MS = 60 * 60_000L
 
         /**
-         * A death noticed this soon after a gap of at least [EngineLimits.FROZEN_DEATH_GAP_MS]
-         * happened while frozen: `EngineUnavailable`.
+         * A death noticed this soon after a thaw (see the class KDoc) happened while frozen:
+         * `EngineUnavailable`.
          */
         const val THAW_WINDOW_MS = 5_000L
 
         /**
          * How often the wait loop samples [inBackground] (in production a binder call to the
          * system's `getMyMemoryState`): often enough to know, before a freeze, that the app was
-         * cached, since the system freezes a cached app only after a delay of several seconds.
+         * cached, as the system normally freezes a cached app only some seconds after it became
+         * cached. A freeze sooner than that is judged as before (foreground gap).
          */
         const val BACKGROUND_SAMPLE_MS = 1_000L
     }
