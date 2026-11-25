@@ -1,0 +1,368 @@
+package app.venkat.offkit.reader
+
+import android.app.Activity
+import android.app.Application
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.pinch
+import androidx.lifecycle.Lifecycle
+import androidx.test.core.app.ApplicationProvider
+import app.venkat.offkit.FakePdfEngine
+import app.venkat.offkit.MainActivity
+import app.venkat.offkit.OnboardingSeenRule
+import app.venkat.offkit.PdfUtilApp
+import app.venkat.offkit.R
+import app.venkat.offkit.core.CoreTestSupport
+import app.venkat.offkit.core.PdfReader
+import app.venkat.offkit.engine.PageDims
+import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.feature.reader.ReaderPageDetailShown
+import app.venkat.offkit.feature.reader.ReaderPageRendered
+import app.venkat.offkit.feature.reader.ReaderPlanner
+import app.venkat.offkit.feature.reader.TAG_READER_INDICATOR
+import app.venkat.offkit.feature.reader.TAG_READER_LIST
+import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
+import app.venkat.offkit.feature.reader.TAG_READER_TITLE
+import app.venkat.offkit.feature.reader.readerPageRetryTag
+import app.venkat.offkit.feature.reader.readerPageTag
+import app.venkat.offkit.ui.components.MIME_PDF
+import app.venkat.offkit.ui.components.TAG_ACTION_BACK
+import app.venkat.offkit.ui.components.TAG_JOB_RESET
+import app.venkat.offkit.ui.components.pdfErrorTitle
+import app.venkat.offkit.ui.home.TAG_TOOL_READ
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowActivity
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** The reader screen through the real activity and navigation, on [FakePdfEngine], with the picker faked by Robolectric. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class ReaderScreenTest {
+    @get:Rule(order = Int.MIN_VALUE)
+    val onboardingSeen = OnboardingSeenRule()
+
+    @get:Rule
+    val rule = createAndroidComposeRule<MainActivity>()
+
+    private lateinit var app: Application
+    private lateinit var fake: FakePdfEngine
+
+    private val a4 = PageDims(595f, 842f)
+
+    @Before
+    fun setUp() {
+        app = ApplicationProvider.getApplicationContext()
+        fake = FakePdfEngine()
+        (app as PdfUtilApp).engine = fake
+    }
+
+    private fun str(id: Int, vararg args: Any): String = app.getString(id, *args)
+
+    private fun pdf(name: String): Uri = CoreTestSupport.contentUri(app, name, "%PDF-1.7\n%fake\n".toByteArray())
+
+    private fun exists(tag: String) = rule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+
+    private fun waitFor(tag: String) = CoreTestSupport.idleUntil(rule, message = tag) { exists(tag) }
+
+    private fun waitUntil(message: String, condition: () -> Boolean) = CoreTestSupport.idleUntil(rule, message = message, condition = condition)
+
+    private fun shadow() = shadowOf(rule.activity)
+
+    /** Asserts exactly one picker for one PDF was launched since the last call, and returns it. */
+    private fun takePdfPicker(): ShadowActivity.IntentForResult {
+        val forResult = shadow().nextStartedActivityForResult
+        assertNotNull("no picker was launched", forResult)
+        val intent = forResult!!.intent
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, intent.action)
+        assertArrayEquals(arrayOf(MIME_PDF), intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES))
+        assertNull("a second picker was launched", shadow().nextStartedActivityForResult)
+        // The same launch, as a plain started activity; nothing else was started.
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, shadow().nextStartedActivity?.action)
+        assertNull(shadow().nextStartedActivity)
+        return forResult
+    }
+
+    private fun assertNoPicker() {
+        assertNull("a picker was launched", shadow().nextStartedActivityForResult)
+    }
+
+    private fun answer(picker: ShadowActivity.IntentForResult, uri: Uri?) {
+        rule.runOnUiThread {
+            if (uri == null) {
+                shadow().receiveResult(picker.intent, Activity.RESULT_CANCELED, null)
+            } else {
+                shadow().receiveResult(picker.intent, Activity.RESULT_OK, Intent().setData(uri))
+            }
+        }
+        rule.waitForIdle()
+    }
+
+    private fun enterReader(): ShadowActivity.IntentForResult {
+        rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo().performClick()
+        rule.waitForIdle()
+        return takePdfPicker()
+    }
+
+    /** Enters the reader, picks [name] and waits until its first page is drawn. */
+    private fun openDocument(name: String = "report.pdf") {
+        answer(enterReader(), pdf(name))
+        waitUntilRendered(0)
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals(name)
+    }
+
+    private fun rendered(@Suppress("UNUSED_PARAMETER") index: Int, value: Boolean = true) = SemanticsMatcher.expectValue(ReaderPageRendered, value)
+
+    private fun isRendered(index: Int): Boolean =
+        rule.onAllNodesWithTag(readerPageTag(index)).fetchSemanticsNodes()
+            .any { it.config.getOrElseNullable(ReaderPageRendered) { null } == true }
+
+    private fun detailShown(index: Int): Boolean =
+        rule.onAllNodesWithTag(readerPageTag(index)).fetchSemanticsNodes()
+            .any { it.config.getOrElseNullable(ReaderPageDetailShown) { null } == true }
+
+    private fun waitUntilRendered(index: Int) = waitUntil("page $index rendered") { isRendered(index) }
+
+    private fun renderRequests() = fake.readerCalls.mapNotNull { it.request }
+
+    private fun indicator(page: Int, count: Int) = str(R.string.reader_page_indicator, page, count)
+
+    private fun readerDirs(): List<File> =
+        File(app.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith(PdfReader.READER_DIR_PREFIX) }
+
+    @Test
+    fun homeShowsReadCardThatOpensOnePdfPicker() {
+        rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo().assertIsDisplayed()
+        enterReader()
+        rule.onNodeWithTag(TAG_ACTION_BACK).assertIsDisplayed()
+        // Recomposition does not launch it again.
+        rule.mainClock.advanceTimeBy(1_000)
+        rule.waitForIdle()
+        assertNoPicker()
+    }
+
+    @Test
+    fun cancelledFirstPickerReturnsHome() {
+        val picker = enterReader()
+        answer(picker, null)
+        waitFor(TAG_TOOL_READ)
+        assertTrue(!exists(TAG_READER_TITLE))
+        assertNoPicker()
+    }
+
+    @Test
+    fun cancelledFirstPickerReturnsHomeEvenWhenTheResultArrivesBeforeResume() {
+        val picker = enterReader()
+        rule.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+        answer(picker, null)
+        rule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        rule.waitForIdle()
+        waitFor(TAG_TOOL_READ)
+        assertTrue(!exists(TAG_READER_TITLE))
+    }
+
+    @Test
+    fun pickedPdfShowsNameIndicatorAndPagesWithTheirAspectRatio() {
+        fake.readerPages = List(12) { if (it == 1) PageDims(842f, 595f) else a4 }
+        openDocument("report.pdf")
+        rule.onNodeWithTag(TAG_READER_INDICATOR).assertTextEquals(indicator(1, 12))
+        for (index in 0..1) {
+            rule.onNode(hasScrollToIndexAction()).performScrollToIndex(index)
+            rule.waitForIdle()
+            val bounds = rule.onNodeWithTag(readerPageTag(index)).fetchSemanticsNode().size
+            val dims = fake.readerPages[index]
+            assertTrue("page $index is laid out", bounds.width > 0)
+            assertEquals(ReaderPlanner.itemHeightPx(dims, bounds.width), bounds.height)
+        }
+
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_READER_INDICATOR).assertTextEquals(indicator(1, 12))
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(6)
+        rule.waitForIdle()
+        waitUntil("indicator moved") {
+            rule.onNodeWithTag(TAG_READER_INDICATOR).fetchSemanticsNode()
+                .config[SemanticsProperties.Text].joinToString() == indicator(7, 12)
+        }
+        // The pages scrolled to are rendered too.
+        waitUntilRendered(6)
+    }
+
+    @Test
+    fun visiblePagesAreRenderedAtTheFitWidth() {
+        openDocument()
+        val width = rule.onNodeWithTag(readerPageTag(0)).fetchSemanticsNode().size.width
+        val first = renderRequests().first { it.page == 0 }
+        val base = ReaderPlanner.baseRequest(0, a4, width, 2_500_000)
+        assertEquals(base, first)
+        rule.onNodeWithTag(readerPageTag(0)).assert(rendered(0))
+    }
+
+    @Test
+    fun pinchRendersASharpDetailAndZoomingBackStopsDetails() {
+        openDocument()
+        val list = rule.onNodeWithTag(TAG_READER_LIST).fetchSemanticsNode().size
+        val c = Offset(list.width / 2f, list.height / 3f)
+        val base = renderRequests().first { it.page == 0 }
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput {
+            pinch(c - Offset(30f, 0f), c - Offset(100f, 0f), c + Offset(30f, 0f), c + Offset(100f, 0f))
+        }
+        rule.waitForIdle()
+        waitUntil("detail of page 0") { detailShown(0) }
+        val detail = renderRequests().last { it.page == 0 && it.scale > base.scale }
+        assertTrue("detail clip ${detail.width}x${detail.height} is smaller than the page", detail.width < 0.9 * base.width * detail.scale / base.scale || detail.height < 0.9 * base.height * detail.scale / base.scale)
+
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput {
+            pinch(c - Offset(150f, 0f), c - Offset(10f, 0f), c + Offset(150f, 0f), c + Offset(10f, 0f))
+        }
+        rule.waitForIdle()
+        waitUntil("details dropped at zoom 1") { !detailShown(0) }
+        val before = renderRequests().size
+        rule.mainClock.advanceTimeBy(1_000)
+        rule.waitForIdle()
+        CoreTestSupport.idleUntil(rule, message = "settle") { true }
+        val after = renderRequests().drop(before)
+        assertTrue("detail requested at zoom 1: $after", after.none { it.scale > base.scale * 1.01f })
+    }
+
+    @Test
+    fun accessibilityZoomActionStillWorksOnTheReaderList() {
+        openDocument()
+        val actions = rule.onNodeWithTag(TAG_READER_LIST).fetchSemanticsNode()
+            .config[androidx.compose.ui.semantics.SemanticsActions.CustomActions].map { it.label }
+        assertTrue(actions.contains(str(R.string.reader_zoom_in)))
+    }
+
+    private fun assertOpenErrorScreen(error: PdfError) {
+        fake.readerError = error
+        answer(enterReader(), pdf("locked.pdf"))
+        waitUntil("error screen") { rule.onAllNodesWithTag(TAG_JOB_RESET).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText(str(pdfErrorTitle(error))).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(str(R.string.action_choose_another)).performClick()
+        rule.waitForIdle()
+        val picker = takePdfPicker()
+        fake.readerError = null
+        answer(picker, pdf("fine.pdf"))
+        waitUntilRendered(0)
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("fine.pdf")
+    }
+
+    @Test
+    fun encryptedPdfShowsPasswordProtectedErrorAndCanChooseAnother() = assertOpenErrorScreen(PdfError.Encrypted)
+
+    @Test
+    fun corruptPdfShowsDamagedErrorAndCanChooseAnother() = assertOpenErrorScreen(PdfError.Corrupt)
+
+    @Test
+    fun failedPageShowsRetryThatRendersItAgain() {
+        val failPage0 = AtomicBoolean(true)
+        fake.beforeRender = { request -> fake.readerError = if (failPage0.get() && request.page == 0) PdfError.Corrupt else null }
+        answer(enterReader(), pdf("report.pdf"))
+        waitFor(readerPageRetryTag(0))
+        assertTrue(!isRendered(0))
+        val before = renderRequests().count { it.page == 0 }
+        failPage0.set(false)
+        rule.onNodeWithTag(readerPageRetryTag(0)).performClick()
+        rule.waitForIdle()
+        waitUntilRendered(0)
+        assertTrue(renderRequests().count { it.page == 0 } > before)
+        assertTrue(!exists(readerPageRetryTag(0)))
+    }
+
+    @Test
+    fun openAnotherReplacesTheDocumentAndCancellingKeepsIt() {
+        openDocument("first.pdf")
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
+        rule.waitForIdle()
+        answer(takePdfPicker(), pdf("second.pdf"))
+        waitUntil("second open") {
+            rule.onAllNodesWithTag(TAG_READER_TITLE).fetchSemanticsNodes()
+                .any { it.config[SemanticsProperties.Text].joinToString() == "second.pdf" }
+        }
+        waitUntilRendered(0)
+
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
+        rule.waitForIdle()
+        answer(takePdfPicker(), null)
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("second.pdf")
+        rule.onNodeWithTag(readerPageTag(0)).assert(rendered(0))
+        assertEquals(1, readerDirs().size)
+    }
+
+    @Test
+    fun reopeningTheSameFileShowsItAgain() {
+        openDocument("same.pdf")
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
+        rule.waitForIdle()
+        answer(takePdfPicker(), pdf("same.pdf"))
+        waitUntilRendered(0)
+        rule.onNodeWithTag(TAG_READER_INDICATOR).assertTextEquals(indicator(1, 3))
+    }
+
+    @Test
+    fun recreationKeepsTheDocumentWithoutAnotherPicker() {
+        fake.readerPages = List(12) { a4 }
+        openDocument("report.pdf")
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(4)
+        rule.waitForIdle()
+        val page = rule.onNodeWithTag(TAG_READER_INDICATOR).fetchSemanticsNode().config[SemanticsProperties.Text].joinToString()
+        rule.activityRule.scenario.recreate()
+        rule.waitForIdle()
+        waitFor(TAG_READER_TITLE)
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("report.pdf")
+        rule.onNodeWithTag(TAG_READER_INDICATOR).assertTextEquals(page)
+        assertNoPicker()
+        assertNull(shadow().nextStartedActivity)
+    }
+
+    @Test
+    fun backReturnsHomeAndDeletesTheReaderCopy() {
+        openDocument()
+        assertEquals(1, readerDirs().size)
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+        waitFor(TAG_TOOL_READ)
+        waitUntil("reader copy deleted") { readerDirs().isEmpty() }
+    }
+
+    @Test
+    fun talkBackLabels() {
+        openDocument()
+        rule.onNodeWithTag(TAG_ACTION_BACK).assertContentDescriptionEquals(str(R.string.action_back))
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).assertContentDescriptionEquals(str(R.string.reader_open_another))
+        rule.onNodeWithTag(TAG_READER_INDICATOR)
+            .assertTextEquals(indicator(1, 3))
+            .assertContentDescriptionEquals(str(R.string.reader_page_cd, 1, 3))
+        rule.onNodeWithTag(readerPageTag(0)).assertContentDescriptionEquals(str(R.string.reader_page_cd, 1, 3))
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(1)
+        rule.waitForIdle()
+        rule.onNodeWithTag(readerPageTag(1)).assertContentDescriptionEquals(str(R.string.reader_page_cd, 2, 3))
+    }
+}
