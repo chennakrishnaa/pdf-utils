@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.core.graphics.createBitmap
 import app.venkat.offkit.PdfUtilApp
+import app.venkat.offkit.engine.ImageLimits
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PdfError
@@ -86,7 +87,12 @@ sealed interface ReaderTile {
  * result is dropped. Cancelling an [open] does ask the engine to stop (that document is being
  * abandoned).
  */
-class PdfReader internal constructor(context: Context, private val jobs: PdfJobs) {
+class PdfReader internal constructor(
+    context: Context,
+    private val jobs: PdfJobs,
+    /** Largest PDF [open] accepts (the engine's own input limit; lowered in tests). */
+    private val maxInputBytes: Long = ImageLimits.MAX_INPUT_PDF_BYTES,
+) {
     private val appContext: Context = context.applicationContext ?: context
 
     /**
@@ -94,7 +100,10 @@ class PdfReader internal constructor(context: Context, private val jobs: PdfJobs
      * `cacheDir/jobs/reader-<uuid>/` directory on the IO dispatcher, then reads its page sizes on
      * the engine thread.
      *
-     * Failures (the directory is deleted): non-`content:` or unreadable Uri: `Io`; the engine's
+     * Failures (the directory is deleted): non-`content:` or unreadable Uri: `Io`; a file larger
+     * than [ImageLimits.MAX_INPUT_PDF_BYTES] (the engine's input limit): `OutOfMemory`, as in the
+     * other flows, before copying when the provider reports the size, else as soon as the copy
+     * passes the limit; the engine's
      * `Encrypted`, `Corrupt`, `OutOfMemory`, `EngineCrashed`, ...; a document with no pages or with
      * an invalid page size: `Corrupt`. Page sizes are passed through [sanePageDims]. Cancelling the caller deletes the directory and rethrows.
      */
@@ -108,7 +117,9 @@ class PdfReader internal constructor(context: Context, private val jobs: PdfJobs
                 if (!dir.mkdirs() && !dir.isDirectory) throw IOException("Cannot create $dir")
                 val ctx = currentCoroutineContext()
                 val picked = UriIo.describe(appContext, uri)
-                UriIo.copyToFile(appContext, uri, file) { !ctx.isActive }
+                // Larger than the engine accepts: fail before copying (as PdfInputs does, OutOfMemory).
+                if ((picked.sizeBytes ?: 0L) > maxInputBytes) throw UriIo.InputTooLargeException(maxInputBytes)
+                UriIo.copyToFile(appContext, uri, file, isCancelled = { !ctx.isActive }, maxBytes = maxInputBytes)
                 picked.name
             }
             val engine = renderer() ?: return ReaderOpenResult.Failed(PdfError.Io(IOException("Engine cannot render pages")))
@@ -133,6 +144,8 @@ class PdfReader internal constructor(context: Context, private val jobs: PdfJobs
             if (!currentCoroutineContext().isActive) throw e
             return ReaderOpenResult.Failed(PdfError.Cancelled)
         } catch (e: OutOfMemoryError) {
+            return ReaderOpenResult.Failed(PdfError.OutOfMemory)
+        } catch (e: UriIo.InputTooLargeException) {
             return ReaderOpenResult.Failed(PdfError.OutOfMemory)
         } catch (e: Exception) {
             return ReaderOpenResult.Failed(PdfError.Io(e))

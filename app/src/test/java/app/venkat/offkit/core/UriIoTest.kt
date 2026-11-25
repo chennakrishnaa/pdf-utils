@@ -146,7 +146,7 @@ class UriIoTest {
         val dest = tmp.root.resolve("copy.bin")
         var polls = 0
         try {
-            UriIo.copyToFile(context, uri, dest) { ++polls > 2 }
+            UriIo.copyToFile(context, uri, dest, isCancelled = { ++polls > 2 })
             fail("expected cancellation")
         } catch (e: CancellationException) {
             // expected
