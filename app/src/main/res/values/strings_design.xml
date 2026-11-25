@@ -80,7 +80,6 @@
     <string name="result_sizes">%1$s → %2$s</string>
     <string name="result_suggested_name">Suggested name · you can rename when saving</string>
     <string name="result_not_saved">Not saved yet. Save it to a folder, or share it straight to another app.</string>
-    <string name="result_shared_only">Shared. No copy is saved on this phone unless you tap Save as.</string>
     <string name="result_saved_as">Saved as %1$s</string>
     <string name="action_save_as">Save as…</string>
     <string name="action_save_copy">Save another copy…</string>
@@ -108,10 +107,6 @@
     <plurals name="files_count">
         <item quantity="one">%d file</item>
         <item quantity="other">%d files</item>
-    </plurals>
-    <plurals name="images_count">
-        <item quantity="one">%d image</item>
-        <item quantity="other">%d images</item>
     </plurals>
     <plurals name="add_n_pages">
         <item quantity="one">Add %d page</item>
