@@ -418,6 +418,37 @@ object Fixtures {
         return f
     }
 
+    /**
+     * Two [pageWidth]x[pageHeight] pt pages for the reader: page 1 draws [jpeg] (stored as is,
+     * `/DCTDecode`, DeviceRGB, dictionary size [dictWidth]x[dictHeight]) over the full page and has no
+     * text; page 2 is plain: one vector [BLUE] rectangle covering the middle half of the page in both
+     * directions (x from w/4 to 3w/4, y from h/4 to 3h/4), white elsewhere.
+     */
+    fun jpegThenPlainPdf(
+        dir: File,
+        name: String,
+        jpeg: ByteArray,
+        dictWidth: Int,
+        dictHeight: Int,
+        pageWidth: Float = 400f,
+        pageHeight: Float = 300f,
+    ): File {
+        val f = File(dir, name)
+        buildPdf { doc ->
+            val ref = addRaw(doc, imageDict(dictWidth, dictHeight, 8, "/DeviceRGB", "/DCTDecode"), jpeg)
+            try { addPage(doc, pageWidth, pageHeight, ref, null) } finally { ref.destroy() }
+            val res = doc.newDictionary()
+            try {
+                val content = "0 0 1 rg ${num(pageWidth / 4)} ${num(pageHeight / 4)} ${num(pageWidth / 2)} ${num(pageHeight / 2)} re f\n"
+                val page = doc.addPage(Rect(0f, 0f, pageWidth, pageHeight), 0, res, content)
+                try { doc.insertPage(-1, page) } finally { page.destroy() }
+            } finally {
+                res.destroy()
+            }
+        }.save(f)
+        return f
+    }
+
     /** [jpeg] with the dimensions of its first SOF [marker] segment replaced (the walk stops at SOS). */
     fun patchSof(jpeg: ByteArray, marker: Int, width: Int, height: Int): ByteArray {
         val out = jpeg.copyOf()
