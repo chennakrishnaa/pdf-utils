@@ -11,6 +11,10 @@ import app.venkat.offkit.core.PreparedImage
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.PdfEstimate
+import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfPageRenderer
+import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfResult
 import java.io.File
 import java.io.IOException
@@ -37,11 +41,19 @@ import java.util.concurrent.atomic.AtomicLong
  * [killProcess]. An unbind with nothing pending does not kill. [EngineService] hands out one
  * server per process, so two jobs never run in MuPDF at once.
  *
+ * Reader requests ([EngineRequest.PageInfo], [EngineRequest.RenderPage]) run on [renderer] under
+ * the same rules; a render's `out` is deleted whenever it does not end in `PdfRender.Ok` (an `Err`
+ * result, a throw, client death or a cancel), and every failure is answered with the request's own
+ * reply type.
+ *
  * @param engine created on first use, on the worker thread.
  * @param jobsRoot `cacheDir/jobs` of this app.
  * @param killProcess ends this process; the default kills it with `Process.killProcess`.
  * @param linkDeath links `onDeath` to the death of a client binder and returns how to unlink it,
  *   or null if the binder is already dead.
+ * @param renderer the page renderer, created on first use on the worker thread; null (the
+ *   default, as in production) means the [engine] instance itself, which must then implement
+ *   [PdfPageRenderer] (otherwise reader requests get `Err(Io)`).
  */
 class EngineServer(
     engine: () -> PdfEngine,
@@ -53,8 +65,14 @@ class EngineServer(
     private val preparer: ImagePreparer = InProcessImagePreparer,
     private val killProcess: () -> Unit = { Process.killProcess(Process.myPid()) },
     private val linkDeath: (IBinder, () -> Unit) -> (() -> Unit)? = ::linkToDeath,
+    renderer: (() -> PdfPageRenderer)? = null,
 ) : IEngineService.Stub() {
     private val engine by lazy(engine)
+
+    private val renderer: PdfPageRenderer by lazy {
+        renderer?.invoke()
+            ?: (this.engine as? PdfPageRenderer ?: throw UnsupportedOperationException("the engine cannot render pages"))
+    }
 
     /** A request that was accepted and has not sent its result yet. */
     private class Pending(val out: File?, val unlink: () -> Unit)
@@ -143,8 +161,12 @@ class EngineServer(
             }
             val out = request.out?.let(::File)
             try {
-                when (val value = request.execute({ engine }, preparer, job)) {
+                when (val value = request.execute({ engine }, preparer, job, { renderer })) {
                     is PreparedImage -> EngineWire.encodePrepared(checkPrepared(value), myPid())
+                    is PdfRender.Err -> {
+                        out?.delete()
+                        EngineWire.encodeRender(value)
+                    }
                     else -> EngineWire.encodeAny(value)
                 }
             } catch (e: OutOfMemoryError) {
@@ -165,12 +187,13 @@ class EngineServer(
         }
     }
 
-    private fun errorFor(request: EngineRequest, error: PdfError): Bundle =
-        if (request is EngineRequest.Estimate) {
-            EngineWire.encodeEstimate(app.venkat.offkit.engine.PdfEstimate.Err(error))
-        } else {
-            EngineWire.encodeResult(PdfResult.Err(error))
-        }
+    /** An error reply of the type [request]'s client decodes. */
+    private fun errorFor(request: EngineRequest, error: PdfError): Bundle = when (request) {
+        is EngineRequest.Estimate -> EngineWire.encodeEstimate(PdfEstimate.Err(error))
+        is EngineRequest.PageInfo -> EngineWire.encodePageInfo(PdfPageInfo.Err(error))
+        is EngineRequest.RenderPage -> EngineWire.encodeRender(PdfRender.Err(error))
+        else -> EngineWire.encodeResult(PdfResult.Err(error))
+    }
 
     /** A prepared image must also lie inside [jobsRoot]; otherwise it is deleted and rejected. */
     private fun checkPrepared(p: PreparedImage): PreparedImage {

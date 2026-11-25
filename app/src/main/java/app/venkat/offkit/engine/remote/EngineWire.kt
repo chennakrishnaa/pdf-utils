@@ -8,9 +8,15 @@ import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfEngine
+import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfEstimate
+import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfPageRenderer
+import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.RenderLimits
+import app.venkat.offkit.engine.RenderRequest
 import java.io.File
 import java.io.IOException
 
@@ -22,7 +28,7 @@ sealed interface EngineRequest {
     /** Every input and output path of the request (validated by the server before running). */
     val paths: List<String>
 
-    /** The output path, or null for [Estimate]. */
+    /** The output path, or null for [Estimate], [NormalizeImage] and [PageInfo]. */
     val out: String?
 
     data class ImagesToPdf(
@@ -60,22 +66,44 @@ sealed interface EngineRequest {
         override val paths get() = listOf(raw, destDir)
         override val out: String? get() = null
     }
+
+    /** [PdfPageRenderer.pageInfo] of [pdf]; the reply is [EngineWire.encodePageInfo]. */
+    data class PageInfo(val pdf: String) : EngineRequest {
+        override val paths get() = listOf(pdf)
+        override val out: String? get() = null
+    }
+
+    /**
+     * [PdfPageRenderer.renderPage] of [pdf] into [out]; the reply is [EngineWire.encodeRender].
+     * [EngineWire.decodeRequest] rejects a [request] that fails `RenderLimits.check(request, null)`.
+     */
+    data class RenderPage(val pdf: String, val request: RenderRequest, override val out: String) : EngineRequest {
+        override val paths get() = listOf(pdf, out)
+    }
 }
 
 /** Largest image input index accepted by [EngineRequest.NormalizeImage] (file names are `img_NNN`). */
 internal const val MAX_IMAGE_INDEX = 99_999
 
 /**
- * Runs [request] on [engine] (or [preparer]): a [PdfResult], a [PdfEstimate] for
- * [EngineRequest.Estimate], or a [PreparedImage] for [EngineRequest.NormalizeImage].
+ * Runs [request] on [engine] (or [preparer], or [renderer]): a [PdfResult], a [PdfEstimate] for
+ * [EngineRequest.Estimate], a [PreparedImage] for [EngineRequest.NormalizeImage], a [PdfPageInfo]
+ * for [EngineRequest.PageInfo] or a [PdfRender] for [EngineRequest.RenderPage].
  */
-internal fun EngineRequest.execute(engine: () -> PdfEngine, preparer: ImagePreparer, job: JobControl): Any = when (this) {
+internal fun EngineRequest.execute(
+    engine: () -> PdfEngine,
+    preparer: ImagePreparer,
+    job: JobControl,
+    renderer: () -> PdfPageRenderer = { engine() as PdfPageRenderer },
+): Any = when (this) {
     is EngineRequest.NormalizeImage -> preparer.prepareImage(File(raw), File(destDir), index, job)
+    is EngineRequest.PageInfo -> renderer().pageInfo(File(pdf), job)
+    is EngineRequest.RenderPage -> renderer().renderPage(File(pdf), request, File(out), job)
     else -> execute(engine(), job)
 }
 
 private fun EngineRequest.execute(engine: PdfEngine, job: JobControl): Any = when (this) {
-    is EngineRequest.NormalizeImage -> error("not an engine request")
+    is EngineRequest.NormalizeImage, is EngineRequest.PageInfo, is EngineRequest.RenderPage -> error("not an engine request")
     is EngineRequest.ImagesToPdf -> engine.imagesToPdf(images.map(::File), pageSize, File(out), job, compression)
     is EngineRequest.Estimate -> engine.estimateImage(File(image))
     is EngineRequest.Compress -> engine.compress(File(pdf), level, File(out), job)
@@ -84,8 +112,9 @@ private fun EngineRequest.execute(engine: PdfEngine, job: JobControl): Any = whe
 }
 
 /**
- * Bundle encoding of [EngineRequest], [PdfResult], [PdfError] and [PdfEstimate]. Bundles hold only
- * strings, string arrays, ints and longs, so no class loading happens on decode.
+ * Bundle encoding of [EngineRequest], [PdfResult], [PdfError], [PdfEstimate], [PreparedImage],
+ * [PdfPageInfo] and [PdfRender]. Bundles hold only strings, string arrays, ints, longs, floats and
+ * float arrays, so no class loading happens on decode.
  *
  * Every variant round-trips exactly except [PdfError.Io], whose cause cannot cross as a
  * Throwable: it is sent as class name + message and rebuilt as
@@ -104,6 +133,13 @@ object EngineWire {
     private const val INDEX = "index"
     private const val FILE_NAME = "fileName"
     private const val PID = "pid"
+    private const val PAGE = "page"
+    private const val SCALE = "scale"
+    private const val LEFT = "left"
+    private const val TOP = "top"
+    private const val WIDTH = "width"
+    private const val HEIGHT = "height"
+    private const val SIZES = "sizes"
 
     private const val KIND = "kind"
     private const val PAGES = "pages"
@@ -119,6 +155,8 @@ object EngineWire {
     private const val KIND_EST_OK = "estOk"
     private const val KIND_EST_ERR = "estErr"
     private const val KIND_IMG_OK = "imgOk"
+    private const val KIND_INFO_OK = "infoOk"
+    private const val KIND_RENDER_OK = "renderOk"
 
     // ---------------------------------------------------------------- requests
 
@@ -158,12 +196,34 @@ object EngineWire {
                 putStringArray(IMAGES, r.images.toTypedArray())
                 putString(OUT, r.out)
             }
+            is EngineRequest.PageInfo -> {
+                putString(OP, "pageInfo")
+                putString(PDF, r.pdf)
+            }
+            is EngineRequest.RenderPage -> {
+                putString(OP, "renderPage")
+                putString(PDF, r.pdf)
+                putString(OUT, r.out)
+                putInt(PAGE, r.request.page)
+                putFloat(SCALE, r.request.scale)
+                putInt(LEFT, r.request.left)
+                putInt(TOP, r.request.top)
+                putInt(WIDTH, r.request.width)
+                putInt(HEIGHT, r.request.height)
+            }
         }
     }
 
-    /** Decodes a request bundle; throws [IllegalArgumentException] if it is malformed. */
+    /**
+     * Decodes a request bundle; throws [IllegalArgumentException] if it is malformed, or if a
+     * [EngineRequest.RenderPage] fails `RenderLimits.check(request, null)`.
+     */
     fun decodeRequest(b: Bundle): EngineRequest {
         fun str(k: String) = requireNotNull(b.getString(k)) { "missing $k" }
+        fun int(k: String): Int {
+            require(b.containsKey(k)) { "missing $k" }
+            return b.getInt(k)
+        }
         fun list(k: String) = requireNotNull(b.getStringArray(k)) { "missing $k" }.map { requireNotNull(it) }
         return when (val op = b.getString(OP)) {
             "imagesToPdf" -> EngineRequest.ImagesToPdf(
@@ -181,6 +241,13 @@ object EngineWire {
                 val index = b.getInt(INDEX)
                 require(index in 0..MAX_IMAGE_INDEX) { "bad index $index" }
                 EngineRequest.NormalizeImage(str(RAW), str(DEST_DIR), index)
+            }
+            "pageInfo" -> EngineRequest.PageInfo(str(PDF))
+            "renderPage" -> {
+                require(b.containsKey(SCALE)) { "missing $SCALE" }
+                val request = RenderRequest(int(PAGE), b.getFloat(SCALE), int(LEFT), int(TOP), int(WIDTH), int(HEIGHT))
+                RenderLimits.check(request, null)?.let { throw IllegalArgumentException(it) }
+                EngineRequest.RenderPage(str(PDF), request, str(OUT))
             }
             else -> throw IllegalArgumentException("unknown op $op")
         }
@@ -263,6 +330,62 @@ object EngineWire {
         else -> PreparedImage.Err(malformed())
     }
 
+    /** Encodes a [PdfPageInfo]: `Ok` as one float array `[w0, h0, w1, h1, ...]`. */
+    fun encodePageInfo(p: PdfPageInfo): Bundle = when (p) {
+        is PdfPageInfo.Ok -> Bundle().apply {
+            putString(KIND, KIND_INFO_OK)
+            val sizes = FloatArray(p.pages.size * 2)
+            p.pages.forEachIndexed { i, d ->
+                sizes[2 * i] = d.widthPt
+                sizes[2 * i + 1] = d.heightPt
+            }
+            putFloatArray(SIZES, sizes)
+        }
+        is PdfPageInfo.Err -> encodeResult(PdfResult.Err(p.error))
+    }
+
+    /**
+     * Decodes a [PdfPageInfo] bundle (untrusted). An `Ok` whose size array is missing, of odd
+     * length, longer than [RenderLimits.MAX_PAGES] pages, or holds a size that is not finite and
+     * > 0 becomes `Err(Io)`, as does any other malformed bundle.
+     */
+    fun decodePageInfo(b: Bundle): PdfPageInfo = when (b.getString(KIND)) {
+        KIND_INFO_OK -> {
+            val sizes = b.getFloatArray(SIZES)
+            if (sizes == null || sizes.size % 2 != 0 || sizes.size / 2 > RenderLimits.MAX_PAGES ||
+                sizes.any { !it.isFinite() || it <= 0f }
+            ) {
+                PdfPageInfo.Err(malformed())
+            } else {
+                PdfPageInfo.Ok(List(sizes.size / 2) { PageDims(sizes[2 * it], sizes[2 * it + 1]) })
+            }
+        }
+        KIND_ERR -> PdfPageInfo.Err(getError(b))
+        else -> PdfPageInfo.Err(malformed())
+    }
+
+    /** Encodes a [PdfRender]. */
+    fun encodeRender(r: PdfRender): Bundle = when (r) {
+        is PdfRender.Ok -> Bundle().apply {
+            putString(KIND, KIND_RENDER_OK)
+            putInt(WIDTH, r.width)
+            putInt(HEIGHT, r.height)
+        }
+        is PdfRender.Err -> encodeResult(PdfResult.Err(r.error))
+    }
+
+    /**
+     * Decodes a [PdfRender] bundle; a malformed one becomes `Err(Io)`. The output file is not
+     * checked here (the caller compares the dimensions with its request and the file length).
+     */
+    fun decodeRender(b: Bundle): PdfRender = when (b.getString(KIND)) {
+        KIND_RENDER_OK ->
+            if (b.containsKey(WIDTH) && b.containsKey(HEIGHT)) PdfRender.Ok(b.getInt(WIDTH), b.getInt(HEIGHT))
+            else PdfRender.Err(malformed())
+        KIND_ERR -> PdfRender.Err(getError(b))
+        else -> PdfRender.Err(malformed())
+    }
+
     /** The engine process id carried by an `Ok` [encodePrepared] bundle, or 0. */
     fun preparedPid(b: Bundle): Int = b.getInt(PID, 0)
 
@@ -271,6 +394,8 @@ object EngineWire {
         is PdfResult -> encodeResult(value)
         is PdfEstimate -> encodeEstimate(value)
         is PreparedImage -> encodePrepared(value)
+        is PdfPageInfo -> encodePageInfo(value)
+        is PdfRender -> encodeRender(value)
         else -> throw IllegalArgumentException("not a result: $value")
     }
 

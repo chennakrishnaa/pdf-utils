@@ -6,7 +6,8 @@ import java.io.File
 
 /**
  * Watchdog limits for one call of [RemoteEngine]. A call that breaks one gets the engine process
- * killed: [stallMs] / [totalMs] / [imageTotalMs] give `PdfError.TimedOut`, [memoryBytes] gives
+ * killed: [stallMs] / [totalMs] / [imageTotalMs] / [infoTotalMs] / [renderTotalMs] give
+ * `PdfError.TimedOut`, [memoryBytes] gives
  * `PdfError.OutOfMemory`.
  *
  * MuPDF calls cannot be interrupted from inside (see `security/engine-audit.md`, SR3: hostile PDFs
@@ -20,6 +21,9 @@ import java.io.File
  * @param memoryBytes largest resident set (RSS) the engine process may have while a call waits;
  *   [Long.MAX_VALUE] disables the check.
  * @param memorySampleMs how often the engine's RSS is sampled while waiting.
+ * @param infoTotalMs longest time a reader page-info request may take. Reader requests report no
+ *   progress and have no stall limit, only this total.
+ * @param renderTotalMs longest time one reader page render may take (total only, as [infoTotalMs]).
  */
 data class EngineLimits(
     val stallMs: Long = STALL_MS,
@@ -27,6 +31,8 @@ data class EngineLimits(
     val imageTotalMs: Long = IMAGE_TOTAL_MS,
     val memoryBytes: Long = Long.MAX_VALUE,
     val memorySampleMs: Long = MEMORY_SAMPLE_MS,
+    val infoTotalMs: Long = INFO_TOTAL_MS,
+    val renderTotalMs: Long = RENDER_TOTAL_MS,
 ) {
     companion object {
         /**
@@ -55,6 +61,19 @@ data class EngineLimits(
          * this is a hostile or broken file.
          */
         const val IMAGE_TOTAL_MS = 30_000L
+
+        /**
+         * 60 s to open a document and read every page size for the reader. Ordinary files take well
+         * under a second; a hostile page tree (deep, huge, cyclic) is stopped here.
+         */
+        const val INFO_TOTAL_MS = 60_000L
+
+        /**
+         * 30 s for one page render (one tile of at most `RenderLimits.MAX_PIXELS`). A legitimate
+         * heavy page (large scans, complex vector maps) renders in seconds; a page stuck longer is
+         * hostile or broken, and the reader shows an error for that tile only.
+         */
+        const val RENDER_TOTAL_MS = 30_000L
 
         /**
          * 10 s: the shortest gap between two wake-ups of [RemoteEngine]'s wait loop (normally

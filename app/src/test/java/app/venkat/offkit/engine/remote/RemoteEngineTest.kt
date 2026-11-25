@@ -6,10 +6,15 @@ import android.os.Bundle
 import app.venkat.offkit.FakePdfEngine
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.engine.JobControl
+import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfEstimate
+import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfPageRenderer
+import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.RenderRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -727,5 +732,141 @@ class RemoteEngineTest {
         connections[0].onServiceDisconnected(name)
         assertTrue(engine.merge(listOf(input), out, JobControl.None) is PdfResult.Ok)
         assertEquals(2, connections.size)
+    }
+
+    // ------------------------------------------------ reader
+
+    private val tile = RenderRequest(page = 2, scale = 2f, left = 100, top = 200, width = 64, height = 32)
+
+    private fun isIo(r: PdfRender) = assertTrue("$r", (r as PdfRender.Err).error is PdfError.Io)
+
+    @Test
+    fun pageInfoAndRenderRoundTrip() {
+        val fake = FakePdfEngine().apply { readerPages = listOf(PageDims(612f, 792f), PageDims(792f, 612f), PageDims(595f, 842f)) }
+        val conn = FakeConnector { server(fake) }
+        val engine = RemoteEngine(conn)
+        val (_, input, _) = jobDir()
+        val out = File(input.parentFile!!.parentFile, "tile.rgba")
+        assertEquals(PdfPageInfo.Ok(fake.readerPages), engine.pageInfo(input))
+        assertEquals(PdfRender.Ok(64, 32), engine.renderPage(input, tile, out))
+        assertEquals(64L * 32 * 4, out.length())
+        assertEquals(listOf(null, tile), fake.readerCalls.map { it.request })
+        fake.readerError = PdfError.Encrypted
+        assertEquals(PdfPageInfo.Err(PdfError.Encrypted), engine.pageInfo(input))
+        assertEquals(PdfRender.Err(PdfError.Encrypted), engine.renderPage(input, tile, out))
+        assertFalse(out.exists())
+        assertEquals(1, conn.connects.get())
+    }
+
+    @Test
+    fun invalidRenderRequestIsRefusedWithoutContactingTheEngine() {
+        val conn = FakeConnector { error("must not connect") }
+        val out = File(root, "j/tile.rgba").apply { parentFile!!.mkdirs(); writeText("stale") }
+        val r = RemoteEngine(conn).renderPage(File(root, "j/in.pdf"), tile.copy(scale = Float.NaN), out)
+        assertTrue(((r as PdfRender.Err).error as PdfError.Io).cause is IllegalArgumentException)
+        assertFalse(out.exists())
+        assertEquals(0, conn.connects.get())
+    }
+
+    /** Renderer that writes [bytes] bytes and claims `Ok(width + dw, height + dh)`. */
+    private fun rogue(bytes: (RenderRequest) -> Long, dw: Int = 0, dh: Int = 0) = object : PdfPageRenderer {
+        override fun pageInfo(pdf: File, job: JobControl) = PdfPageInfo.Ok(listOf(PageDims(1f, 1f)))
+        override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+            out.writeBytes(ByteArray(bytes(request).toInt()))
+            return PdfRender.Ok(request.width + dw, request.height + dh)
+        }
+    }
+
+    @Test
+    fun renderOkWithWrongLengthOrDimensionsIsRejectedAndDeleted() {
+        val (_, input, _) = jobDir()
+        val out = File(input.parentFile!!.parentFile, "tile.rgba")
+        val exact = { r: RenderRequest -> r.width.toLong() * r.height * 4 }
+        val cases = listOf(
+            rogue({ exact(it) - 1 }),
+            rogue({ exact(it) + 1 }),
+            rogue({ 0 }),
+            rogue(exact, dw = 1),
+            rogue(exact, dh = -1),
+            // Claims a smaller tile and writes a file that matches the claim, not the request.
+            rogue({ (it.width - 1).toLong() * it.height * 4 }, dw = -1),
+        )
+        for (renderer in cases) {
+            val engine = RemoteEngine(FakeConnector { EngineServer({ FakePdfEngine() }, root, myPid = { 4242 }, renderer = { renderer }) })
+            isIo(engine.renderPage(input, tile, out))
+            assertFalse(out.exists())
+        }
+        val honest = RemoteEngine(FakeConnector { EngineServer({ FakePdfEngine() }, root, myPid = { 4242 }, renderer = { rogue(exact) }) })
+        assertEquals(PdfRender.Ok(64, 32), honest.renderPage(input, tile, out))
+    }
+
+    @Test
+    fun pageInfoReplyWithBadSizesIsIo() {
+        val (_, input, _) = jobDir()
+        for (pages in listOf(listOf(PageDims(Float.NaN, 1f)), listOf(PageDims(1f, 0f)), listOf(PageDims(1f, Float.POSITIVE_INFINITY)))) {
+            val r = object : PdfPageRenderer {
+                override fun pageInfo(pdf: File, job: JobControl) = PdfPageInfo.Ok(pages)
+                override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl) = error("unused")
+            }
+            val engine = RemoteEngine(FakeConnector { EngineServer({ FakePdfEngine() }, root, renderer = { r }) })
+            val info = engine.pageInfo(input)
+            assertTrue("$info", (info as PdfPageInfo.Err).error is PdfError.Io)
+        }
+    }
+
+    @Test
+    fun renderTotalLimitKillsTheEngineReturnsTimedOutAndDeletesOut() {
+        val conn = firstThenWorking(hangingService())
+        // A short stall limit must not apply to reader requests: only renderTotalMs does.
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 100, totalMs = 60_000, imageTotalMs = 60_000, renderTotalMs = 500))
+        val (_, input, _) = jobDir()
+        val out = File(input.parentFile!!.parentFile, "tile.rgba").apply { writeText("partial") }
+        val t0 = System.nanoTime()
+        val r = engine.renderPage(input, tile, out)
+        val ms = elapsedMs(t0)
+        assertEquals(PdfRender.Err(PdfError.TimedOut), r)
+        assertTrue("took $ms ms", ms in 500..2_500)
+        assertEquals(listOf(4242), conn.killed)
+        assertFalse(out.exists())
+        assertEquals(PdfRender.Ok(64, 32), engine.renderPage(input, tile, out)) // a fresh engine
+        assertEquals(2, conn.connects.get())
+    }
+
+    @Test
+    fun infoTotalLimitKillsTheEngineAndReturnsTimedOut() {
+        val conn = FakeConnector { hangingService() }
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 100, renderTotalMs = 60_000, infoTotalMs = 400))
+        val t0 = System.nanoTime()
+        assertEquals(PdfPageInfo.Err(PdfError.TimedOut), engine.pageInfo(File(root, "x.pdf")))
+        val ms = elapsedMs(t0)
+        assertTrue("took $ms ms", ms in 400..2_500)
+        assertEquals(listOf(4242), conn.killed)
+    }
+
+    @Test
+    fun deathAndCancelDuringRenderDeleteOut() {
+        val fake = FakePdfEngine()
+        val conn = FakeConnector { server(fake) }
+        val engine = RemoteEngine(conn, cancelGraceMs = 200)
+        val (_, input, _) = jobDir()
+        val out = File(input.parentFile!!.parentFile, "tile.rgba")
+        val dead = CountDownLatch(1) // the "dead" engine must not write after the client gave up
+        fake.beforeRender = { out.writeText("partial"); conn.onLost!!.invoke(); dead.await(10, TimeUnit.SECONDS) }
+        assertEquals(PdfRender.Err(PdfError.EngineCrashed), engine.renderPage(input, tile, out))
+        assertFalse(out.exists())
+        fake.readerError = PdfError.Cancelled // the dead request ends without writing
+        dead.countDown()
+        Thread.sleep(100)
+        fake.readerError = null
+
+        // A cancel the engine never answers: killed after the grace, Cancelled, out deleted.
+        val release = CountDownLatch(1)
+        fake.beforeRender = { out.writeText("partial"); release.await(10, TimeUnit.SECONDS) }
+        val job = Job().apply { cancelled.set(false) }
+        Thread { Thread.sleep(100); job.cancelled.set(true) }.start()
+        assertEquals(PdfRender.Err(PdfError.Cancelled), engine.renderPage(input, tile, out, job))
+        release.countDown()
+        assertFalse(out.exists())
+        assertEquals(listOf(4242), conn.killed)
     }
 }
