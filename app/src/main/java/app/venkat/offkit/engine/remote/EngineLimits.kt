@@ -56,6 +56,19 @@ data class EngineLimits(
          */
         const val IMAGE_TOTAL_MS = 30_000L
 
+        /**
+         * 10 s: the shortest gap between two wake-ups of [RemoteEngine]'s wait loop (normally
+         * ~100 ms apart) after which an engine death noticed soon afterwards is blamed on a freeze
+         * (`EngineUnavailable`) rather than on the file (`EngineCrashed`) when the app is not in
+         * the background. A GC pause or a busy CPU stalls the loop for a few seconds and proves
+         * nothing (PI4R-1), so this is well above such pauses (the review suggested about 10 s).
+         * A shorter real freeze is still `EngineUnavailable` while the app is cached
+         * (`inBackground`); only one that ends with the app already in the foreground is now
+         * reported as `EngineCrashed`. A gap of more than 2 s still shifts the time limits (see
+         * `RemoteEngine.FREEZE_GAP_MS`).
+         */
+        const val FROZEN_DEATH_GAP_MS = 10_000L
+
         /** RSS sampled about once a second: `/proc/<pid>/statm` is one small read. */
         const val MEMORY_SAMPLE_MS = 1_000L
 
