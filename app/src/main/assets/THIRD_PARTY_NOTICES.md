@@ -270,7 +270,7 @@ androidx.compose.animation — animation 1.13.0, animation-android 1.13.0, anima
 
 androidx.compose.foundation — foundation 1.13.0, foundation-android 1.13.0, foundation-layout 1.13.0, foundation-layout-android 1.13.0 — Apache License, Version 2.0 (H) — The Android Open Source Project
 
-androidx.compose.material — material-icons-core 1.7.8, material-icons-core-android 1.7.8, material-ripple 1.13.0, material-ripple-android 1.13.0 — Apache License, Version 2.0 (H) — The Android Open Source Project
+androidx.compose.material — material-ripple 1.13.0, material-ripple-android 1.13.0 — Apache License, Version 2.0 (H) — The Android Open Source Project
 
 androidx.compose.material3 — material3 1.5.0, material3-android 1.5.0, material3-ripple 1.5.0, material3-ripple-android 1.5.0 — Apache License, Version 2.0 (H) — The Android Open Source Project
 
