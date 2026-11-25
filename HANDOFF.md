@@ -4,9 +4,10 @@ Written 2026-11-25 at the end of the UI redesign. The redesign is merged, built,
 
 ## State of the project
 
-- **App:** Offkit, package `app.venkat.offkit`. Offline Android PDF utility with four tools: images to PDF, compress, merge, add images to a PDF.
+- **App:** Offkit, package `app.venkat.offkit`. Offline Android PDF utility with four tools on `main`: images to PDF, compress, merge, add images to a PDF. A fifth, an in-app PDF reader, is on branch `pdf-reader` (see "PDF reader" below).
 - **Version:** 1.0.0, version code 1. **Not yet uploaded to Google Play.** Do not bump the version before the first upload.
 - **Branch:** `main` contains the redesign (merge commit `c8e0f22`) and the follow-up fixes made the same day: share-sheet fix, engine watchdog fix, dependency and unused-resource removal, wording. `dist/release/BUILD_INFO.txt` names the commit the signed build was made from.
+- **Branch `pdf-reader`:** the PDF reader, in the worktree `.claude/worktrees/pdf-reader`. **Not merged to `main`** and not in the signed 1.0.0 build.
 - **Release artefacts:** signed APK and bundle are in `dist/release/` (untracked) and in `s3://offkit-artifacts-656490711426/releases/1.0.0/`, with `SHA256SUMS` and `BUILD_INFO.txt`. The bucket is versioned; the pre-redesign build is an earlier version of the same keys.
 - **Store assets:** the new app icon and feature graphic (from the design pack) are in `dist/icon/` and under `releases/1.0.0/store/`. The developer icon and header in `dist/developer/` and `store/developer/` are unchanged. `dist/icon/preview-*.png` still show the old icon. **Phone screenshots have not been made.**
 - **Design pack:** `offkit-handoff/` (untracked). `SPEC.md` is the source of truth for the screens.
@@ -44,7 +45,8 @@ The owner's standing requirement: the app is secure, works offline, and requests
 - **Only `MainActivity` is exported.** The share `FileProvider` is not exported and must stay limited to `cache/shared/`. No other new components.
 - **System pickers only**, with transient grants. Never `takePersistableUriPermission` (the one in `core/RecentFiles.kt` predates this rule and is left).
 - **MuPDF never loads in the UI process.** The PDF engine runs in a separate `:engine` process. No code outside `engine/` may import `com.artifex.mupdf`; `verify.sh` checks this and `scripts/isolation-smoke.sh` checks the running app.
-- **No image decoding in the UI process.**
+- **No image decoding in the UI process.** The reader (`pdf-reader` branch) keeps to this: MuPDF renders each page in the `:engine` process and the UI process only copies the raw pixels it sends into a bitmap.
+- **Reader copy lifetime (`pdf-reader` branch).** The picked PDF is read once with the picker's grant and copied to `cacheDir/jobs/reader-<uuid>/`. The copy stays while the reader is open, also in the background, and is deleted when the reader is closed or another PDF is opened. A copy left by a killed process is deleted by the first `PdfJobs.get` in the next process (the first tool or reader opened). `PRIVACY.md` describes this.
 - **AGPL.** The About screen must keep the licence text, the MuPDF credit and the source link.
 - **App size and start-up:** no new native libraries; 64-bit ABIs only.
 
@@ -59,7 +61,7 @@ Run on `main` after every merge, in this order:
 | Script | Passes when it prints |
 |---|---|
 | `./scripts/verify.sh` | `VERIFY OK` |
-| `sg kvm -c './scripts/emulator-smoke.sh'` | `tests=31 failures=0 errors=0` and `SMOKE OK` (the count rises if tests are added) |
+| `sg kvm -c './scripts/emulator-smoke.sh'` | `tests=31 failures=0 errors=0` and `SMOKE OK` on `main`; `tests=32` on `pdf-reader` (the count rises if tests are added) |
 | `sg kvm -c './scripts/isolation-smoke.sh'` | `ISOLATION SMOKE OK` |
 | `./scripts/release.sh` | `RELEASE OK` (conductor only; needs `keystore.properties`) |
 | `sg kvm -c './scripts/release-smoke.sh'` | `RELEASE SMOKE OK` |
@@ -100,6 +102,21 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 - **Two hostile-file cases not run on a device:** the forms file merged with itself, and Add images with the hostile set. `security/engine-audit.md` describes each file well enough to regenerate it.
 - **Unused resources: removed.** 69 unused pack resources were deleted; lint now flags only `font/manrope.xml`, kept on purpose.
 - **Play Console:** developer account, listing text (`docs/play-listing.md`), phone screenshots, privacy policy URL, data safety form, then internal, closed (12 testers for 14 days) and production tracks.
+
+## PDF reader
+
+Built on branch `pdf-reader` after the 1.0.0 build; not merged. On that branch `VERIFY OK`, the emulator smoke (`tests=32`) and `ISOLATION SMOKE OK` pass. **It has never been tried on a real phone.**
+
+- **What it does:** a fifth Home card, "Read a PDF", below the tool grid. It opens the system file picker for one PDF and shows its pages in a continuous vertical list with pinch-to-zoom (1x to 5x), double-tap zoom, a page indicator and "Open another PDF". Read-only: nothing is changed or saved, and the file is not added to Recents.
+- **How:** MuPDF renders pages in the `:engine` process (`engine/PdfPageRenderer.kt`, `engine/ops/RenderPageOp.kt`, new calls in `engine/remote/`) and sends raw pixels to the UI. `core/PdfReader.kt` holds the private copy and runs reader calls on `PdfJobs`' engine thread. `feature/reader/` has the screen, `ReaderViewModel` and the render planner; `ui/reader/` has the zoomable list and its maths. No new permission, component, network access or "open with" intent filter. PDFs over 1 GiB are refused, as in the tools.
+- **New icons:** `ic_tool_read.xml`, `ic_tool_read_badge.xml`, `ic_folder_open.xml`, `ic_refresh.xml`, drawn for the project; `THIRD_PARTY_NOTICES.md` names them as original.
+- **Open items:**
+  - Not tried on a real phone: pinch and pan feel, performance on large PDFs, content behind the system bars, TalkBack, the real system picker.
+  - Text without embedded fonts (the base-14 fonts and CJK) is unverified on a device.
+  - Password-protected PDFs cannot be opened; there is no password entry.
+  - Other apps cannot open a PDF in Offkit ("open with"); there is no intent filter.
+  - Recents and the Result screen's Open still hand the file to an external viewer.
+  - The strings to review are in `res/values/strings_reader.xml` and `strings_reader_zoom.xml`.
 
 ## Where to read more
 

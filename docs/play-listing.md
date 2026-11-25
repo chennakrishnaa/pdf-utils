@@ -4,9 +4,9 @@
 
 Offkit: Offline PDF Tools
 
-## Short description (74 of 80 characters)
+## Short description (80 of 80 characters)
 
-Offline PDF tools: images to PDF, compress, merge. No ads, no permissions.
+Offline PDF tools: read, images to PDF, compress, merge. No ads, no permissions.
 
 ## Full description
 
@@ -18,6 +18,7 @@ WHAT YOU CAN DO
 • Compress PDF: make a PDF smaller by shrinking the images inside it. Pick from three levels and compare the size before and after.
 • Merge PDFs: pick several PDFs, put them in the order you want, and combine them into one.
 • Add images to a PDF: append pictures as new pages at the end of an existing PDF.
+• Read a PDF: scroll through the pages and pinch or double-tap to zoom in, up to 5x, to read the small print.
 
 Files you save are listed under Recent files on the home screen, so you can open or share them again quickly.
 
@@ -32,7 +33,9 @@ PRIVATE BY DESIGN
 GOOD TO KNOW
 
 • Works on Android 8.0 and newer, on 64-bit devices.
-• Password-protected PDFs are not supported.
+• Password-protected PDFs are not supported, in the tools or in the reader.
+• The reader only shows a PDF. It does not change it, save it or add it to Recent files.
+• PDFs larger than 1 GB are not supported.
 • Compression reduces the images in a PDF. A PDF that is mostly text will not get much smaller.
 • Merging keeps page content and web links (up to 1,000 per page). Form fields, comments and bookmarks are not carried over.
 • Very large or unusually complex files are stopped if they take too long or need too much memory.
