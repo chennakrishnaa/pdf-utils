@@ -192,7 +192,7 @@ class RenderPageOp {
             checkPageAnnots(doc, request.page)
             // RDR-3: images the page can draw are vetted before Page.run decodes them.
             if (memo == null || !ScanMemo.pagePassed(memo, request.page)) {
-                PdfInputs.checkGraph { RenderImageGate.checkPage(doc, request.page) }
+                PdfInputs.checkGraph { RenderImageGate.checkPage(doc, request.page) { job.isCancelled() } }
                 if (memo != null) ScanMemo.rememberPage(memo, request.page)
             }
             val page = loadingPage { doc.loadPage(request.page) }

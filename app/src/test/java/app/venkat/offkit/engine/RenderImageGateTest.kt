@@ -197,6 +197,123 @@ class RenderImageGateTest {
         })
     }
 
+    // ------------------------------------------------------------------ F4 re-review (RF-1 .. RF-7)
+
+    /** 32 benign entries plus the bomb under [key] (PDF name syntax, without the slash), drawn by [use]. */
+    private fun oddName(key: String, use: String = key): ByteArray {
+        val dict = (0 until 32).joinToString("") { "/I$it 11 0 R" } + "/$key 10 0 R"
+        return page("<</XObject<<$dict>>>>", "q 200 0 0 200 0 0 cm /I1 Do /$use Do Q") {
+            stream(11, "/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(4))
+            dctImage(10, bomb)
+        }
+    }
+
+    @Test
+    fun rf1_narrowingNeverMissesANameMuPdfResolves() {
+        val long = "A".repeat(5000) // MuPDF truncates both to 4,095 bytes
+        val cases = listOf(
+            "ctl-byte" to oddName("Im\u0001X"),
+            "utf8" to oddName("ImÃ©"), // bytes C3 A9: "Imé" once UTF-8 decoded
+            "hash00" to oddName("Bomb#00"),
+            "long" to oddName(long),
+            "long-truncated-use" to oddName(long, "A".repeat(4095) + "B".repeat(10)),
+        )
+        val missed = cases.filter { (name, bytes) -> runCatching { assertRefused(name, bytes) }.isFailure }.map { it.first }
+        assertEquals("cases where the bomb was not refused", emptyList<String>(), missed)
+    }
+
+    @Test
+    fun rf2_resourceLessFormIsCheckedUnderEveryParent() {
+        val r1 = (0 until 33).joinToString("") { "/P$it 13 0 R" } + "/Fx 11 0 R/Fy 12 0 R"
+        val r2 = (0 until 33).joinToString("") { "/Q$it 13 0 R" } + "/Fx 11 0 R/BOMB 10 0 R"
+        assertRefused("rf2", page("<</XObject<<$r1>>>>", "/Fx Do /Fy Do") {
+            stream(11, "/Subtype/Form/BBox[0 0 200 200]", "/BOMB Do".latin1()) // no /Resources
+            form(12, "<</XObject<<$r2>>>>", "/Fx Do")
+            stream(13, "/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(4))
+            dctImage(10, bomb)
+        })
+    }
+
+    @Test
+    fun rf3_jpxSizeIsReadWhereOpenjpegReadsIt() {
+        fun siz(w: Int, h: Int) = java.nio.ByteBuffer.allocate(4 + 2 + 2 + 32 + 2 + 9)
+            .put(byteArrayOf(0xFF.toByte(), 0x4F, 0xFF.toByte(), 0x51)).putShort(47).putShort(0)
+            .putInt(w).putInt(h).putInt(0).putInt(0).putInt(w).putInt(h).putInt(0).putInt(0)
+            .putShort(3).put(byteArrayOf(7, 1, 1, 7, 1, 1, 7, 1, 1)).array()
+        fun box(type: String, body: ByteArray) =
+            java.nio.ByteBuffer.allocate(8 + body.size).putInt(8 + body.size).put(type.latin1()).put(body).array()
+        val sig = box("jP  ", byteArrayOf(0x0D, 0x0A, 0x87.toByte(), 0x0A))
+        val ftyp = box("ftyp", "jp2 \u0000\u0000\u0000\u0000jp2 ".latin1())
+        val jp2 = sig + ftyp + box("xml ", siz(8, 8)) + box("jp2c", siz(60000, 60000))
+        assertEquals(Triple(60000L, 60000L, 3L), RenderImageGate.jpxSize(jp2))
+        // jp2c with a 64-bit length (XLBox) and a last box of length 0 (to the end of the data).
+        val xl = java.nio.ByteBuffer.allocate(16).putInt(1).put("jp2c".latin1()).putLong(16L + siz(5, 6).size).array() + siz(5, 6)
+        assertEquals(Triple(5L, 6L, 3L), RenderImageGate.jpxSize(sig + xl))
+        val zero = java.nio.ByteBuffer.allocate(8).putInt(0).put("jp2c".latin1()).array() + siz(7, 9)
+        assertEquals(Triple(7L, 9L, 3L), RenderImageGate.jpxSize(sig + zero))
+        assertEquals(null, RenderImageGate.jpxSize(ByteArray(3) + siz(8, 8))) // junk before a bare SOC
+        assertEquals(null, RenderImageGate.jpxSize(sig + box("jp2c", ByteArray(50)))) // jp2c without SOC+SIZ
+        assertRefused("jp2-fake-xml", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) {
+            stream(10, "/Subtype/Image/Width 8/Height 8/Filter/JPXDecode", jp2, flate = false)
+        })
+    }
+
+    @Test
+    fun sharedLargeDictionaryRevisitedByResourceLessFormsStillRenders() {
+        val n = 2000
+        val dict = (0 until n).joinToString("") { "/I$it 11 0 R" } + (0 until 10).joinToString("") { "/F$it ${20 + it} 0 R" }
+        val bytes = page("<</XObject 30 0 R>>", (0 until 10).joinToString(" ") { "/F$it Do" }) {
+            add(30, "<<$dict>>")
+            stream(11, "/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(4))
+            for (k in 0 until 10) stream(20 + k, "/Subtype/Form/BBox[0 0 200 200]", "q 20 0 0 20 0 0 cm /I${k * 7} Do Q".latin1())
+        }
+        assertRenders("shared-2000", file("shared.pdf", bytes))
+    }
+
+    @Test
+    fun rf5_duplicateContentStreamsAreScannedOnceAndCancelIsHonoured() {
+        // 16 MiB of distinct short names, ~100 KB deflated, listed 100 times in /Contents.
+        val names = StringBuilder()
+        var i = 0
+        while (names.length < (16 shl 20) - 16) names.append("/n").append(i++).append(' ')
+        val dict = (0 until 40).joinToString("") { "/I$it 11 0 R" }
+        val pdf = HostilePdf()
+        pdf.add(1, "<</Type/Catalog/Pages 2 0 R>>")
+        pdf.add(2, "<</Type/Pages/Kids[3 0 R]/Count 1>>")
+        pdf.add(3, "<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Resources<</XObject<<$dict>>>>/Contents[" +
+            (0 until 100).joinToString(" ") { "4 0 R" } + "]>>")
+        pdf.stream(4, "", names.toString().latin1())
+        pdf.stream(11, "/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(4))
+        val f = file("dup.pdf", pdf.bytes())
+        val doc = PdfInputs.open(f)
+        try {
+            val t0 = System.nanoTime()
+            RenderImageGate.checkPage(doc, 0)
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            assertTrue("dup contents took $ms ms", ms < FAST_MS)
+            val e = runCatching { RenderImageGate.checkPage(doc, 0) { true } }.exceptionOrNull()
+            assertTrue("cancel: $e", e is PdfInputException && e.error == PdfError.Cancelled)
+        } finally {
+            doc.destroy()
+        }
+    }
+
+    @Test
+    fun rf7_flatePredictorInFrontOfDctIsRefused() {
+        val jpeg = flatJpeg(ColorSpace.DeviceRGB, 8, 8)
+        assertRefused("fl-pred-dct", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) {
+            stream(10, "/Subtype/Image/Width 8/Height 8/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter[/FlateDecode/DCTDecode]" +
+                "/DecodeParms[<</Predictor 12/Columns 8>> null]", HostilePdf.deflate(jpeg), flate = false)
+        })
+    }
+
+    @Test
+    fun rf6_iccProfileBombReachedThroughColorSpaceResources() {
+        assertRefused("cs-resource-icc", page("<</ColorSpace<</CS0[/ICCBased 11 0 R]>>>>", "/CS0 cs 1 0 0 sc 0 0 10 10 re f") {
+            stream(11, "/N 3", ByteArray(8 shl 20))
+        })
+    }
+
     // ------------------------------------------------------------------ legitimate documents
 
     private fun flatJpeg(cs: ColorSpace, w: Int, h: Int): ByteArray {

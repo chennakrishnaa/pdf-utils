@@ -43,7 +43,7 @@ import java.util.zip.InflaterInputStream
  *   unparsable header, or a larger stream is refused: those are the bomb spellings of
  *   `CompressFilterGateTest` and the header cannot be reached cheaply;
  * - JPX: MuPDF ignores the dictionary size and openjpeg allocates from the codestream's SIZ
- *   marker (32-bit samples): SIZ must be found and `w × h × components ≤` [MAX_JPX_SAMPLES];
+ *   marker (32-bit samples): SIZ must be found where openjpeg reads it ([jpxSize]) and `w × h × components ≤` [MAX_JPX_SAMPLES];
  *   JPX behind any other filter is refused (MuPDF itself only honours a JPX stream on its own);
  * - Flate/LZW predictors: `/Columns × /Colors × /BitsPerComponent / 8` ≤ [MAX_PREDICTOR_ROW_BYTES]
  *   (MuPDF sizes its row buffers from these alone, SR-5); CCITT `/Columns` ≤ [ImageLimits.MAX_EDGE];
@@ -54,18 +54,23 @@ import java.util.zip.InflaterInputStream
  *   MuPDF: an Indexed lookup is read for `(hival + 1) × n` bytes only);
  * - the image's `/SMask` and `/Mask` streams, checked the same way.
  *
- * **What is walked** (iteratively, a visited set by object number, so shared objects are checked
- * once and cycles end; at most [MAX_NESTING] nested resource levels and [MAX_VISITS] visited
- * entries in [MAX_WALK_MILLIS], else refused): the page's `/Resources` (inherited), its
- * `/XObject` entries, form XObjects' `/Resources` (a form without them uses its parent's, already
- * walked), tiling patterns' `/Resources` (`/Pattern`), soft-mask groups (`/ExtGState` → `/SMask`
- * → `/G`), Type 3 fonts' `/Resources` (`/Font`), and every annotation's appearance streams
- * (`/AP` `/N` `/R` `/D`, a stream or a dictionary of states). When a resource dictionary has more
- * than [NARROW_ABOVE] `/XObject` entries (generators that share one resource dictionary across
- * all pages), only the entries whose name occurs as a `/Name` token in the content stream(s) that
- * use it are checked, provided those streams are unfiltered or plain Flate and inflate within
- * [MAX_CONTENT_SCAN_BYTES]; otherwise every entry is checked. Any `/` token counts, so the
- * candidate set is a superset of what the interpreter can look up.
+ * **What is walked** (iteratively; images and resource dictionaries are deduplicated by object
+ * number, so cycles end; at most [MAX_NESTING] nested resource levels and [MAX_VISITS] budget
+ * units in [MAX_WALK_MILLIS], else refused; cancellation is polled throughout and reported as
+ * `Cancelled`): the page's `/Resources` (inherited), its `/XObject` entries, form XObjects'
+ * `/Resources`, tiling patterns' `/Resources` (`/Pattern`), soft-mask groups (`/ExtGState` →
+ * `/SMask` → `/G`), Type 3 fonts' `/Resources` (`/Font`), the ICC profiles of `/ColorSpace`
+ * resources, and every annotation's appearance streams (`/AP` `/N` `/R` `/D`, a stream or a
+ * dictionary of states). A form, pattern, group or Type 3 font WITHOUT its own `/Resources` is
+ * run by MuPDF with its caller's, so the caller's dictionary is walked again for it, once per
+ * (object, parent dictionary) pair (RF-2). Each resource dictionary is listed once per check and
+ * only entries actually checked are charged. When a dictionary has more than [NARROW_ABOVE]
+ * `/XObject` entries (generators that share one resource dictionary across all pages) and every
+ * key is a [plainKey], only the entries whose name occurs as a token in the content stream(s)
+ * that use it are checked ([matchNames], MuPDF's tokenisation), provided those streams are
+ * unfiltered or plain Flate, inflate within [MAX_CONTENT_SCAN_BYTES] and the page has scanned at
+ * most [MAX_PAGE_SCAN_BYTES]; otherwise every entry is checked. Any `/` starts a token, so the
+ * matched set is a superset of what the interpreter can look up.
  *
  * **Not covered** (the RSS watchdog stays the backstop): inline images (`BI … ID … EI` inside a
  * content stream, including an inline DCT image whose SOF lies); JBIG2 internals (jbig2dec sizes
@@ -74,7 +79,12 @@ import java.util.zip.InflaterInputStream
  * streams); shading patterns and `sh` (no images, but large function streams); fonts other than
  * Type 3 (embedded font programs); `/MK` icons of widgets that have no appearance stream yet; an
  * image's `/Alternates`; images drawn through the appearance MuPDF synthesises; colour-space
- * resource lookups for inline images.
+ * resource lookups for inline images. ICC profiles are vetted only where an image's colour space
+ * or a `/ColorSpace` resource names them directly or as an Indexed base: not those of `/Shading`
+ * dictionaries, transparency groups (`/Group /CS`), DeviceN/Separation alternates, or an ICC
+ * stream's own `/Alternate` (RF-6). Stream sizes are taken from `/Length`; a stream whose real
+ * extent runs past it is read to `endstream` by MuPDF (`readRawStream`) before the size checks
+ * apply, as in Compress (RF-4).
  */
 internal object RenderImageGate {
     /** 256 MiB per image: 4000×6000 CMYK JPEG 96 MB, 600 dpi A4 4960×7016 gray 35 MB / RGB 104 MB. */
@@ -112,37 +122,68 @@ internal object RenderImageGate {
     /** Largest decoded content stream scanned for names when narrowing. */
     const val MAX_CONTENT_SCAN_BYTES = 16 shl 20
 
+    /** Content bytes one page check scans for names; beyond, entries are checked without narrowing. */
+    const val MAX_PAGE_SCAN_BYTES = 64L shl 20
+
+    /** Longest dictionary key narrowing can match ([plainKey]). */
+    const val MAX_KEY_CHARS = 127
+
     private fun refuse(): Nothing = throw PdfInputException(PdfError.OutOfMemory)
 
     /**
      * Checks page [index] of [doc] (before `loadPage`). Returns normally when every image it can
      * see is within the limits; throws `PdfInputException(OutOfMemory)` otherwise.
      */
-    fun checkPage(doc: PDFDocument, index: Int) {
-        Walk(doc).use { it.run(index) }
+    fun checkPage(doc: PDFDocument, index: Int, isCancelled: () -> Boolean = { false }) {
+        Walk(doc, isCancelled).use { it.run(index) }
     }
 
-    private class Walk(private val doc: PDFDocument) : AutoCloseable {
+    private class Walk(private val doc: PDFDocument, private val isCancelled: () -> Boolean) : AutoCloseable {
         private val s = Scope()
         private val count = doc.countObjects()
         private val visited = BitSet(count)
         private val budget = ObjectGraph.Budget(MAX_VISITS, MAX_WALK_MILLIS)
         private var pageCost = 0L
         private var inspected = 0L
+        private var scanned = 0L
+        private var nextDirectId = -1L
 
-        /** A resource dictionary to walk, the streams whose names may narrow it, and its level. */
-        private class Item(val resources: PDFObject, val contents: List<PDFObject>?, val level: Int)
+        /**
+         * One resource dictionary, listed once per page check: its `/XObject` keys, whether they may
+         * be narrowed ([plainKey]), which entries were already checked, and whether the other
+         * sections (patterns, soft masks, Type 3 fonts, colour spaces) were walked.
+         */
+        private class ResInfo(val dict: PDFObject, val xobject: PDFObject?, val keys: List<String>, val narrowable: Boolean) {
+            val keySet: Set<String> by lazy { keys.toHashSet() }
+            val checked = HashSet<String>()
+            var allChecked = xobject == null
+            var othersDone = false
+        }
+
+        private val infos = HashMap<Long, ResInfo>()
+
+        /** RF-2: (resource-less form/pattern/group/font object, parent resources id) pairs walked. */
+        private val pairs = HashSet<Pair<Int, Long>>()
+
+        /** A resource dictionary ([id] into [infos]) to walk with the streams that may narrow it. */
+        private class Item(val id: Long, val contents: List<PDFObject>?, val level: Int)
 
         private val stack = ArrayList<Item>()
 
         override fun close() = s.close()
 
+        /** Charges [n] budget units (0: only the clock) and polls cancellation. */
+        private fun tick(n: Int = 1) {
+            if (isCancelled()) throw PdfInputException(PdfError.Cancelled)
+            budget.spend(n)
+        }
+
         fun run(index: Int) {
             val page = s.add(doc.findPage(index))
-            val pageContents = streamsOf(s.add(page.get("Contents")))
             val pageRes = s.add(page.getInheritable("Resources"))
-            push(pageRes, pageContents, 1)
-            annotations(s.add(page.get("Annots")), pageRes)
+            val pageId = idOf(pageRes)
+            push(pageId, pageRes, streamsOf(s.add(page.get("Contents"))), 1)
+            annotations(s.add(page.get("Annots")), pageId, pageRes)
             while (stack.isNotEmpty()) resources(stack.removeAt(stack.size - 1))
         }
 
@@ -156,95 +197,108 @@ internal object RenderImageGate {
         }
 
         /**
-         * A form, pattern or Type 3 font without `/Resources` uses its parent's: the parent is walked
-         * again with [contents] as the names (a narrowed parent is revisitable, a small one was
-         * already walked in full).
+         * Id of a resource dictionary: its object number, or a fresh negative id for a direct one
+         * (a direct dictionary is reached only through its owner, which is itself deduplicated).
          */
-        private fun pushOwnOrParent(own: PDFObject, parent: PDFObject, contents: List<PDFObject>?, level: Int) =
-            push(if (own.isNull) parent else own, contents, level)
+        private fun idOf(res: PDFObject): Long = if (res.isIndirect) res.asIndirect().toLong() else nextDirectId--
 
-        private fun push(res: PDFObject, contents: List<PDFObject>?, level: Int) {
-            budget.spend()
-            if (res.isNull || !firstVisitAllowRevisitWithNarrowing(res)) return
+        private fun push(id: Long, res: PDFObject, contents: List<PDFObject>?, level: Int) {
+            tick()
+            if (res.isNull || !res.isDictionary) return
             if (level > MAX_NESTING) refuse()
-            if (!res.isDictionary) return
-            stack.add(Item(res, contents, level))
+            val info = infos.getOrPut(id) {
+                val xo = s.add(res.get("XObject")).let { if (it.isIndirect) s.add(it.resolve()) else it }
+                val keys = if (xo.isDictionary) keys(xo) else emptyList()
+                tick(keys.size / 64)
+                ResInfo(res, if (xo.isDictionary) xo else null, keys, keys.size > NARROW_ABOVE && keys.all(::plainKey))
+            }
+            if (info.allChecked && info.othersDone) return
+            stack.add(Item(id, contents, level))
         }
 
         /**
-         * Resource dictionaries may be shared by forms whose content uses different names; a
-         * narrowed walk is therefore not recorded as complete, so a resource dictionary is only
-         * skipped on a revisit when it is small (never narrowed).
+         * A form, tiling pattern, soft-mask group or Type 3 font [obj] reached from resources
+         * [parentId]: with its own `/Resources` it is walked once (by object number); without, MuPDF
+         * runs it with its caller's resources, so the parent is walked again with [contents] as
+         * the names, once per (object, parent) pair (RF-2).
          */
-        private fun firstVisitAllowRevisitWithNarrowing(res: PDFObject): Boolean {
-            if (!res.isIndirect) return true
-            val xo = s.add(res.get("XObject"))
-            if (xo.isDictionary && xo.size() > NARROW_ABOVE) return true // entries themselves are deduplicated
-            return firstVisit(res)
+        private fun child(obj: PDFObject, contents: List<PDFObject>?, level: Int, parentId: Long, parentRes: PDFObject) {
+            val own = s.add(obj.get("Resources"))
+            if (own.isNull) {
+                if (!obj.isIndirect || pairs.add(obj.asIndirect() to parentId)) push(parentId, parentRes, contents, level)
+            } else if (firstVisit(obj)) {
+                push(idOf(own), own, contents, level)
+            }
         }
 
-        private fun annotations(annots: PDFObject, pageRes: PDFObject) {
+        private fun annotations(annots: PDFObject, pageId: Long, pageRes: PDFObject) {
             if (!annots.isArray) return
             for (i in 0 until annots.size()) {
-                budget.spend()
+                tick()
                 val a = s.add(annots.get(i))
                 if (!firstVisit(a) || !a.isDictionary) continue
                 val ap = s.add(a.get("AP"))
                 if (!ap.isDictionary) continue
                 for (key in APPEARANCE_KEYS) {
                     val v = s.add(ap.get(key))
-                    if (v.isStream) xobject(v, 1, pageRes)
-                    else if (v.isDictionary && firstVisit(v)) for (k in keys(v)) xobject(s.add(v.get(k)), 1, pageRes)
+                    if (v.isStream) xobject(v, 1, pageId, pageRes)
+                    else if (v.isDictionary && firstVisit(v)) for (k in keys(v)) xobject(s.add(v.get(k)), 1, pageId, pageRes)
                 }
             }
         }
 
         private fun resources(item: Item) {
-            val res = item.resources
-            val xo = s.add(res.get("XObject"))
-            if (xo.isDictionary) {
-                val names = keys(xo)
-                val wanted = if (names.size > NARROW_ABOVE) item.contents?.let { usedNames(it) } else null
-                for (name in names) {
-                    budget.spend()
-                    if (wanted != null && name !in wanted) continue
-                    xobject(s.add(xo.get(name)), item.level, res)
+            val info = infos.getValue(item.id)
+            val res = info.dict
+            val xo = info.xobject
+            if (xo != null && !info.allChecked) {
+                val wanted = if (info.narrowable) item.contents?.let { usedKeys(it, info.keySet) } else null
+                for (name in wanted ?: info.keys) {
+                    if (!info.checked.add(name)) continue
+                    tick()
+                    xobject(s.add(xo.get(name)), item.level, item.id, res)
                 }
+                if (wanted == null) info.allChecked = true
             }
+            if (info.othersDone) return
+            info.othersDone = true
             val pat = s.add(res.get("Pattern"))
             if (pat.isDictionary) for (k in keys(pat)) {
-                budget.spend()
+                tick()
                 val p = s.add(pat.get(k))
-                if (!firstVisit(p) || !p.isStream) continue
-                pushOwnOrParent(s.add(p.get("Resources")), res, listOf(p), item.level + 1)
+                if (p.isStream) child(p, listOf(p), item.level + 1, item.id, res)
             }
             val gs = s.add(res.get("ExtGState"))
             if (gs.isDictionary) for (k in keys(gs)) {
-                budget.spend()
+                tick()
                 val g = s.add(gs.get(k))
-                if (!firstVisit(g) || !g.isDictionary) continue
+                if (!g.isDictionary) continue
                 val sm = s.add(g.get("SMask"))
-                if (!firstVisit(sm) || !sm.isDictionary) continue
-                xobject(s.add(sm.get("G")), item.level, res)
+                if (sm.isDictionary) xobject(s.add(sm.get("G")), item.level, item.id, res)
             }
             val fonts = s.add(res.get("Font"))
             if (fonts.isDictionary) for (k in keys(fonts)) {
-                budget.spend()
+                tick()
                 val f = s.add(fonts.get(k))
-                if (!firstVisit(f) || !f.isDictionary) continue
-                if (nameOf(s.add(f.get("Subtype"))) != "Type3") continue
+                if (!f.isDictionary || nameOf(s.add(f.get("Subtype"))) != "Type3") continue
                 // Glyph procedures are not scanned for names: their resources are walked in full.
-                pushOwnOrParent(s.add(f.get("Resources")), res, null, item.level + 1)
+                child(f, null, item.level + 1, item.id, res)
+            }
+            // RF-6: ICC profiles (also under Indexed) of the colour-space resources.
+            val cs = s.add(res.get("ColorSpace"))
+            if (cs.isDictionary) for (k in keys(cs)) {
+                tick()
+                Scope().use { t -> components(t, t.add(cs.get(k))) }
             }
         }
 
-        /** An XObject reference found at resource [level]: an image is checked, a form is queued. */
-        private fun xobject(v: PDFObject, level: Int, parent: PDFObject) {
-            budget.spend()
-            if (!v.isStream || !firstVisit(v)) return
+        /** An XObject reference found in resources [parentId]: an image is checked, a form is queued. */
+        private fun xobject(v: PDFObject, level: Int, parentId: Long, parentRes: PDFObject) {
+            tick()
+            if (!v.isStream) return
             when (nameOf(s.add(v.get("Subtype")))) {
-                "Image" -> image(v, mask = false)
-                "Form" -> pushOwnOrParent(s.add(v.get("Resources")), parent, listOf(v), level + 1)
+                "Image" -> if (firstVisit(v)) image(v, mask = false)
+                "Form" -> child(v, listOf(v), level + 1, parentId, parentRes)
             }
         }
 
@@ -253,7 +307,7 @@ internal object RenderImageGate {
             if (mask) return
             for (k in MASK_KEYS) {
                 val m = s.add(img.get(k))
-                budget.spend()
+                tick()
                 if (m.isStream && firstVisit(m)) image(m, mask = true)
             }
         }
@@ -338,6 +392,9 @@ internal object RenderImageGate {
                     "FlateDecode", "LZWDecode" -> {
                         val predictor = intOf(t, t.add(p.get("Predictor")))
                         if (predictor > 1) {
+                            // RF-7: the DCT header is read from the inflated bytes WITHOUT the predictor
+                            // MuPDF would apply, so a predictor in front of DCT is refused.
+                            if ("DCTDecode" in filters) refuse()
                             val columns = maxOf(1, intOf(t, t.add(p.get("Columns")))).toLong()
                             val colors = maxOf(1, intOf(t, t.add(p.get("Colors")))).toLong()
                             val bits = intOf(t, t.add(p.get("BitsPerComponent"))).let { if (it <= 0) 8 else it }.toLong()
@@ -400,16 +457,24 @@ internal object RenderImageGate {
             }
         }
 
-        /** Names that occur as `/Name` tokens in [streams] (#xx decoded), or null if one cannot be scanned. */
-        private fun usedNames(streams: List<PDFObject>): Set<String>? {
-            val names = HashSet<String>()
+        /**
+         * The keys of [keySet] that occur as name tokens in [streams] (RF-1/RF-5), or null when a
+         * stream cannot be scanned (not raw or plain Flate, larger than [MAX_CONTENT_SCAN_BYTES]
+         * decoded, or the page's [MAX_PAGE_SCAN_BYTES] are spent): the caller then checks every
+         * entry. Each stream object is scanned once per call; only matched keys are kept.
+         */
+        private fun usedKeys(streams: List<PDFObject>, keySet: Set<String>): Set<String>? {
+            val found = HashSet<String>()
+            val seen = HashSet<Int>()
             for (st in streams) {
+                tick()
                 if (!st.isStream) return null
+                if (st.isIndirect && !seen.add(st.asIndirect())) continue
                 val data = Scope().use { t ->
                     val filters = filterNames(t, st) ?: return null
                     if (!t.add(geta(t, st, "DecodeParms", "DP")).isNull) return null
                     val len = intOf(t, t.add(st.get("Length")))
-                    if (len < 0 || len > MAX_CONTENT_SCAN_BYTES) return null
+                    if (len < 0 || len > MAX_CONTENT_SCAN_BYTES || scanned + len > MAX_PAGE_SCAN_BYTES) return null
                     val raw = st.readRawStream()
                     when {
                         filters.isEmpty() -> raw
@@ -417,14 +482,17 @@ internal object RenderImageGate {
                         else -> return null
                     }
                 }
-                collectNames(data, names)
+                scanned += data.size
+                if (scanned > MAX_PAGE_SCAN_BYTES) return null
+                matchNames(data, keySet, found) { tick(0) }
+                if (found.size == keySet.size) break
             }
-            return names
+            return found
         }
 
         private fun streamsOf(contents: PDFObject): List<PDFObject>? = when {
             contents.isStream -> listOf(contents)
-            contents.isArray -> (0 until minOf(contents.size(), MAX_VISITS)).map { budget.spend(); s.add(contents.get(it)) }
+            contents.isArray -> (0 until minOf(contents.size(), MAX_VISITS)).map { tick(); s.add(contents.get(it)) }
             else -> null
         }
 
@@ -491,26 +559,60 @@ internal object RenderImageGate {
         }
     }
 
-    /** Adds every `/Name` token of content-stream bytes [data] to [out] (superset of names looked up). */
-    internal fun collectNames(data: ByteArray, out: MutableSet<String>) {
+    /**
+     * RF-1: a dictionary key that name narrowing can match exactly: 1..[MAX_KEY_CHARS] characters,
+     * each printable ASCII (0x21-0x7E), no `#`. For such a key, a content token denotes it in
+     * MuPDF's lexer (`pdf-lex.c` `lex_name`) iff [matchNames] decodes it to the same bytes. Any
+     * other key (control or non-ASCII bytes, which `asName` returns UTF-8 decoded; a literal `#`,
+     * e.g. MuPDF's undecoded `#00`; names MuPDF truncates at 4,095 bytes) disables narrowing.
+     */
+    internal fun plainKey(k: String): Boolean =
+        k.length in 1..MAX_KEY_CHARS && k.all { it in '!'..'~' && it != '#' }
+
+    /**
+     * Adds to [out] every key of [keys] (all [plainKey]s) that occurs as a name token in content
+     * bytes [data], tokenised as MuPDF does: a name runs from `/` to NUL, TAB, LF, FF, CR, space,
+     * a delimiter `()<>[]{}/%` or the end; `#hh` is one byte except `#00`, and a `#` not followed
+     * by two hex digits (or by `00`) is kept literally. Tokens that cannot equal a plain key are
+     * dropped as soon as that is clear; every `/` in the data starts a token, so names in strings
+     * or comments are included too (a superset). [onMiB] runs after each MiB scanned.
+     */
+    internal fun matchNames(data: ByteArray, keys: Set<String>, out: MutableSet<String>, onMiB: () -> Unit = {}) {
+        val buf = ByteArray(MAX_KEY_CHARS)
         var i = 0
-        val sb = StringBuilder()
+        var nextTick = 1 shl 20
         while (i < data.size) {
+            if (i >= nextTick) {
+                onMiB()
+                nextTick += 1 shl 20
+            }
             if (data[i] != '/'.code.toByte()) { i++; continue }
             i++
-            sb.setLength(0)
+            var len = 0
+            var ok = true
             while (i < data.size) {
                 val c = data[i].toInt() and 0xFF
-                if (c <= 0x20 || c in DELIMITERS) break
-                if (c == '#'.code && i + 2 < data.size + 0 && hex(data.getOrNull(i + 1)) >= 0 && hex(data.getOrNull(i + 2)) >= 0) {
-                    sb.append(((hex(data[i + 1]) shl 4) or hex(data[i + 2])).toChar())
-                    i += 3
+                if (c in WHITE || c in DELIMITERS) break
+                var b = c
+                if (c == '#'.code) {
+                    val h1 = hex(data.getOrNull(i + 1))
+                    val h2 = hex(data.getOrNull(i + 2))
+                    if (h1 >= 0 && h2 >= 0 && (h1 != 0 || h2 != 0)) {
+                        b = (h1 shl 4) or h2
+                        i += 3
+                    } else {
+                        i++ // MuPDF keeps the '#' and re-reads what follows
+                    }
                 } else {
-                    sb.append(c.toChar())
                     i++
                 }
+                if (b < 0x21 || b > 0x7E || b == '#'.code || len == MAX_KEY_CHARS) ok = false
+                if (ok) buf[len++] = b.toByte()
             }
-            out.add(sb.toString())
+            if (ok && len > 0) {
+                val name = String(buf, 0, len, Charsets.ISO_8859_1)
+                if (name in keys) out.add(name)
+            }
         }
     }
 
@@ -524,31 +626,66 @@ internal object RenderImageGate {
         }
     }
 
+    private val WHITE = setOf(0x00, 0x09, 0x0A, 0x0C, 0x0D, 0x20)
     private val DELIMITERS = "()<>[]{}/%".map { it.code }.toSet()
 
     /**
-     * Width, height and component count from a JPEG 2000 codestream's SIZ marker (`FF 4F FF 51`,
-     * found anywhere in [raw], so inside a JP2 `jp2c` box too), as Longs; null if absent/truncated.
+     * RF-3: width, height and component count of a JPX stream, read where openjpeg reads them
+     * (MuPDF `load-jpx.c`: data starting `FF 4F` is a bare codestream, anything else is JP2):
+     * - bare codestream: SOC + SIZ (`FF 4F FF 51`) must be at offset 0;
+     * - JP2: top-level boxes are walked (LBox 1 = 64-bit XLBox, LBox 0 = to the end; at most
+     *   [MAX_JP2_BOXES]) to the first `jp2c` box, whose content must start with SOC + SIZ.
+     * Null (refused) when the SIZ cannot be found that way or is truncated.
      */
     internal fun jpxSize(raw: ByteArray): Triple<Long, Long, Long>? {
-        var i = 0
-        while (i + 4 <= raw.size) {
-            if (raw[i] == 0xFF.toByte() && raw[i + 1] == 0x4F.toByte() && raw[i + 2] == 0xFF.toByte() && raw[i + 3] == 0x51.toByte()) {
-                val p = i + 4 // Lsiz
-                if (p + 38 > raw.size) return null
-                fun u32(o: Int) = ((raw[o].toLong() and 0xFF) shl 24) or ((raw[o + 1].toLong() and 0xFF) shl 16) or
-                    ((raw[o + 2].toLong() and 0xFF) shl 8) or (raw[o + 3].toLong() and 0xFF)
-                val xsiz = u32(p + 4)
-                val ysiz = u32(p + 8)
-                val xo = u32(p + 12)
-                val yo = u32(p + 16)
-                val csiz = ((raw[p + 36].toLong() and 0xFF) shl 8) or (raw[p + 37].toLong() and 0xFF)
-                return Triple(xsiz - xo, ysiz - yo, csiz)
+        if (raw.size >= 2 && raw[0] == 0xFF.toByte() && raw[1] == 0x4F.toByte()) return sizAt(raw, 0)
+        var off = 0L
+        var boxes = 0
+        while (off + 8 <= raw.size && boxes++ < MAX_JP2_BOXES) {
+            val o = off.toInt()
+            val lbox = u32(raw, o)
+            val type = String(raw, o + 4, 4, Charsets.ISO_8859_1)
+            val header: Long
+            val length: Long
+            when (lbox) {
+                1L -> {
+                    if (o + 16 > raw.size) return null
+                    header = 16
+                    length = (u32(raw, o + 8) shl 32) or u32(raw, o + 12)
+                }
+                0L -> {
+                    header = 8
+                    length = raw.size - off
+                }
+                else -> {
+                    header = 8
+                    length = lbox
+                }
             }
-            i++
+            if (length < header) return null
+            if (type == "jp2c") return if (off + header <= Int.MAX_VALUE) sizAt(raw, (off + header).toInt()) else null
+            off += length
         }
         return null
     }
+
+    /** SIZ of a codestream whose SOC is at [p] in [raw], or null. */
+    private fun sizAt(raw: ByteArray, p: Int): Triple<Long, Long, Long>? {
+        if (p + 4 + 38 > raw.size) return null
+        if (raw[p] != 0xFF.toByte() || raw[p + 1] != 0x4F.toByte() || raw[p + 2] != 0xFF.toByte() || raw[p + 3] != 0x51.toByte()) return null
+        val l = p + 4 // Lsiz
+        val xsiz = u32(raw, l + 4)
+        val ysiz = u32(raw, l + 8)
+        val xo = u32(raw, l + 12)
+        val yo = u32(raw, l + 16)
+        val csiz = ((raw[l + 36].toLong() and 0xFF) shl 8) or (raw[l + 37].toLong() and 0xFF)
+        return Triple(xsiz - xo, ysiz - yo, csiz)
+    }
+
+    private fun u32(raw: ByteArray, o: Int): Long = ((raw[o].toLong() and 0xFF) shl 24) or ((raw[o + 1].toLong() and 0xFF) shl 16) or
+        ((raw[o + 2].toLong() and 0xFF) shl 8) or (raw[o + 3].toLong() and 0xFF)
+
+    private const val MAX_JP2_BOXES = 1000
 
     /** Ends the stream (EOF) after [limit] bytes. */
     private class Capped(input: InputStream, private var left: Long) : FilterInputStream(input) {
