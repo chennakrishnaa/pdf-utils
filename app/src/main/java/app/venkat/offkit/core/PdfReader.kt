@@ -3,6 +3,7 @@ package app.venkat.offkit.core
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.core.graphics.createBitmap
 import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.engine.JobControl
 import app.venkat.offkit.engine.PageDims
@@ -256,7 +257,7 @@ class PdfReader internal constructor(context: Context, private val jobs: PdfJobs
                 if (ch.read(ByteBuffer.allocate(1)) > 0) throw IOException("Tile is longer than $expected bytes")
             }
             buffer.rewind()
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val bitmap = createBitmap(width, height, Bitmap.Config.ARGB_8888)
             bitmap.copyPixelsFromBuffer(buffer)
             return bitmap
         }

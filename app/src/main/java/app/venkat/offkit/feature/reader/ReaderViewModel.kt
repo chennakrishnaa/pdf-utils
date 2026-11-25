@@ -157,7 +157,6 @@ class ReaderViewModel internal constructor(
     override fun onCleared() {
         closeAll()
         generation++
-        super.onCleared()
     }
 
     private fun closeAll() {
