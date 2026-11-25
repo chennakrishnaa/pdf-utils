@@ -313,7 +313,7 @@ class ReaderScreenTest {
         answer(takePdfPicker(), null)
         rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("second.pdf")
         rule.onNodeWithTag(readerPageTag(0)).assert(rendered(0))
-        assertEquals(1, readerDirs().size)
+        waitUntil("only the current copy is kept") { readerDirs().size == 1 }
     }
 
     @Test

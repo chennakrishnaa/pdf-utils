@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,7 +40,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -319,11 +317,11 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
             val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             val geometry = remember(doc, itemWidthPx, gapPx) { PageGeometry(doc.pages, itemWidthPx, gapPx) }
 
-            val visible by remember(geometry, listState, zoomState) {
-                derivedStateOf { geometry.visible(listState.layoutInfo, zoomState) }
-            }
-            LaunchedEffect(visible) {
-                ReaderPlanner.currentPage(visible)?.let { current = it }
+            // Read outside composition, so scrolling does not recompose the list scope every frame.
+            LaunchedEffect(geometry, listState, zoomState) {
+                snapshotFlow { ReaderPlanner.currentPage(geometry.visible(listState.layoutInfo, zoomState)) }
+                    .filterNotNull()
+                    .collect { current = it }
             }
             LaunchedEffect(vm, geometry, listState, zoomState) {
                 snapshotFlow {
