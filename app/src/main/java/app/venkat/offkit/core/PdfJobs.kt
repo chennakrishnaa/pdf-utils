@@ -91,8 +91,9 @@ sealed interface JobOutcome {
  */
 class PdfJobs @VisibleForTesting internal constructor(
     context: Context,
-    private val engineDispatcher: CoroutineDispatcher = ENGINE_DISPATCHER,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** The engine thread; also used by [PdfReader], so reader calls and jobs are serialised. */
+    internal val engineDispatcher: CoroutineDispatcher = ENGINE_DISPATCHER,
+    internal val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val mainDispatcher: CoroutineDispatcher = Dispatchers.Main,
     private val openDestination: (Context, Uri) -> OutputStream? = { ctx, uri ->
         ctx.contentResolver.openOutputStream(uri, "wt")
@@ -107,8 +108,7 @@ class PdfJobs @VisibleForTesting internal constructor(
      */
     val processScope: CoroutineScope = CoroutineScope(SupervisorJob() + mainDispatcher)
 
-    /** `cacheDir/jobs`, the root of all job directories. */
-    @VisibleForTesting
+    /** `cacheDir/jobs`, the root of all job directories (and of [PdfReader]'s `reader-<uuid>/`). */
     internal val jobsRoot: File get() = File(appContext.cacheDir, JOBS_DIR)
 
     /**
