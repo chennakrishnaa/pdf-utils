@@ -61,7 +61,7 @@ Run on `main` after every merge, in this order:
 | Script | Passes when it prints |
 |---|---|
 | `./scripts/verify.sh` | `VERIFY OK` |
-| `sg kvm -c './scripts/emulator-smoke.sh'` | `tests=31 failures=0 errors=0` and `SMOKE OK` on `main`; `tests=32` on `pdf-reader` (the count rises if tests are added) |
+| `sg kvm -c './scripts/emulator-smoke.sh'` | `tests=31 failures=0 errors=0` and `SMOKE OK` on `main`; `tests=34` on `pdf-reader` (the count rises if tests are added) |
 | `sg kvm -c './scripts/isolation-smoke.sh'` | `ISOLATION SMOKE OK` |
 | `./scripts/release.sh` | `RELEASE OK` (conductor only; needs `keystore.properties`) |
 | `sg kvm -c './scripts/release-smoke.sh'` | `RELEASE SMOKE OK` |
@@ -113,7 +113,7 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 
 ## PDF reader
 
-Built on branch `pdf-reader` after the 1.0.0 build; not merged. Reviewed twice; the fixes F1 to F4 are merged on the branch, and the last of them (F4) has had no independent review. At `6adc734` `VERIFY OK`, the emulator smoke (`tests=32`) and `ISOLATION SMOKE OK` pass. **It has never been tried on a real phone.**
+Built on branch `pdf-reader` after the 1.0.0 build; not merged. Reviewed twice; the fixes F1 to F4 are merged on the branch, and the last of them (F4) has had no independent review. At `6adc734` `VERIFY OK`, the emulator smoke (`tests=32`) and `ISOLATION SMOKE OK` pass; two on-device reader tests against the real engine were added afterwards (`tests=34`). **It has never been tried on a real phone.**
 
 - **What it does:** a fifth Home card, "Read a PDF", below the tool grid. It opens the system file picker for one PDF and shows its pages in a continuous vertical list with pinch-to-zoom (1x to 5x), double-tap zoom, a page indicator and "Open another PDF". Read-only: nothing is changed or saved, and the file is not added to Recents.
 - **How:** MuPDF renders pages in the `:engine` process (`engine/PdfPageRenderer.kt`, `engine/ops/RenderPageOp.kt`, new calls in `engine/remote/`) and sends raw pixels to the UI. `core/PdfReader.kt` holds the private copy and runs reader calls on `PdfJobs`' engine thread. `feature/reader/` has the screen, `ReaderViewModel` and the render planner; `ui/reader/` has the zoomable list and its maths. No new permission, component, network access or "open with" intent filter. PDFs over 1 GiB are refused before or during the copy, as in the tools.

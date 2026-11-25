@@ -497,7 +497,7 @@ Written 2026-11-25 by a docs worker from the conductor's summary and the reviewe
 2. Fixes: F1 (UI side: RDR-1, 2, 4 in part, 5, 6, 7 in part), F2 (engine: RDR-3 image gate, RDR-4 scan memo), F3 (docs: RDR-8).
 3. Second review, read-only, of the fixes at `db26898`: **can merge; fix RF-1 to RF-3 and the over-refusal before public release**. Findings RF-1 to RF-8.
 4. F4: a rework of the `RenderImageGate` walk (RF-1, 2, 3, 5, 6 in part, 7 and the over-refusal).
-5. Gates at `6adc734`: `VERIFY OK`; emulator smoke `tests=32 failures=0 errors=0`; `ISOLATION SMOKE OK`.
+5. Gates at `6adc734`: `VERIFY OK`; emulator smoke `tests=32 failures=0 errors=0`; `ISOLATION SMOKE OK`. Afterwards G1 added two on-device tests that drive the real `ReaderViewModel` and engine (a JPEG page with base and detail renders; a JPEG whose frame header lies is refused by the gate and the engine stays alive): emulator smoke `tests=34 failures=0 errors=0`.
 
 **F4 itself has not been independently reviewed.** It rests on its own tests (`RenderImageGateTest`) and the gates only.
 
