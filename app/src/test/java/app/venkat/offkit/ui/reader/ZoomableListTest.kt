@@ -210,6 +210,27 @@ class ZoomableListTest {
     }
 
     @Test
+    fun isZoomingIsTrueOnlyWhileTwoFingersAreDown() {
+        show()
+        assertFalse(zoom.isZooming)
+        rule.onNodeWithTag(TAG).performTouchInput {
+            down(0, center - Offset(30f, 0f))
+            down(1, center + Offset(30f, 0f))
+            moveBy(0, Offset(-20f, 0f))
+            moveBy(1, Offset(20f, 0f))
+        }
+        rule.waitForIdle()
+        assertTrue(zoom.isZooming)
+        assertTrue(zoom.scale > 1f)
+        rule.onNodeWithTag(TAG).performTouchInput { up(1) }
+        rule.waitForIdle()
+        assertFalse(zoom.isZooming)
+        rule.onNodeWithTag(TAG).performTouchInput { up(0) }
+        rule.waitForIdle()
+        assertFalse(zoom.isZooming)
+    }
+
+    @Test
     fun isZoomingIsTrueDuringDoubleTapAnimation() {
         show()
         rule.mainClock.autoAdvance = false
