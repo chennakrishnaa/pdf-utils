@@ -5,10 +5,84 @@ import com.artifex.mupdf.fitz.PDFDocument
 import com.artifex.mupdf.fitz.PDFObject
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
+import java.util.zip.CRC32
 
 /** An input PDF could not be used; [error] is the classification to report. */
 class PdfInputException(val error: PdfError, cause: Throwable? = null) :
     RuntimeException("unusable input PDF: $error", cause)
+
+/**
+ * RDR-4: a one-entry memory of the last input whose pre-checks PASSED, for the reader, which opens
+ * the same document once per tile ([app.venkat.offkit.engine.ops.RenderPageOp], `PageInfoOp`).
+ *
+ * Measured on the dev host (MuPDF 1.28.5, warm page cache): [ObjStmScan] costs ~10 ms per MB
+ * (200 MB photo PDF: 1.9-2.0 s per open, of which MuPDF's own open is ~0; a damaged 16 MB file
+ * that MuPDF repairs: 160-230 ms per open, scan 172 ms), so without this every tile of a large
+ * document would pay seconds. Only the Kotlin verdicts are remembered (never a MuPDF object: they
+ * die with the op's thread, see [EngineStack]): that [ObjStmScan] passed, and which pages passed
+ * [app.venkat.offkit.engine.ops.RenderImageGate] (at most [MAX_PAGES]). A failed check is never
+ * remembered, so a hostile file is refused on every call.
+ *
+ * The [Key] is the canonical path, length, last-modified time and a CRC-32 of the first and last
+ * [FINGERPRINT_BYTES] bytes, so another file, or the same path rewritten with a different size,
+ * time, head or tail, misses and is scanned again. Residual: an in-place rewrite that keeps size,
+ * mtime, head and tail would hit; the reader's copy is private and never rewritten in place, and
+ * other operations do not use the memo.
+ */
+internal object ScanMemo {
+    const val FINGERPRINT_BYTES = 64 * 1024
+    const val MAX_PAGES = 4096
+
+    data class Key(val path: String, val length: Long, val modified: Long, val fingerprint: Long)
+
+    private var key: Key? = null
+    private val pages = HashSet<Int>()
+
+    /** The key of [file] now, or null if it cannot be read (then nothing is remembered). */
+    fun keyOf(file: File): Key? = try {
+        val canonical = file.canonicalFile
+        RandomAccessFile(canonical, "r").use { raf ->
+            val length = raf.length()
+            val modified = canonical.lastModified()
+            val crc = CRC32()
+            val buf = ByteArray(minOf(length, FINGERPRINT_BYTES.toLong()).toInt())
+            raf.readFully(buf)
+            crc.update(buf)
+            raf.seek(maxOf(0L, length - buf.size))
+            raf.readFully(buf)
+            crc.update(buf)
+            Key(canonical.path, length, modified, crc.value)
+        }
+    } catch (e: IOException) {
+        null
+    }
+
+    @Synchronized
+    fun scanned(k: Key): Boolean = k == key
+
+    @Synchronized
+    fun rememberScan(k: Key) {
+        if (k != key) {
+            key = k
+            pages.clear()
+        }
+    }
+
+    @Synchronized
+    fun pagePassed(k: Key, page: Int): Boolean = k == key && page in pages
+
+    @Synchronized
+    fun rememberPage(k: Key, page: Int) {
+        if (k == key && pages.size < MAX_PAGES) pages.add(page)
+    }
+
+    @Synchronized
+    fun clear() {
+        key = null
+        pages.clear()
+    }
+}
 
 /** Opening and classifying input PDFs, and the error mapping shared by all ops. */
 internal object PdfInputs {
@@ -55,12 +129,16 @@ internal object PdfInputs {
      * ".pdf" is still handled: see [PdfInputsTest] — such files are opened as PDFs (MuPDF falls back
      * to content sniffing), and non-PDF content is reported as Corrupt.
      */
-    fun open(file: File): PDFDocument {
+    fun open(file: File, memo: ScanMemo.Key? = null): PDFDocument {
         if (file.length() > ImageLimits.MAX_INPUT_PDF_BYTES) throw PdfInputException(PdfError.OutOfMemory)
-        try {
-            ObjStmScan.check(file) // SR3-1: object-stream bombs are paid inside MuPDF's open
-        } catch (e: IOException) {
-            // Unreadable: MuPDF's own open below reports it (Io).
+        if (memo == null || !ScanMemo.scanned(memo)) {
+            try {
+                objStmScans++
+                ObjStmScan.check(file) // SR3-1: object-stream bombs are paid inside MuPDF's open
+                if (memo != null) ScanMemo.rememberScan(memo) // only a PASSED scan is remembered
+            } catch (e: IOException) {
+                // Unreadable: MuPDF's own open below reports it (Io).
+            }
         }
         val doc = try {
             Document.openDocument(file.absolutePath)
@@ -85,6 +163,10 @@ internal object PdfInputs {
             throw t
         }
     }
+
+    /** Number of [ObjStmScan] runs by [open] (test observability of [ScanMemo]). */
+    @Volatile
+    internal var objStmScans = 0L
 
     /**
      * Runs an [ObjectGraph] check on an opened input: [PdfInputException]s pass through, any other
