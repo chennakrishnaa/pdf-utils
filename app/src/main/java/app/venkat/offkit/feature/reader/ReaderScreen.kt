@@ -90,6 +90,8 @@ import app.venkat.offkit.ui.reader.ZoomableList
 import app.venkat.offkit.ui.reader.ZoomableListState
 import app.venkat.offkit.ui.reader.rememberZoomableListState
 import app.venkat.offkit.ui.theme.OffkitDimens
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 
@@ -125,6 +127,9 @@ private var SemanticsPropertyReceiver.readerPageDetailShown by ReaderPageDetailS
 /** Colours of the reader's Home badge (`ic_tool_read_badge`). */
 private val ReadContainer = Color(0xFFD5ECEA)
 private val OnReadContainer = Color(0xFF175651)
+
+/** How long the viewport must stay unchanged before it is reported to the view model (after the first). */
+internal const val VIEWPORT_SETTLE_MS = 120L
 
 /** Gap between pages, and around the list. */
 private val PageGap = 8.dp
@@ -326,14 +331,22 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
                     .filterNotNull()
                     .collect { current = it }
             }
+            // The viewport is reported once it has not changed for VIEWPORT_SETTLE_MS (a one-finger
+            // pan while zoomed is neither a scroll nor a zoom, and changes it every frame); the first
+            // one of a document (or of a new item width) is reported at once. A scroll or zoom in
+            // progress (null) cancels a pending report.
             LaunchedEffect(vm, geometry, listState, zoomState) {
+                var reported = false
                 snapshotFlow {
                     if (zoomState.isZooming || listState.isScrollInProgress) {
                         null
                     } else {
                         ReaderViewport(geometry.itemWidthPx, zoomState.scale, geometry.visible(listState.layoutInfo, zoomState))
                     }
-                }.filterNotNull().distinctUntilChanged().collect { vp ->
+                }.distinctUntilChanged().collectLatest { vp ->
+                    if (vp == null) return@collectLatest
+                    if (reported) delay(VIEWPORT_SETTLE_MS)
+                    reported = true
                     vm.onViewport(vp.itemWidthPx, vp.zoom, vp.visible)
                 }
             }

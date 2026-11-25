@@ -40,6 +40,7 @@ import app.venkat.offkit.feature.reader.TAG_READER_INDICATOR
 import app.venkat.offkit.feature.reader.TAG_READER_LIST
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
 import app.venkat.offkit.feature.reader.TAG_READER_TITLE
+import app.venkat.offkit.feature.reader.VIEWPORT_SETTLE_MS
 import app.venkat.offkit.feature.reader.readerPageRetryTag
 import app.venkat.offkit.feature.reader.readerPageTag
 import app.venkat.offkit.ui.components.MIME_PDF
@@ -283,6 +284,44 @@ class ReaderScreenTest {
             assertNull(RenderLimits.check(request, dims))
             assertNull(RenderLimits.check(request, fake.readerPages[request.page]))
         }
+    }
+
+    /** RDR-4: a one-finger pan while zoomed sends no detail request until it has stopped for a while. */
+    @Test
+    fun zoomedPanRequestsNoDetailUntilItStops() {
+        openDocument()
+        val list = rule.onNodeWithTag(TAG_READER_LIST).fetchSemanticsNode().size
+        val c = Offset(list.width / 2f, list.height / 3f)
+        val base = renderRequests().first { it.page == 0 }
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput {
+            pinch(c - Offset(30f, 0f), c - Offset(100f, 0f), c + Offset(30f, 0f), c + Offset(100f, 0f))
+        }
+        rule.waitForIdle()
+        waitUntil("detail of page 0") { detailShown(0) }
+        fun details() = renderRequests().count { it.scale > base.scale * 1.01f }
+        val before = details()
+
+        rule.mainClock.autoAdvance = false
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { down(c) }
+        repeat(30) {
+            rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { moveBy(Offset(-6f, 0f)) }
+            rule.mainClock.advanceTimeBy(16)
+        }
+        // Let anything that was sent reach the engine thread.
+        repeat(10) {
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            Thread.sleep(20)
+        }
+        assertEquals("detail requested mid-pan", before, details())
+
+        // The finger rests: after the settle time exactly one detail, for the new position, is requested.
+        rule.mainClock.advanceTimeBy(VIEWPORT_SETTLE_MS + 50)
+        CoreTestSupport.idleUntil(message = "detail after pan") { details() > before }
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { up() }
+        rule.mainClock.autoAdvance = true
+        rule.waitForIdle()
+        waitUntil("new detail shown") { detailShown(0) }
+        assertEquals(before + 1, details())
     }
 
     @Test
