@@ -44,15 +44,15 @@ class NavigationTest {
     /** A tool screen is showing: it has a back action and the home footer is gone. */
     private fun assertToolScreenShowing() {
         rule.onNodeWithTag("action_back").assertIsDisplayed()
-        rule.onNodeWithTag("home_footer").assertDoesNotExist()
+        rule.onNodeWithTag("home_privacy").assertDoesNotExist()
     }
 
     @Test
     fun homeShowsAllToolCardsAndFooter() {
         cards.forEach { rule.onNodeWithTag(it).performScrollTo().assertIsDisplayed() }
         rule.onNodeWithTag("action_about").assertIsDisplayed()
-        rule.onNodeWithTag("home_footer").performScrollTo()
-            .assertTextEquals(rule.activity.getString(R.string.home_footer))
+        rule.onNodeWithTag("home_privacy").performScrollTo()
+            .assertTextEquals(rule.activity.getString(R.string.home_privacy_line))
     }
 
     @Test

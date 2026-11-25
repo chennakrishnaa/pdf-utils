@@ -19,8 +19,10 @@ import kotlin.coroutines.cancellation.CancellationException
  * @property name display name for the UI (from the provider, or a fallback); never used as a
  *   path on disk.
  * @property sizeBytes size in bytes if the provider reports it, else null.
+ * @property nameReported true when [name] is the provider's own `DISPLAY_NAME` (or, for a
+ *   `file:` Uri, the file's real name), false when it was guessed from the Uri or is the fallback.
  */
-data class PickedFile(val uri: Uri, val name: String, val sizeBytes: Long?)
+data class PickedFile(val uri: Uri, val name: String, val sizeBytes: Long?, val nameReported: Boolean = false)
 
 /**
  * Blocking stream helpers between content Uris and local files. Call them off the main thread
@@ -42,7 +44,9 @@ object UriIo {
      * Describes [uri] for display: name and size from the provider's [OpenableColumns], falling
      * back to the Uri's last path segment. The name is untrusted and is passed through
      * [sanitizeDisplayName]. Non-`content:` Uris are not queried (name from the Uri only, no
-     * size). Never throws; a blank name becomes [FALLBACK_NAME].
+     * size). Never throws; a blank name becomes [FALLBACK_NAME]. [PickedFile.nameReported] says
+     * whether the name came from the provider's `DISPLAY_NAME` (or a `file:` Uri's own path)
+     * rather than from a guess.
      */
     fun describe(context: Context, uri: Uri): PickedFile {
         var name: String? = null
@@ -70,8 +74,10 @@ object UriIo {
         } catch (e: Exception) {
             null
         }
-        val finalName = sanitizeDisplayName(name, sanitizeDisplayName(fallback, FALLBACK_NAME))
-        return PickedFile(uri, finalName, size)
+        val reported = if (uri.scheme == ContentResolver.SCHEME_FILE) fallback else name
+        val reportedName = sanitizeDisplayName(reported, "")
+        val finalName = reportedName.ifEmpty { sanitizeDisplayName(fallback, FALLBACK_NAME) }
+        return PickedFile(uri, finalName, size, nameReported = reportedName.isNotEmpty())
     }
 
     /**

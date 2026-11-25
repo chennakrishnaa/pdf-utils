@@ -45,7 +45,7 @@ import app.venkat.offkit.ui.support.playWebUrl
 import app.venkat.offkit.ui.support.promoCardTag
 import app.venkat.offkit.ui.support.promoHideTag
 import app.venkat.offkit.ui.support.supportPromoTag
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -102,7 +102,7 @@ class SupportTest {
     private fun bottom(tag: String) = rule.onNodeWithTag(tag).fetchSemanticsNode().let { it.positionInRoot.y + it.size.height }
 
     private fun setContent(content: @androidx.compose.runtime.Composable () -> Unit) {
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { content() } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { content() } } }
         rule.waitForIdle()
     }
 

@@ -10,7 +10,7 @@ import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.ui.components.JobUiState
-import app.venkat.offkit.ui.components.pdfErrorMessage
+import app.venkat.offkit.ui.components.isSaving
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,18 +26,30 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Base class for tool ViewModels: owns one job's lifecycle and exposes it as [jobState] for
- * `JobPanel`. Subclasses hold their own input state and call [startJob].
+ * `OffkitJobFlow`. Subclasses hold their own input state and call [startJob].
  *
  * State machine (all transitions on the main thread):
- * - `Idle`/`ReadyToSave`/`Saved`/`Failed` --[startJob]--> `Running(0, 0)` --progress--> `Running(d, t)`
- * - `Running` --success--> `ReadyToSave(summary)`; --error--> `Failed(message)`;
- *   --[cancel] or engine `Cancelled`--> `Idle` (once the engine has stopped and the cache is clean).
- * - `ReadyToSave` --[save]--> `Saving(summary)` --ok--> `Saved(summary)` (recorded in
- *   [RecentFilesStore] with [toolId] first); --failure--> back to
- *   `ReadyToSave` with [saveError] set. While `Saving`, [save], [reset], [cancel] and [startJob]
- *   are ignored. The copy runs in [PdfJobs.processScope], so it completes (or cleans up) even if
- *   this ViewModel is cleared meanwhile.
- * - any but `Saving` --[reset]--> `Idle` (cancels a running job, discards a pending output).
+ * - `Idle`/`Done`/`Failed` --[startJob]--> `Running(0, 0)` --progress--> `Running(d, t)`.
+ *   Starting discards the previous output and wipes `cacheDir/shared/`.
+ * - `Running` --success--> `Done(pages, bytes, originalBytes, suggestedName)`; --error-->
+ *   `Failed(error)`; --[cancel] or engine `Cancelled`--> `Idle` (once the engine has stopped and
+ *   the cache is clean).
+ * - `Done` --[save]--> `Done(saving = true)` --ok--> `Done(saving = false, savedName, savedUri)`
+ *   (recorded in [RecentFilesStore] with [toolId] first). The output is kept, so saving again
+ *   ("save another copy") is allowed and updates `savedName`/`savedUri` to the latest;
+ *   --failure--> `Done` as before with [saveError] set. While saving, [save], [share], [reset],
+ *   [cancel], [invalidateResult] and [startJob] are ignored (an ignored save destination is
+ *   deleted if it is empty). The copy runs in
+ *   [PdfJobs.processScope], so it completes (and cleans up) even if this ViewModel is cleared.
+ * - `Done` --[share]--> copy to `cacheDir/shared/` (one copy per output, reused by later shares
+ *   while it exists) --> [shareRequest] set; the screen launches the share sheet and calls
+ *   [onShareHandled], which sets `Done.shared` if it launched. A failed copy sets [saveError];
+ *   the state does not change.
+ * - any but saving --[reset]--> `Idle` (cancels a running job, discards the output).
+ * - `Done` (not saving)/`Failed` --[invalidateResult]--> `Idle` (discards the output).
+ *
+ * The output file lives until [reset], [invalidateResult], the next [startJob] or [onCleared]
+ * (deferred to the end of a save in progress).
  *
  * @param jobs job runner; defaults to the process-wide [PdfJobs.get]. Tests may inject one.
  */
@@ -48,50 +60,60 @@ open class JobViewModel(
 
     private val _jobState = MutableStateFlow<JobUiState>(JobUiState.Idle)
 
-    /** Current job state; render with `JobPanel(state = jobState.collectAsState().value, ...)`. */
+    /** Current job state; render with `OffkitJobFlow(state = jobState.collectAsState().value, ...)`. */
     val jobState: StateFlow<JobUiState> = _jobState.asStateFlow()
 
     private val _saveError = MutableStateFlow<String?>(null)
 
-    /** One-shot user-facing message after a failed save (state stays `ReadyToSave`); see [clearSaveError]. */
+    /** One-shot user-facing message after a failed save or share (state unchanged); see [clearSaveError]. */
     val saveError: StateFlow<String?> = _saveError.asStateFlow()
+
+    private val _shareRequest = MutableStateFlow<ShareRequest?>(null)
+
+    /**
+     * One-shot request to open the share sheet, set by [share] once the copy is ready. The screen
+     * launches it and then calls [onShareHandled].
+     */
+    val shareRequest: StateFlow<ShareRequest?> = _shareRequest.asStateFlow()
 
     /** Result of the last successful job (pages, bytes of the output), or null. Cleared by [reset] and [startJob]. */
     var lastResult: PdfResult.Ok? = null
         private set
 
     private var pending: PendingOutput? = null
-    private var summary: String = ""
     private var runningJob: Job? = null
+    private var shareJob: Job? = null
     private var cleared = false
+
+    /** The destination of the save in progress, or null. */
+    private var savingDest: Uri? = null
 
     /** True while a job is running (including while it winds down after [cancel]). */
     val isRunning: Boolean get() = runningJob != null
 
-    /** True while the result is being copied to its destination (state `Saving`). */
-    private val isSaving: Boolean get() = _jobState.value is JobUiState.Saving
+    /** True while the result is being copied to its destination (`Done.saving`). */
+    private val isSaving: Boolean get() = _jobState.value.isSaving
 
     /**
-     * Starts a job; ignored while one is already running or a save is in progress. Any previous pending output is
-     * discarded. [block] runs on the engine thread with the prepared input files (same order as
-     * [inputs]) and must call exactly one [PdfEngine] operation with `out` and `job`, e.g.
-     * `{ engine, files, out, job -> engine.merge(files, out, job) }`. [summarize] runs on the
-     * main thread and turns the result into the user-facing summary shown in `ReadyToSave` and
-     * `Saved`.
+     * Starts a job; ignored while one is already running or a save is in progress. Any previous
+     * output is discarded and `cacheDir/shared/` is wiped. [block] runs on the engine thread with
+     * the prepared input files (same order as [inputs]) and must call exactly one [PdfEngine]
+     * operation with `out` and `job`, e.g. `{ engine, files, out, job -> engine.merge(files, out, job) }`.
+     * [originalBytes] runs on the main thread after success and gives `Done.originalBytes` (the
+     * size of the input the output replaces, or null). `Done.suggestedName` is
+     * [suggestedFileName] at that moment.
      */
     protected fun startJob(
         inputs: List<JobInput>,
-        summarize: (PdfResult.Ok) -> String,
+        originalBytes: () -> Long? = { null },
         block: (PdfEngine, List<File>, File, JobControl) -> PdfResult,
     ) {
         if (isRunning || isSaving) return
-        discardPending()
-        lastResult = null
-        summary = ""
-        _saveError.value = null
+        clearResult()
         _jobState.value = JobUiState.Running(0, 0)
         val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
+                jobs.wipeShared()
                 val outcome = jobs.run(
                     inputs = inputs,
                     onProgress = { done, total ->
@@ -101,11 +123,10 @@ open class JobViewModel(
                 )
                 when (outcome) {
                     is JobOutcome.Ready -> {
-                        val ok = PdfResult.Ok(outcome.output.pages, outcome.output.bytes)
-                        pending = outcome.output
-                        lastResult = ok
-                        summary = summarize(ok)
-                        _jobState.value = JobUiState.ReadyToSave(summary)
+                        val out = outcome.output
+                        pending = out
+                        lastResult = PdfResult.Ok(out.pages, out.bytes)
+                        _jobState.value = JobUiState.Done(out.pages, out.bytes, originalBytes(), suggestedFileName())
                     }
                     is JobOutcome.Failed -> _jobState.value = stateFor(outcome.error)
                 }
@@ -128,53 +149,123 @@ open class JobViewModel(
     }
 
     /**
-     * Saves the pending output to [dest], the Uri from the "create document" dialog. `null`
-     * (dialog dismissed) keeps `ReadyToSave`. Otherwise `ReadyToSave` → `Saving` → `Saved`, or
-     * back to `ReadyToSave` with [saveError] set (the output is kept for another attempt and the
-     * destination document is deleted). Ignored while `Saving`.
+     * Saves the output to [dest], the Uri from the "create document" dialog. `null` (dialog
+     * dismissed) changes nothing. From `Done` (saved before or not): `saving = true`, then on
+     * success `savedName` (the display name the provider reports for [dest]) and `savedUri` are
+     * set; on failure `Done` is restored with [saveError] set (the destination document is
+     * deleted). The output is kept either way.
      *
-     * If there is no pending output (e.g. the process was recreated while the dialog was open),
-     * the just-created destination document is deleted if it is empty and [saveError] explains that the
+     * While saving, a new [dest] is ignored and, like below, deleted if it is empty (it was just
+     * created by a second dialog); a non-empty document and the destination being written are
+     * never deleted.
+     *
+     * If there is no output (e.g. the process was recreated while the dialog was open), the
+     * just-created destination document is deleted if it is empty and [saveError] explains that the
      * result is gone.
      */
     fun save(dest: Uri?) {
-        if (dest == null || isSaving) return
+        if (dest == null) return
+        if (isSaving) {
+            // A second dialog's document: not used, so remove it if it is still empty. Never the
+            // destination being written now (it is empty until the copy starts).
+            if (dest != savingDest) deleteIfEmptyInBackground(dest)
+            return
+        }
         val app = getApplication<Application>()
         val output = pending
         if (output == null) {
-            jobs.processScope.launch {
-                try {
-                    withContext(Dispatchers.IO) { jobs.deleteDestinationIfEmpty(dest) }
-                } catch (e: Exception) {
-                    // Best effort.
-                }
-            }
+            deleteIfEmptyInBackground(dest)
             _saveError.value = app.getString(R.string.core_result_unavailable)
             return
         }
-        if (_jobState.value !is JobUiState.ReadyToSave) return
-        val savedSummary = summary
+        val before = _jobState.value as? JobUiState.Done ?: return
         _saveError.value = null
-        _jobState.value = JobUiState.Saving(savedSummary)
+        _jobState.value = before.copy(saving = true)
+        savingDest = dest
         jobs.processScope.launch {
             val result = try {
                 jobs.save(output, dest)
             } catch (e: Throwable) {
                 Result.failure(e)
             }
+            val savedName = if (result.isSuccess) recordRecent(dest, output) else null
+            // onCleared left the output to this save, the last user of it.
+            if (cleared) jobs.discard(output)
+            savingDest = null
+            val current = _jobState.value as? JobUiState.Done ?: before
             if (result.isSuccess) {
-                if (pending === output) pending = null
-                recordRecent(dest, output)
-                _jobState.value = JobUiState.Saved(savedSummary)
-            } else if (cleared) {
-                jobs.discard(output)
-            } else {
-                _jobState.value = JobUiState.ReadyToSave(savedSummary)
-                // Let screens that clear the error on leaving ReadyToSave observe the new state first.
+                _jobState.value = current.copy(saving = false, savedName = savedName, savedUri = dest)
+            } else if (!cleared) {
+                _jobState.value = current.copy(saving = false)
+                // Let screens observe the restored state before the error.
                 yield()
-                _saveError.value = app.getString(R.string.core_save_failed)
+                _saveError.value = app.getString(
+                    R.string.error_save_message,
+                    app.getString(R.string.error_save_title),
+                    app.getString(R.string.error_save_body),
+                )
             }
         }
+    }
+
+    /** Deletes [dest] if it is empty ([PdfJobs.deleteDestinationIfEmpty]) off the main thread, best effort. */
+    private fun deleteIfEmptyInBackground(dest: Uri) {
+        jobs.processScope.launch {
+            try {
+                withContext(Dispatchers.IO) { jobs.deleteDestinationIfEmpty(dest) }
+            } catch (e: Exception) {
+                // Best effort.
+            }
+        }
+    }
+
+    /**
+     * Prepares the output for sharing: copies it off the main thread to
+     * `cacheDir/shared/<random id>/<sanitised Done.suggestedName>`, then sets [shareRequest].
+     * Sharing the same output again reuses that copy (same Uri) while it still exists with the
+     * output's length ([PdfJobs.prepareShare]); a new output always gets its own copy.
+     * Ignored unless in `Done` and not saving, and while a share is already being prepared. A
+     * failed copy (or a missing output) sets [saveError] and leaves the state unchanged.
+     */
+    fun share() {
+        val done = _jobState.value as? JobUiState.Done ?: return
+        if (done.saving || shareJob != null) return
+        val app = getApplication<Application>()
+        val output = pending ?: run {
+            _saveError.value = app.getString(R.string.core_result_unavailable)
+            return
+        }
+        _saveError.value = null
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val request = try {
+                    jobs.prepareShare(output, done.suggestedName)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                if (pending !== output) return@launch
+                if (request != null) {
+                    _shareRequest.value = request
+                } else {
+                    _saveError.value = app.getString(R.string.result_share_failed)
+                }
+            } finally {
+                if (shareJob === coroutineContext.job) shareJob = null
+            }
+        }
+        shareJob = job
+        job.start()
+    }
+
+    /**
+     * Call once the screen has handled [shareRequest]: clears it and, if the share sheet was
+     * [launched], marks the result `shared`.
+     */
+    fun onShareHandled(launched: Boolean) {
+        _shareRequest.value = null
+        if (launched) (_jobState.value as? JobUiState.Done)?.let { _jobState.value = it.copy(shared = true) }
     }
 
     /**
@@ -183,13 +274,21 @@ open class JobViewModel(
      */
     open val toolId: String = ""
 
-    /** Records a successful save in [RecentFilesStore]. Never throws: recording must not fail a save. */
-    private suspend fun recordRecent(dest: Uri, output: PendingOutput) {
+    /**
+     * Records a successful save in [RecentFilesStore] and returns the display name the provider
+     * reports for [dest]: null if it cannot be read or the provider reports none (no guessed name;
+     * the Recent entry still gets the fallback name). Never throws: recording must not fail a save.
+     */
+    private suspend fun recordRecent(dest: Uri, output: PendingOutput): String? {
+        val app = getApplication<Application>()
+        val described = try {
+            withContext(Dispatchers.IO) { UriIo.describe(app, dest) }
+        } catch (e: Exception) {
+            return null
+        }
         try {
-            val app = getApplication<Application>()
             val tool = toolId
             withContext(Dispatchers.IO) {
-                val described = UriIo.describe(app, dest)
                 RecentFilesStore.get(app).add(
                     RecentFile(dest, described.name, described.sizeBytes ?: output.bytes, System.currentTimeMillis(), tool),
                 )
@@ -197,6 +296,7 @@ open class JobViewModel(
         } catch (e: Exception) {
             // Ignore: the file is saved; it just will not appear in the recent list.
         }
+        return described.name.takeIf { described.nameReported }
     }
 
     /** Clears [saveError] after the UI has shown it. */
@@ -205,8 +305,8 @@ open class JobViewModel(
     }
 
     /**
-     * Discards any pending output and returns to `Idle`. While a job is running this is the
-     * same as [cancel] (the state becomes `Idle` once the engine has stopped). Ignored while saving.
+     * Discards the output and returns to `Idle`. While a job is running this is the same as
+     * [cancel] (the state becomes `Idle` once the engine has stopped). Ignored while saving.
      */
     fun reset() {
         if (isSaving) return
@@ -214,10 +314,7 @@ open class JobViewModel(
             cancel()
             return
         }
-        discardPending()
-        lastResult = null
-        summary = ""
-        _saveError.value = null
+        clearResult()
         _jobState.value = JobUiState.Idle
     }
 
@@ -226,19 +323,14 @@ open class JobViewModel(
      * was produced from changes (a file added, removed or reordered, a level or page size
      * changed), so the user can never save an output that no longer matches the screen.
      *
-     * From `ReadyToSave`, `Saved` or `Failed`: discards any pending output, clears [saveError]
-     * and [lastResult], and returns to `Idle`. No-op while `Running` or `Saving` (and in `Idle`).
+     * From `Done` (not saving) or `Failed`: discards the output, clears [saveError] and
+     * [lastResult], and returns to `Idle`. No-op while `Running` or saving (and in `Idle`).
      */
     protected fun invalidateResult() {
-        when (_jobState.value) {
-            is JobUiState.ReadyToSave, is JobUiState.Saved, is JobUiState.Failed -> {
-                discardPending()
-                lastResult = null
-                summary = ""
-                _saveError.value = null
-                _jobState.value = JobUiState.Idle
-            }
-            else -> Unit
+        val state = _jobState.value
+        if (state is JobUiState.Failed || (state is JobUiState.Done && !state.saving)) {
+            clearResult()
+            _jobState.value = JobUiState.Idle
         }
     }
 
@@ -253,9 +345,20 @@ open class JobViewModel(
     override fun onCleared() {
         cleared = true
         runningJob?.cancel()
-        // A save in progress owns the pending output: it deletes it on success, discards it on failure.
+        shareJob?.cancel()
+        // A save in progress owns the output: it discards it when it ends.
         if (!isSaving) discardPending()
         super.onCleared()
+    }
+
+    /** Drops the output, any share being prepared, [shareRequest], [lastResult] and [saveError]. */
+    private fun clearResult() {
+        shareJob?.cancel()
+        shareJob = null
+        _shareRequest.value = null
+        discardPending()
+        lastResult = null
+        _saveError.value = null
     }
 
     private fun discardPending() {
@@ -264,9 +367,8 @@ open class JobViewModel(
     }
 
     private fun stateFor(error: PdfError): JobUiState =
-        if (error == PdfError.Cancelled) {
-            JobUiState.Idle
-        } else {
-            JobUiState.Failed(getApplication<Application>().getString(pdfErrorMessage(error)))
-        }
+        if (error == PdfError.Cancelled) JobUiState.Idle else JobUiState.Failed(error)
 }
+
+/** A prepared share: a `content://` [uri] from the app's share provider and the file [name] it carries. */
+data class ShareRequest(val uri: Uri, val name: String)

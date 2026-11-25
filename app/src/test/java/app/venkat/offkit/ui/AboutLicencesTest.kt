@@ -11,6 +11,8 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.test.core.app.ApplicationProvider
 import app.venkat.offkit.OnboardingSeenRule
 import app.venkat.offkit.core.CoreTestSupport
@@ -61,9 +63,12 @@ class AboutLicencesTest {
         }
     }
 
+    // The licence text is a LazyColumn tagged TAG_LICENCE_TEXT: scroll it to the first paragraph
+    // containing the text (it may not be composed yet), then check it is on screen.
     private fun scrollToText(text: String) {
-        rule.onNodeWithTag(TAG_LICENCE_TEXT).performScrollToNode(hasText(text, substring = true))
-        rule.onAllNodesWithText(text, substring = true).onFirst().assertIsDisplayed()
+        val match = hasText(text, substring = true) and hasAnyAncestor(hasTestTag(TAG_LICENCE_TEXT))
+        rule.onNodeWithTag(TAG_LICENCE_TEXT).performScrollToNode(match)
+        rule.onAllNodes(match).onFirst().assertIsDisplayed()
     }
 
     @Test
@@ -75,6 +80,7 @@ class AboutLicencesTest {
         scrollToText("Independent JPEG Group")
         scrollToText("Apache License")
         scrollToText("Material Symbols")
+        scrollToText("Manrope")
         // Back closes the text and returns to About, not Home.
         rule.onNodeWithTag("action_back").performClick()
         rule.waitForIdle()

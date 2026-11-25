@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ system splash: paper background + adaptive launcher icon. -->
+    <style name="Theme.PdfUtils" parent="Base.Theme.PdfUtils">
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowSplashScreenBackground">@color/offkit_background</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/offkit_primary</item>
+    </style>
+</resources>

@@ -3,12 +3,10 @@ package app.venkat.offkit.ui.onboarding
 import android.content.Context
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -34,15 +32,12 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -54,27 +49,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
-import androidx.compose.ui.unit.sp
-import androidx.core.view.WindowCompat
 import app.venkat.offkit.R
+import app.venkat.offkit.ui.about.offkitCard
 import app.venkat.offkit.ui.components.AppIcons
+import app.venkat.offkit.ui.theme.OffkitDimens
+import app.venkat.offkit.ui.theme.OffkitTheme
+import app.venkat.offkit.ui.theme.OffkitTool
 import kotlinx.coroutines.launch
 
 const val TAG_ONBOARDING_ROOT = "onboarding_root"
@@ -96,12 +91,12 @@ fun onboardingTitleTag(number: Int) = "onboarding_title_$number"
 internal fun onboardingReducedMotion(context: Context): Boolean =
     Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
 
-/** Corner radius of the content sheet where it meets the hero. */
-private val SheetRadius = 32.dp
+/** Corner radius of the content sheet where it meets the hero (the 28dp sheet radius of the design). */
+private val SheetRadius = OffkitDimens.dialogRadius
 
 /**
- * The introduction: four swipeable pages, each an illustrated brand-gradient hero above a rounded
- * content sheet. "Skip" (top end, not on the last page), a pill indicator and "Next" / "Get started".
+ * The introduction: four swipeable pages, each an illustration on the light paper `background`
+ * above a white content sheet with rounded top corners (system-bar icons stay dark). "Skip" (top end, not on the last page), a pill indicator and "Next" / "Get started".
  * Skip, Get started and system Back on the first page call [onFinished]; Back on a later page goes to
  * the previous page. The current page survives rotation and process death (the pager state is
  * saveable). With animations turned off in system settings the illustrations are static.
@@ -135,13 +130,12 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         }
     }
 
-    val dark = isSystemInDarkTheme()
-    val heroColors = if (dark) OnboardingBrand.HeroDark else OnboardingBrand.HeroLight
-    val sheetColor = MaterialTheme.colorScheme.surface
+    val pageColor = MaterialTheme.colorScheme.background
+    val sheetColor = MaterialTheme.colorScheme.surfaceContainerLowest
     val density = LocalDensity.current
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(sheetColor).testTag(TAG_ONBOARDING_ROOT)) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(pageColor).testTag(TAG_ONBOARDING_ROOT)) {
         val landscape = maxWidth > maxHeight
         val fontScale = density.fontScale
         val compact = maxHeight < 700.dp || fontScale >= 1.3f
@@ -151,14 +145,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         var barHeightPx by remember { mutableIntStateOf(0) }
         val barHeight = with(density) { barHeightPx.toDp() }
 
-        LightStatusBarIcons(enabled = !landscape)
-
-        // Fixed backdrop: the gradient hero and the sheet that overlaps it.
-        Box(
-            Modifier
-                .size(if (landscape) heroWidth + SheetRadius else heroWidth, if (landscape) heroHeight else heroHeight + SheetRadius)
-                .background(Brush.linearGradient(heroColors)),
-        )
+        // Fixed backdrop: the white sheet that overlaps the paper-coloured hero area.
         Box(
             Modifier
                 .then(
@@ -187,7 +174,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     entrance = { entrance.value },
                     pageWidthPx = pageWidthPx,
                     rtl = rtl,
-                    dark = dark,
                     modifier = modifier,
                 )
             }
@@ -230,7 +216,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
 
         if (!onLastPage) {
             SkipButton(
-                onHero = !landscape,
                 onClick = onFinished,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -279,19 +264,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 },
             )
         }
-    }
-}
-
-/** While shown, status-bar icons are light (they sit on the gradient); restored when leaving. */
-@Composable
-private fun LightStatusBarIcons(enabled: Boolean) {
-    val window = LocalActivity.current?.window ?: return
-    val view = LocalView.current
-    DisposableEffect(window, enabled) {
-        val controller = WindowCompat.getInsetsController(window, view)
-        val previous = controller.isAppearanceLightStatusBars
-        if (enabled) controller.isAppearanceLightStatusBars = false
-        onDispose { controller.isAppearanceLightStatusBars = previous }
     }
 }
 
@@ -345,10 +317,9 @@ private fun PageContent(number: Int, compact: Boolean, entrance: () -> Float, bo
 
 @Composable
 private fun PageTitle(number: Int, text: String, compact: Boolean) {
-    val base = if (compact) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.displaySmall
     Text(
         text = text,
-        style = base.copy(fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp),
+        style = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.displaySmall,
         color = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier
             .fillMaxWidth()
@@ -361,48 +332,47 @@ private fun PageTitle(number: Int, text: String, compact: Boolean) {
 private fun Body(text: String) {
     Text(
         text = text,
-        style = MaterialTheme.typography.bodyLarge.copy(lineHeight = 1.5.em),
+        style = MaterialTheme.typography.bodyLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth(),
     )
 }
 
-/** A short point: a small tinted icon disc and one line of text, read as one node. */
+/** A short point: a small tinted icon tile (14dp corners) and one line of text, read as one node. */
 @Composable
 private fun PointRow(icon: Painter, text: String) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp).semantics(mergeDescendants = true) {},
+        modifier = Modifier.fillMaxWidth().heightIn(min = OffkitDimens.touchTarget).semantics(mergeDescendants = true) {},
     ) {
         Box(
-            Modifier.size(32.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+            Modifier.size(40.dp).background(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.shapes.small),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(OffkitDimens.iconSizeSmall))
         }
         Spacer(Modifier.width(16.dp))
-        Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
     }
 }
 
-/** Page 2: the four tools as a compact 2x2 grid of cards (glyph, name, short benefit). */
+/** Page 2: the four tools as a compact 2x2 grid of white cards (tool glyph on its accent tile, name, short benefit). */
 @Composable
 private fun ToolGrid() {
     val tools = listOf(
-        Triple(AppIcons.image, R.string.tool_images_to_pdf_title, R.string.onboarding_tools_images),
-        Triple(AppIcons.compress, R.string.tool_compress_title, R.string.onboarding_tools_compress),
-        Triple(AppIcons.merge, R.string.tool_merge_title, R.string.onboarding_tools_merge),
-        Triple(AppIcons.addToPdf, R.string.tool_add_images_title, R.string.onboarding_tools_add),
+        Triple(OffkitTool.IMAGES, R.string.tool_images_to_pdf_title, R.string.onboarding_tools_images),
+        Triple(OffkitTool.COMPRESS, R.string.tool_compress_title, R.string.onboarding_tools_compress),
+        Triple(OffkitTool.MERGE, R.string.tool_merge_title, R.string.onboarding_tools_merge),
+        Triple(OffkitTool.ADD_PAGES, R.string.tool_add_images_title, R.string.onboarding_tools_add),
     )
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         tools.chunked(2).forEach { row ->
             Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { (icon, name, benefit) ->
+                row.forEach { (tool, name, benefit) ->
                     ToolCard(
-                        icon = icon,
+                        tool = tool,
                         name = stringResource(name),
                         benefit = stringResource(benefit),
-                        accent = name == R.string.tool_merge_title,
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
                 }
@@ -412,31 +382,41 @@ private fun ToolGrid() {
 }
 
 @Composable
-private fun ToolCard(icon: Painter, name: String, benefit: String, accent: Boolean, modifier: Modifier) {
+private fun ToolCard(tool: OffkitTool, name: String, benefit: String, modifier: Modifier) {
     val colors = MaterialTheme.colorScheme
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = colors.surfaceContainerHigh,
-        modifier = modifier.semantics(mergeDescendants = true) {},
+    Column(
+        modifier
+            .offkitCard()
+            .semantics(mergeDescendants = true) {}
+            .padding(horizontal = 16.dp, vertical = 14.dp),
     ) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Box(
-                Modifier
-                    .size(32.dp)
-                    .background(if (accent) OnboardingBrand.Coral else colors.primaryContainer, RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    tint = if (accent) Color.White else colors.onPrimaryContainer,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(name, style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
-            Spacer(Modifier.height(2.dp))
-            Text(benefit, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        Box(
+            Modifier.size(40.dp).background(tool.container, MaterialTheme.shapes.small),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(painterResource(tool.icon), contentDescription = null, tint = tool.onContainer, modifier = Modifier.size(OffkitDimens.iconSize))
         }
+        Spacer(Modifier.height(10.dp))
+        Text(name, style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
+        Spacer(Modifier.height(2.dp))
+        Text(benefit, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
     }
+}
+
+@Preview(widthDp = 412, heightDp = 860)
+@Composable
+private fun OnboardingPreview() {
+    OffkitTheme { OnboardingScreen(onFinished = {}) }
+}
+
+@Preview(widthDp = 860, heightDp = 412)
+@Composable
+private fun OnboardingLandscapePreview() {
+    OffkitTheme { OnboardingScreen(onFinished = {}) }
+}
+
+@Preview(widthDp = 412, heightDp = 640, fontScale = 2f)
+@Composable
+private fun OnboardingLargeFontPreview() {
+    OffkitTheme { OnboardingScreen(onFinished = {}) }
 }

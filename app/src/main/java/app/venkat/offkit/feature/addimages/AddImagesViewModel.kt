@@ -10,7 +10,7 @@ import app.venkat.offkit.core.PickedFile
 import app.venkat.offkit.core.UriIo
 import app.venkat.offkit.core.sanitizeDisplayName
 import app.venkat.offkit.ui.components.JobUiState
-import app.venkat.offkit.ui.components.formatBytes
+import app.venkat.offkit.ui.components.isSaving
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,7 +40,7 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
     override val toolId: String = TOOL_ID
 
     /** True while inputs must not change: a job is running or its result is being saved. */
-    private val locked: Boolean get() = isRunning || jobState.value is JobUiState.Saving
+    private val locked: Boolean get() = isRunning || jobState.value.isSaving
 
     /**
      * Sets the PDF to the first of [uris], replacing any earlier choice and discarding any
@@ -85,10 +85,8 @@ class AddImagesViewModel(app: Application) : JobViewModel(app) {
         val pdf = _pdf.value ?: return
         val list = _images.value
         if (list.isEmpty()) return
-        val res = getApplication<Application>().resources
         startJob(
             inputs = listOf(JobInput.Pdf(pdf.uri)) + list.map { JobInput.Image(it.file.uri) },
-            summarize = { ok -> res.getQuantityString(R.plurals.addimages_summary, ok.pages, ok.pages, formatBytes(ok.bytes)) },
         ) { engine, files, out, job -> engine.appendImages(files.first(), files.drop(1), out, job) }
     }
 

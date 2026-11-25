@@ -18,7 +18,7 @@ The app requests no Android permissions and makes no network connections.
 YOUR FILES
 ----------
 
-You choose files through the system file picker or photo picker. They are processed entirely on your device.
+You choose files through the system file picker. They are processed entirely on your device.
 
 While a job runs, the app keeps temporary working copies in its private cache. They are deleted after each job (when the result is saved or discarded, or the job fails or is cancelled). Any copies left behind, for example if the app was closed mid-job, are deleted the next time a tool is opened after the app starts.
 

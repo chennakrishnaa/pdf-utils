@@ -283,3 +283,108 @@ All three gates pass. The process-isolation design is sound for binder trust, pa
 - **FR-5, FR-6, FR-7, FR-8:** not changed (Info, no fix needed).
 - **FR-9 fixed.** The request lock is taken with `tryLock(pollMs)`; a waiting call returns `Cancelled` when its job is cancelled.
 - **Part D fixed:** Play listing bullets, platform-audit process-isolation text.
+
+### PI4 review (PI4R)
+
+An independent review of the PI4 fixes was done before the redesign review.
+
+- **Verdict:** sound to ship. No Critical, High or Medium findings.
+- **FR-1, FR-2, FR-3, FR-4, FR-9:** all confirmed fixed. FR-1 and the real client-death path of FR-2 were tested on the JVM only. Nothing was run against a real freezer.
+
+| Id | Severity | Where | Finding |
+|---|---|---|---|
+| PI4R-1 | Low | `RemoteEngine.kt:300-316` | Any scheduling gap over 2 s is treated as a freeze. An engine death within 5 s of such a gap is therefore reported as `EngineUnavailable` instead of `EngineCrashed`, and the RSS sample is postponed. Inferred, not reproduced. Suggested fix: require corroboration, such as `inBackground()` or a gap of about 10 s, and do not postpone the RSS sample. |
+| PI4R-2 | Info | `EngineServer.kt:136-139` | Any `RemoteException` from `callback.progress` kills the engine. |
+| PI4R-3 | Info | `EngineServer.kt:76-87,103-106` | `out` is registered as pending before the path check. Not exploitable: the service is not exported. |
+| PI4R-4 | Info | `EngineServer.kt:126-160` | An `Error` thrown before the inner `try` skips `finished(id)`. |
+
+None of these is fixed. They await the owner's decision.
+
+## Redesign review (RD)
+
+**Scope.** `git diff main...redesign` (131 files, +7944/-3540): T1–T11 and one integration fix, fast-forwarded into this worktree. This is a review only; no code was changed. Read in full: `core/JobViewModel.kt`, the `PdfJobs.kt` diff, `ui/components/JobFlow.kt`, `JobState.kt`, `Pickers.kt`, `Selection.kt`, `MergeScreen.kt`, and the ImagesToPdf selection code. Read in part: `JobFlowScreens.kt`, `Reorder.kt`, `HomeScreen.kt`, `Format.kt`, `DisplayNames.kt`, and the About, Home, Support and Onboarding diffs. Also checked: the manifest, `share_paths.xml`, the notices, and strings (main vs redesign vs the pack's `strings.xml`).
+
+### What was checked (evidence)
+
+- **Untouched areas.** `git diff --stat main...redesign -- app/src/main/java/app/venkat/offkit/engine '*.gradle*' gradle/libs.versions.toml scripts` prints nothing.
+- **Manifest.**
+  - No `uses-permission` is added; the only one is the existing `tools:node="remove"`.
+  - `MainActivity` is the only exported component.
+  - The provider is `androidx.core.content.FileProvider`, authority `${applicationId}.share`, `exported="false"`, `grantUriPermissions="true"`.
+  - `share_paths.xml` has a single `<cache-path name="shared" path="shared/"/>`.
+- **Share path containment.**
+  - `prepareShare` writes to `File(sharedRoot, UUID)/shareFileName(name)`.
+  - `sanitizeDisplayName` (`DisplayNames.kt:58`) replaces `/`, `\` and `:`, and removes control and format characters.
+  - `..` becomes `...pdf`, a plain file name.
+  - `FileProvider.getUriForFile` refuses anything outside `shared/`; the `IllegalArgumentException` is mapped to `IOException`.
+  - The grant is read only (`FLAG_GRANT_READ_URI_PERMISSION`), covers one URI in `EXTRA_STREAM` and `ClipData`, and goes to the app chosen in the chooser (`Pickers.kt:49-57`).
+  - No path to a file outside `cacheDir/shared/` was found.
+- **Code scans.**
+  - No `com.artifex` import outside `engine/`.
+  - No `BitmapFactory`, `ImageDecoder`, `ImageBitmap` or `loadThumbnail` in `ui/**` or `feature/**`.
+  - The only `takePersistableUriPermission` is the existing one at `core/RecentFiles.kt:64`.
+  - No network APIs.
+  - No new native libraries: the Gradle files are unchanged and only `.ttf` fonts and XML were added.
+- **About.**
+  - It uses exactly the same set of string resources as `main`: AGPL text row, `about_mupdf`, `source_code_url`, notices, privacy.
+  - The two `THIRD_PARTY_NOTICES.md` files are byte-identical (`cmp`), and both contain Manrope 4.505 under the OFL 1.1 with the full licence text.
+- **Errors.** `Format.kt:11-53` is an exhaustive `when` (no `else`) for message, title and body, covering `EngineCrashed`, `TimedOut`, `EngineUnavailable` and `Io`. No string resource is empty except `support_donate_url`, which was already empty on `main`.
+- **Defaults.** Compress `CompressionLevel.MEDIUM` (`CompressViewModel.kt:27`). Images `PageSize.FIT_IMAGE` and quality `null` = Original (`ImagesToPdfViewModel.kt:96,101`).
+- **Strings.** All 93 pack strings the redesign added match the pack text exactly. None is missing. No existing string changed except to the pack's wording.
+- **Links.** The support, home and onboarding diffs add no new intents or URLs. `privacy_policy_url`, `source_code_url` and `support_issues_url` are unchanged.
+- **Accessibility.**
+  - Icon-only buttons (About, recent Share and Remove) have content descriptions.
+  - Tiles and rows are `selectable` and use `cd_selected`.
+  - Reordering works through Move up/down/earlier/later buttons.
+  - Buttons and chips use `heightIn(min = 48dp)` or larger.
+  - Hard-coded colours appear only in `ui/theme`.
+  - The only `fontSize` override is the dp-sized decorative onboarding pill (`OnboardingIllustrations.kt:351`).
+- **Temp files.**
+  - Output is discarded on reset, invalidate, a new job and `onCleared`. During a save, `onCleared` defers the discard to the save's end; this is tested in `JobViewModelTest.clearingDuringSaveStillCompletesTheFile` and `clearingDuringFailingSaveDiscardsOutput`.
+  - Leftovers from process death are wiped by the first `PdfJobs.get`, which is lazy: it runs when a tool view model is first created, not at process start. A receiving app that opens a share URI after Offkit was killed therefore does not trigger a wipe.
+
+### Findings (most severe first)
+
+| Id | Severity | Where | What is wrong | Scenario | Confidence | Suggested fix |
+|---|---|---|---|---|---|---|
+| RD-1 | Medium | `Pickers.kt:83-86`, `JobViewModel.kt:238-241`, `JobState.kt:57` | `Done.shared` is set when the chooser **launches**, not when anything is shared. | Result screen, tap Share, back out of the share sheet without picking an app. The status line now reads `result_shared_only`, Discard has become Done, and Done/Close/Back leave without the SPEC §5 dialog, dropping the unsaved result. | High, from reading. `shareButtonRequestsShare` asserts exactly this (shared after launch only). | Owner decision: either learn the chosen target (`createChooser` with an `IntentSender` to a non-exported receiver, which needs a manifest edit), or keep asking until saved (only `savedUri` suppresses the dialog) and word the status as "Share sheet opened". |
+| RD-2 | Low | `PdfJobs.kt` `prepareShare`/`shareFileName`, `DisplayNames.kt:4` | The share name is capped at 120 code points, not bytes. A name of more than about 85 CJK characters (3 bytes each in UTF-8), or of 4-byte emoji, exceeds the 255-byte file-name limit, so `FileOutputStream` fails (ENAMETOOLONG) and Share always shows `result_share_failed`. | Compress (or Add images) a PDF with a long Chinese or Japanese name, then tap Share. | Medium. Confirmed `errno 36 File name too long` for a 125-character CJK name (345 bytes) on the host's Linux filesystem. Not run on a device. | Cap `shareFileName` at about 200 UTF-8 bytes (keeping `.pdf`), or use a short fixed name in the UUID directory and put the display name in the `ClipData` label. |
+| RD-3 | Low | `JobViewModel.kt:202-231`, `PdfJobs.prepareShare` | Every Share tap makes a new full copy in `shared/<uuid>/`. Copies are removed only by the next job or the next `PdfJobs.get` in a new process. | A 300 MB Merge result shared 5 times leaves 1.5 GB in the cache until the next job. | High, from reading. | Reuse one copy per output: remember the `ShareRequest` for the current `pending` and return it again. |
+| RD-4 | Low | `JobViewModel.kt:157-158`, `JobFlow.kt:135` | A destination that arrives while saving is ignored and its newly created, empty document is not deleted. | Double-tap Save fast enough to start two create-document dialogs, then confirm both. The second one either leaves a 0-byte PDF (first save still running) or silently saves a second copy. | Low, inferred. Not reproduced. | In `save`, call `deleteDestinationIfEmpty(dest)` when ignoring a `dest`, and have the flow ignore Save taps while the saver is open. |
+| RD-5 | Low | `strings_design.xml:16` (`recent_empty`) vs `JobViewModel.kt:181` | Pack wording "Files you save or share show up here." does not match the behaviour: only saves are recorded in Recent; shares are not. | Share a result without saving it. It never appears in Recent. | High. | Owner decision: change the wording (it was "Files you save will appear here" on `main`) or record shares. |
+| RD-6 | Info | `JobViewModel.kt:111` | `shared/` is wiped at the start of every job (SPEC §5: "until the next launch or job"). A receiving app that reads the URI lazily (a background upload, a Bluetooth transfer) loses it if the user starts another job first. | Share to an uploader, return, run another job at once. | Inferred; matches SPEC. | Accept, or wipe only copies older than a few minutes. |
+| RD-7 | Info | `JobFlowScreens.kt:296` | The saved row falls back to `suggestedName` when the provider reports no display name; SPEC §5 says not to guess. | A provider returns no `DISPLAY_NAME`. | High, from reading. | Show a generic `result_saved` line without a name. |
+| RD-8 | Info | `ImagesToPdfScreenTest.shareButtonRequestsShare` | Relies on a 5 s wall-clock wait across a real IO copy and recomposition, so it can time out under load. | A loaded CI machine. | Inferred: 3 out of 3 reruns passed in 0.15 s. | Use an injected test dispatcher for `PdfJobs` IO in screen tests, or a longer timeout. |
+
+No Critical or High findings.
+
+### Strings added by the redesign that are not in the pack (owner approval needed)
+
+`addimages_section_count` "Images · %1$d"; `imagestopdf_section_count` "Images · %1$d"; `merge_section_count` "PDFs · %1$d"; `cd_close` "Close"; `cd_list_separator` ", "; `error_engine_crashed_title` "Couldn't process this file"; `error_engine_unavailable_title` "Processing was interrupted"; `error_engine_unavailable_body` "Please try again."; `error_image_too_large_title` "Image is too large"; `error_out_of_memory_title` "Too large or too complex"; `error_out_of_memory_body` "Offkit ran out of memory on this file. Try fewer or smaller files."; `error_timed_out_title` "Taking too long"; `error_unsupported_image_title` "Image format not supported"; `home_wordmark_dot` "."; `processing_add_pages` "Adding pages…"; `recent_meta_two` "%1$s · %2$s"; `result_share_failed` "Could not prepare the file for sharing. Please try again."
+
+### Checks run
+
+- `./gradlew :app:testDebugUnitTest`: BUILD SUCCESSFUL in 3m 20s. 51 suites, 501 tests, 0 failures, 0 errors, 0 skipped (summed from the result XMLs).
+- `./gradlew :app:lintDebug :app:compileDebugAndroidTestKotlin`: BUILD SUCCESSFUL in 1m 41s. Lint: 0 errors, 83 warnings (`lint-results-debug.xml`). The warnings were not compared with `main`.
+- `./gradlew :app:testDebugUnitTest --tests '*ImagesToPdfScreenTest' --rerun-tasks`, three times: exit 0 each time. The last run had 26 tests, 0 failures, and `shareButtonRequestsShare` took 0.153 s. The test did not reproduce as flaky here. A plausible cause of the one reported timeout (inferred): Share copies the file on the real `Dispatchers.IO`, the first `FileProvider.getUriForFile` parses the provider XML, and the chooser launches from a `LaunchedEffect` after recomposition. All of this has to fit inside the 5 s wall-clock `idleUntil`, which a loaded machine (for example, several Gradle builds in parallel) can exceed.
+- `./scripts/verify.sh`: `VERIFY OK`. The APK's native libraries are only `libmupdf_java.so` and `libandroidx.graphics.path.so` for arm64-v8a and x86_64.
+
+### Test gaps
+
+- No test of `shareFileName` with hostile or very long names (`..`, separators, long CJK).
+- No test that dismissing the share sheet (as opposed to "no app") keeps the discard dialog (RD-1).
+- No test of a second `save(dest)` arriving while saving (RD-4).
+- No test of repeated Share disk use (RD-3).
+- No rotation or recreation test on the Result screen with the discard dialog open.
+
+### Not checked
+
+- 200% font scale, TalkBack on a device, and comparison with `screens/*.png`.
+- SPEC §2–4 and §6, and the bodies of the Compress and Add images screens (only defaults and string usage were checked).
+- Onboarding and Support layouts beyond the string and intent diff.
+- Nothing was run on the emulator (another worker was using it).
+- `PdfJobs.run`'s cancel-versus-completion race was not re-reviewed; it was not changed by the redesign.
+
+### Verdict (RD)
+
+Fit to merge into `main`. The constraints all hold, the gates pass, and there is no Critical or High finding. RD-1 (a dismissed share sheet counts as shared and drops the result without asking) should be decided by the owner before release. RD-2 to RD-5 are small fixes.

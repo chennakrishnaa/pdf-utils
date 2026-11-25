@@ -19,9 +19,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
@@ -30,6 +29,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import app.venkat.offkit.ui.theme.OffkitOnPrimary
+import app.venkat.offkit.ui.theme.OffkitOnSurface
+import app.venkat.offkit.ui.theme.OffkitOnSurfaceVariant
+import app.venkat.offkit.ui.theme.OffkitOutline
+import app.venkat.offkit.ui.theme.OffkitPrimary
+import app.venkat.offkit.ui.theme.OffkitPrimaryContainer
+import app.venkat.offkit.ui.theme.OffkitSurfaceContainerHigh
+import app.venkat.offkit.ui.theme.OffkitSurfaceContainerHighest
+import app.venkat.offkit.ui.theme.OffkitSurfaceContainerLowest
+import app.venkat.offkit.ui.theme.OffkitSurfaceDim
+import app.venkat.offkit.ui.theme.OffkitTool
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
@@ -40,8 +50,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
@@ -49,14 +57,40 @@ import app.venkat.offkit.ui.components.AppIcons
 import kotlin.math.abs
 import kotlin.math.min
 
-/** Brand colours of the launcher icon; the introduction's hero is a brand moment, never dynamic colour. */
+/**
+ * Colours of the introduction's illustrations, taken from the "Paper light" tokens in `Color.kt`
+ * and the tool accents of [OffkitTool]: ink and paper with the brand red as the accent. Fixed,
+ * never dynamic colour.
+ */
 internal object OnboardingBrand {
-    val HeroLight = listOf(Color(0xFF5B82C6), Color(0xFF415F91), Color(0xFF284777))
-    val HeroDark = listOf(Color(0xFF2F4D82), Color(0xFF213B69), Color(0xFF142645))
-    val Ink = Color(0xFF284777)
-    val Coral = Color(0xFFFF7A59)
-    val Amber = Color(0xFFFFC857)
-    val Shadow = Color(0xFF0B1A3A)
+    /** Glyphs and labels. */
+    val Ink = OffkitOnSurface
+    /** The accent: dots, the merge tile, the check badge. */
+    val Coral = OffkitPrimary
+    /** Content on [Coral]. */
+    val OnAccent = OffkitOnPrimary
+    /** The small "sun" discs. */
+    val Amber = OffkitTool.ADD_PAGES.container
+    /** Tile and card shadows. */
+    val Shadow = OffkitOnSurface
+    /** Tiles, pills and cards. */
+    val Tile = OffkitSurfaceContainerLowest
+    /** Large soft background discs. */
+    val Wash = OffkitPrimary.copy(alpha = 0.06f)
+    /** The thin background ring. */
+    val RingLine = OffkitOutline.copy(alpha = 0.35f)
+    /** The flow arrow of page 4. */
+    val Stroke = OffkitOnSurfaceVariant.copy(alpha = 0.85f)
+    /** The document page of page 3 and its text lines. */
+    val PaperFill = OffkitTool.COMPRESS.container
+    val PaperLine = OffkitTool.COMPRESS.onContainer.copy(alpha = 0.25f)
+    /** The stacked cards behind the recent-files card of page 4. */
+    val CardBack = OffkitSurfaceDim
+    val CardMiddle = OffkitSurfaceContainerHighest
+    /** Text lines on a card, and the PDF tile behind a PDF glyph. */
+    val Line = OffkitSurfaceDim
+    val LineLight = OffkitSurfaceContainerHigh
+    val PdfTile = OffkitPrimaryContainer
 }
 
 /** Design size of every illustration; it is scaled uniformly to fit the hero. */
@@ -109,7 +143,6 @@ internal fun HeroIllustration(
     entrance: () -> Float,
     pageWidthPx: Float,
     rtl: Boolean,
-    dark: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val badges = listOf(
@@ -118,7 +151,7 @@ internal fun HeroIllustration(
         stringResource(R.string.onboarding_private_badge_ads),
     )
     val semantics = if (page == 3) {
-        val text = badges.joinToString(", ")
+        val text = badges.joinToString(stringResource(R.string.cd_list_separator))
         Modifier.clearAndSetSemantics { contentDescription = text }
     } else {
         Modifier.clearAndSetSemantics { }
@@ -131,7 +164,7 @@ internal fun HeroIllustration(
             entrance = entrance,
             travelPx = pageWidthPx / scale,
             direction = if (rtl) -1f else 1f,
-            tile = if (dark) Color(0xFFE4EAF5) else Color.White,
+            tile = OnboardingBrand.Tile,
         )
         Box(
             Modifier
@@ -174,7 +207,7 @@ private fun Ring(x: Dp, y: Dp, diameter: Dp, motion: HeroMotion) {
             .absoluteOffset(x, y)
             .size(diameter)
             .layer(motion, 0.6f, 0)
-            .border(1.5.dp, Color.White.copy(alpha = 0.22f), CircleShape),
+            .border(1.5.dp, OnboardingBrand.RingLine, CircleShape),
     )
 }
 
@@ -225,14 +258,14 @@ private fun CheckBadge(x: Dp, y: Dp, size: Dp, motion: HeroMotion, depth: Float,
             .background(OnboardingBrand.Coral, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(size * 0.6f))
+        Icon(AppIcons.check, contentDescription = null, tint = OnboardingBrand.OnAccent, modifier = Modifier.size(size * 0.6f))
     }
 }
 
 /** Page 1: the 2x2 tile mark, large and slightly fanned out, over soft discs and the amber sun. */
 @Composable
 private fun WelcomeArt(m: HeroMotion) {
-    Blob(-40.dp, -20.dp, 200.dp, Color.White.copy(alpha = 0.08f), m, depth = 0.65f)
+    Blob(-40.dp, -20.dp, 200.dp, OnboardingBrand.Wash, m, depth = 0.65f)
     Ring(176.dp, 70.dp, 120.dp, m)
     Blob(14.dp, 176.dp, 14.dp, OnboardingBrand.Coral, m, depth = 0.5f, order = 2)
     Box(
@@ -247,21 +280,21 @@ private fun WelcomeArt(m: HeroMotion) {
     Tile(60.dp, 114.dp, 80.dp, m, depth = 0.18f, order = 3, rotation = 3f, glyph = AppIcons.compress)
     Tile(
         150.dp, 106.dp, 84.dp, m, depth = -0.08f, order = 4, rotation = -6f,
-        color = OnboardingBrand.Coral, glyph = AppIcons.merge, glyphTint = Color.White, elevation = 20.dp,
+        color = OnboardingBrand.Coral, glyph = AppIcons.merge, glyphTint = OnboardingBrand.OnAccent, elevation = 20.dp,
     )
 }
 
 /** Page 2: the four tool glyphs as floating tiles in a staggered cluster. */
 @Composable
 private fun ToolsArt(m: HeroMotion) {
-    Blob(150.dp, 0.dp, 170.dp, Color.White.copy(alpha = 0.08f), m, depth = 0.65f)
+    Blob(150.dp, 0.dp, 170.dp, OnboardingBrand.Wash, m, depth = 0.65f)
     Ring(-30.dp, 90.dp, 120.dp, m)
     Blob(238.dp, 18.dp, 22.dp, OnboardingBrand.Amber, m, depth = 0.5f, order = 2)
     Tile(26.dp, 28.dp, 76.dp, m, depth = 0.32f, order = 1, rotation = -10f, glyph = AppIcons.image)
     Tile(128.dp, 4.dp, 64.dp, m, depth = 0.4f, order = 2, rotation = 6f, glyph = AppIcons.compress)
     Tile(
         104.dp, 92.dp, 92.dp, m, depth = 0.12f, order = 3, rotation = -4f,
-        color = OnboardingBrand.Coral, glyph = AppIcons.merge, glyphTint = Color.White, elevation = 20.dp,
+        color = OnboardingBrand.Coral, glyph = AppIcons.merge, glyphTint = OnboardingBrand.OnAccent, elevation = 20.dp,
     )
     Tile(210.dp, 76.dp, 62.dp, m, depth = -0.06f, order = 4, rotation = 9f, glyph = AppIcons.addToPdf)
     Tile(36.dp, 134.dp, 54.dp, m, depth = 0.24f, order = 5, rotation = 7f, glyph = AppIcons.pdf)
@@ -270,22 +303,22 @@ private fun ToolsArt(m: HeroMotion) {
 /** Page 3: a phone made of rounded shapes with a coral check, ringed by three badges. */
 @Composable
 private fun PrivacyArt(m: HeroMotion, badges: List<String>) {
-    Blob(50.dp, 0.dp, 180.dp, Color.White.copy(alpha = 0.08f), m, depth = 0.65f)
+    Blob(50.dp, 0.dp, 180.dp, OnboardingBrand.Wash, m, depth = 0.65f)
     Ring(180.dp, 96.dp, 110.dp, m)
     Blob(226.dp, 26.dp, 18.dp, OnboardingBrand.Amber, m, depth = 0.5f, order = 2)
     Tile(
         92.dp, 8.dp, 96.dp, m, depth = 0.2f, order = 1, height = 168.dp, corner = 24.dp, elevation = 18.dp,
     ) {
         Column(
-            Modifier.fillMaxSize().padding(8.dp).background(Color(0xFFDCE6F8), RoundedCornerShape(17.dp)),
+            Modifier.fillMaxSize().padding(8.dp).background(OnboardingBrand.PaperFill, RoundedCornerShape(17.dp)),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(8.dp))
-            Box(Modifier.size(width = 24.dp, height = 5.dp).background(Color(0xFFB4C4E2), CircleShape))
+            Box(Modifier.size(width = 24.dp, height = 5.dp).background(OnboardingBrand.PaperLine, CircleShape))
             Spacer(Modifier.height(18.dp))
-            Box(Modifier.size(width = 54.dp, height = 7.dp).background(Color(0xFFB4C4E2), CircleShape))
+            Box(Modifier.size(width = 54.dp, height = 7.dp).background(OnboardingBrand.PaperLine, CircleShape))
             Spacer(Modifier.height(8.dp))
-            Box(Modifier.size(width = 40.dp, height = 7.dp).background(Color(0xFFB4C4E2), CircleShape))
+            Box(Modifier.size(width = 40.dp, height = 7.dp).background(OnboardingBrand.PaperLine, CircleShape))
         }
     }
     CheckBadge(110.dp, 76.dp, 60.dp, m, depth = 0.05f, order = 2)
@@ -298,7 +331,7 @@ private fun PrivacyArt(m: HeroMotion, badges: List<String>) {
 @Composable
 private fun Pill(text: String, x: Dp, y: Dp, m: HeroMotion, depth: Float, order: Int, rotation: Float) {
     val shape = RoundedCornerShape(50)
-    val textSize = with(LocalDensity.current) { 13.dp.toSp() }
+    val textSize = with(LocalDensity.current) { 12.dp.toSp() }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -314,7 +347,9 @@ private fun Pill(text: String, x: Dp, y: Dp, m: HeroMotion, depth: Float, order:
             text = text,
             maxLines = 1,
             softWrap = false,
-            style = TextStyle(fontSize = textSize, lineHeight = textSize, fontWeight = FontWeight.SemiBold, color = OnboardingBrand.Ink),
+            // labelSmall (12), sized in dp like the rest of the stage so it never outgrows its pill.
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = textSize, lineHeight = textSize),
+            color = OnboardingBrand.Ink,
         )
     }
 }
@@ -322,7 +357,7 @@ private fun Pill(text: String, x: Dp, y: Dp, m: HeroMotion, depth: Float, order:
 /** Page 4: a document flowing into a saved folder tile with a coral check, and a small recent-files stack. */
 @Composable
 private fun ControlArt(m: HeroMotion) {
-    Blob(150.dp, 0.dp, 170.dp, Color.White.copy(alpha = 0.08f), m, depth = 0.65f)
+    Blob(150.dp, 0.dp, 170.dp, OnboardingBrand.Wash, m, depth = 0.65f)
     Ring(-40.dp, 100.dp, 116.dp, m)
     Blob(214.dp, 186.dp, 16.dp, OnboardingBrand.Amber, m, depth = 0.5f, order = 2)
     // The dashed path from document to folder.
@@ -339,12 +374,12 @@ private fun ControlArt(m: HeroMotion) {
         }
         drawPath(
             path,
-            color = Color.White.copy(alpha = 0.85f),
+            color = OnboardingBrand.Stroke,
             style = Stroke(width = 3f * u, cap = StrokeCap.Round, pathEffect = PathEffect.dashPathEffect(floatArrayOf(2f * u, 9f * u))),
         )
         val tip = Offset(186f * u, 62f * u)
-        drawLine(Color.White.copy(alpha = 0.85f), tip, Offset(tip.x - 9f * u, tip.y - 3f * u), 3f * u, StrokeCap.Round)
-        drawLine(Color.White.copy(alpha = 0.85f), tip, Offset(tip.x + 1f * u, tip.y - 10f * u), 3f * u, StrokeCap.Round)
+        drawLine(OnboardingBrand.Stroke, tip, Offset(tip.x - 9f * u, tip.y - 3f * u), 3f * u, StrokeCap.Round)
+        drawLine(OnboardingBrand.Stroke, tip, Offset(tip.x + 1f * u, tip.y - 10f * u), 3f * u, StrokeCap.Round)
     }
     // Document.
     Tile(
@@ -364,14 +399,14 @@ private fun ControlArt(m: HeroMotion) {
     Tile(166.dp, 66.dp, 96.dp, m, depth = 0.12f, order = 3, rotation = 4f, glyph = AppIcons.save, elevation = 20.dp)
     CheckBadge(236.dp, 52.dp, 38.dp, m, depth = -0.08f, order = 4)
     // Recent files stack.
-    RecentCard(52.dp, 168.dp, 150.dp, Color(0xFFAFC2E6), m, 5, content = false)
-    RecentCard(44.dp, 156.dp, 150.dp, Color(0xFFD3DDF1), m, 5, content = false)
+    RecentCard(52.dp, 168.dp, 150.dp, OnboardingBrand.CardBack, m, 5, content = false)
+    RecentCard(44.dp, 156.dp, 150.dp, OnboardingBrand.CardMiddle, m, 5, content = false)
     RecentCard(36.dp, 144.dp, 150.dp, m.tile, m, 6)
 }
 
 @Composable
 private fun Line(fraction: Float) {
-    Box(Modifier.fillMaxWidth(fraction).height(6.dp).background(Color(0xFFC9D5EC), CircleShape))
+    Box(Modifier.fillMaxWidth(fraction).height(6.dp).background(OnboardingBrand.Line, CircleShape))
 }
 
 @Composable
@@ -388,14 +423,14 @@ private fun RecentCard(x: Dp, y: Dp, width: Dp, color: Color, m: HeroMotion, ord
             .padding(horizontal = 10.dp),
     ) {
         if (!content) return@Row
-        Box(Modifier.size(22.dp).background(Color(0xFFFFE3DA), RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(22.dp).background(OnboardingBrand.PdfTile, RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
             Icon(AppIcons.pdf, contentDescription = null, tint = OnboardingBrand.Coral, modifier = Modifier.size(14.dp))
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Line(0.9f)
             Spacer(Modifier.height(5.dp))
-            Box(Modifier.fillMaxWidth(0.5f).height(5.dp).background(Color(0xFFE1E7F3), CircleShape))
+            Box(Modifier.fillMaxWidth(0.5f).height(5.dp).background(OnboardingBrand.LineLight, CircleShape))
         }
     }
 }

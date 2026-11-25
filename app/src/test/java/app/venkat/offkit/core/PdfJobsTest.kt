@@ -1,5 +1,8 @@
 package app.venkat.offkit.core
 
+import org.junit.Assert.assertThrows
+import androidx.core.content.FileProvider
+import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
@@ -57,6 +60,7 @@ class PdfJobsTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        CoreTestSupport.clearFileProviderCache()
         fake = FakePdfEngine()
         (context as PdfUtilApp).engine = fake
         engineDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -118,14 +122,15 @@ class PdfJobsTest {
     }
 
     @Test
-    fun saveWritesDestinationAndEmptiesCache() {
+    fun saveWritesDestinationAndKeepsOutput() {
         val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
         val sink = ByteArrayOutputStream()
         val dest = Uri.parse("content://dest.test/out.pdf")
         shadowOf(context.contentResolver).registerOutputStream(dest, sink)
         assertTrue(runBlocking { jobs.save(output, dest) }.isSuccess)
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        assertTrue(CoreTestSupport.jobsEmpty(context))
+        // The output survives a successful save (the caller discards it).
+        assertTrue(output.file.isFile)
     }
 
     @Test
@@ -147,7 +152,8 @@ class PdfJobsTest {
         shadowOf(context.contentResolver).registerOutputStream(good, sink)
         assertTrue(runBlocking { jobs.save(output, good) }.isSuccess)
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        assertTrue(CoreTestSupport.jobsEmpty(context))
+        // The output survives a successful save (the caller discards it).
+        assertTrue(output.file.isFile)
     }
 
     /** A PdfJobs whose destination streams come from [opener] (to inject write/close failures on real files). */
@@ -188,7 +194,7 @@ class PdfJobsTest {
 
         assertTrue(runBlocking { j.save(output, Uri.fromFile(good)) }.isSuccess)
         assertArrayEquals(fake.outputContent, good.readBytes())
-        assertTrue(CoreTestSupport.jobsEmpty(context))
+        assertTrue(output.file.isFile)
     }
 
     @Test
@@ -506,5 +512,145 @@ class PdfJobsTest {
         assertSame(threads[0], threads[1])
         assertEquals("pdf-engine", threads[0].name)
         assertNotSame(Thread.currentThread(), threads[0])
+    }
+
+    @Test
+    fun singletonWipesSharedCopiesOnCreation() {
+        PdfJobs.resetForTesting()
+        val stale = File(context.cacheDir, "shared/old-share").apply { mkdirs() }.resolve("z.pdf")
+        stale.writeBytes(ByteArray(5))
+        PdfJobs.get(context)
+        assertFalse(stale.exists())
+        assertTrue(File(context.cacheDir, "shared").listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun shareProviderIsNotExportedAndGrantsUriPermissions() {
+        val info = context.packageManager.getProviderInfo(ComponentName(context, FileProvider::class.java), 0)
+        assertFalse(info.exported)
+        assertTrue(info.grantUriPermissions)
+        assertEquals(PdfJobs.shareAuthority(context), info.authority)
+    }
+
+    @Test
+    fun shareProviderCannotMapJobFiles() {
+        val jobFile = File(jobs.jobsRoot, "x/output.pdf").apply { parentFile!!.mkdirs(); writeBytes(ByteArray(1)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            FileProvider.getUriForFile(context, PdfJobs.shareAuthority(context), jobFile)
+        }
+        val other = File(context.cacheDir, "other.pdf").apply { writeBytes(ByteArray(1)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            FileProvider.getUriForFile(context, PdfJobs.shareAuthority(context), other)
+        }
+    }
+
+    @Test
+    fun prepareShareCopiesUnderSharedAndKeepsOutput() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val request = runBlocking { jobs.prepareShare(output, "my/report") }
+        assertEquals("my_report.pdf", request.name)
+        assertEquals(PdfJobs.shareAuthority(context), request.uri.authority)
+        val copy = jobs.sharedRoot.walk().single { it.isFile }
+        assertEquals("my_report.pdf", copy.name)
+        assertEquals(jobs.sharedRoot, copy.parentFile!!.parentFile)
+        assertArrayEquals(fake.outputContent, copy.readBytes())
+        assertTrue(output.file.isFile)
+        runBlocking { jobs.wipeShared() }
+        assertTrue(jobs.sharedRoot.listFiles().isNullOrEmpty())
+    }
+
+    @Test
+    fun prepareShareReusesOneCopyPerOutputWhileItExists() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val first = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        val copy = jobs.sharedRoot.walk().single { it.isFile }
+        val second = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        assertEquals(first, second)
+        assertEquals(1, jobs.sharedRoot.listFiles()!!.size)
+
+        // Copy deleted externally: the next share recreates it.
+        copy.delete()
+        val third = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        assertFalse(third.uri == first.uri)
+        assertArrayEquals(fake.outputContent, jobs.sharedRoot.walk().single { it.isFile }.readBytes())
+        assertEquals("stale directory removed", 1, jobs.sharedRoot.listFiles()!!.size)
+
+        // Copy truncated: recreated too, and the stale copy's directory is gone.
+        val truncated = jobs.sharedRoot.walk().single { it.isFile }.apply { writeBytes(ByteArray(1)) }
+        val fourth = runBlocking { jobs.prepareShare(output, "r.pdf") }
+        assertFalse(fourth.uri == third.uri)
+        assertEquals(1, jobs.sharedRoot.listFiles()!!.size)
+        assertFalse(truncated.parentFile!!.exists())
+        assertArrayEquals(fake.outputContent, jobs.sharedRoot.walk().single { it.isFile }.readBytes())
+        assertEquals(fourth, runBlocking { jobs.prepareShare(output, "r.pdf") })
+
+        // A different suggested name: recreated, old name's directory deleted.
+        val renamed = runBlocking { jobs.prepareShare(output, "s.pdf") }
+        assertEquals(1, jobs.sharedRoot.listFiles()!!.size)
+        assertEquals("s.pdf", jobs.sharedRoot.walk().single { it.isFile }.name)
+        assertFalse(renamed.uri == fourth.uri)
+
+        // A different output gets its own copy.
+        val other = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "b.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val otherRequest = runBlocking { jobs.prepareShare(other, "r.pdf") }
+        assertFalse(otherRequest.uri == fourth.uri)
+    }
+
+    private fun utf8(s: String) = s.toByteArray(Charsets.UTF_8).size
+
+    private val cjk = "报"
+
+    @Test
+    fun shareFileNameCapsLongCjkNameInBytes() {
+        val name = PdfJobs.shareFileName(cjk.repeat(125))
+        assertTrue(utf8(name) <= PdfJobs.MAX_SHARE_NAME_BYTES)
+        assertEquals(cjk.repeat(65) + ".pdf", name)
+    }
+
+    @Test
+    fun shareFileNameCapsLongEmojiNameWithoutSplittingSurrogates() {
+        val name = PdfJobs.shareFileName("😀".repeat(100) + ".pdf")
+        assertEquals(PdfJobs.MAX_SHARE_NAME_BYTES, utf8(name))
+        assertEquals("😀".repeat(49) + ".pdf", name)
+        // Every surrogate is paired: 49 emoji plus ".pdf".
+        assertEquals(53, name.codePointCount(0, name.length))
+        assertTrue(name.codePoints().noneMatch { Character.getType(it) == Character.SURROGATE.toInt() })
+    }
+
+    @Test
+    fun shareFileNameAtExactlyTheLimitIsKeptAndOneByteMoreIsCut() {
+        val exact = "a" + cjk.repeat(65) + ".pdf"
+        assertEquals(PdfJobs.MAX_SHARE_NAME_BYTES, utf8(exact))
+        assertEquals(exact, PdfJobs.shareFileName(exact))
+        assertEquals("ab" + cjk.repeat(64) + ".pdf", PdfJobs.shareFileName("ab" + cjk.repeat(65) + ".pdf"))
+        // Upper-case extension is kept as is.
+        assertEquals("a" + cjk.repeat(65) + ".PDF", PdfJobs.shareFileName("a" + cjk.repeat(65) + ".PDF"))
+    }
+
+    @Test
+    fun shareFileNameDoesNotLeaveABaseWithoutItsCombiningMark() {
+        // 195 + 1 + 2 bytes: the mark does not fit, so its base letter is dropped too.
+        assertEquals(cjk.repeat(65) + ".pdf", PdfJobs.shareFileName(cjk.repeat(65) + "é.pdf"))
+    }
+
+    @Test
+    fun shareFileNameIsOneSafeSegment() {
+        assertEquals("document.pdf", PdfJobs.shareFileName(".."))
+        assertEquals("document.pdf", PdfJobs.shareFileName("."))
+        assertEquals("document.pdf", PdfJobs.shareFileName(".pdf"))
+        assertEquals("document.pdf", PdfJobs.shareFileName(""))
+        assertEquals("a_b_c.pdf", PdfJobs.shareFileName("a/b\\c"))
+        assertEquals("_.._x.pdf", PdfJobs.shareFileName("/../x"))
+    }
+
+    @Test
+    fun prepareShareWorksForLongCjkNameDirectlyUnderItsShareDirectory() {
+        val output = (mergeJob(listOf(JobInput.Pdf(CoreTestSupport.contentUri(context, "a.pdf", ByteArray(3))))) as JobOutcome.Ready).output
+        val request = runBlocking { jobs.prepareShare(output, cjk.repeat(125)) }
+        assertEquals(cjk.repeat(65) + ".pdf", request.name)
+        val copy = jobs.sharedRoot.walk().single { it.isFile }
+        assertEquals(request.name, copy.name)
+        assertEquals(jobs.sharedRoot.canonicalFile, copy.parentFile!!.parentFile!!.canonicalFile)
+        assertArrayEquals(fake.outputContent, copy.readBytes())
     }
 }

@@ -1,5 +1,8 @@
 package app.venkat.offkit.merge
 
+import app.venkat.offkit.core.isReadyToSave
+import app.venkat.offkit.core.isSaved
+import app.venkat.offkit.core.isSavingNow
 import android.app.Application
 import android.content.Context
 import android.net.Uri
@@ -7,6 +10,9 @@ import androidx.activity.compose.setContent
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -28,9 +34,14 @@ import app.venkat.offkit.feature.merge.MergeScreen
 import app.venkat.offkit.feature.merge.MergeViewModel
 import app.venkat.offkit.feature.merge.TAG_MERGE_ADD
 import app.venkat.offkit.feature.merge.TAG_MERGE_NOTE
-import app.venkat.offkit.feature.merge.TAG_MERGE_SAVE_ERROR
 import app.venkat.offkit.ui.components.JobUiState
 import app.venkat.offkit.ui.components.TAG_ACTION_BACK
+import app.venkat.offkit.ui.components.TAG_ACTION_CLOSE
+import app.venkat.offkit.ui.components.TAG_FILE_LIST_ADD
+import app.venkat.offkit.ui.components.TAG_FILE_LIST_EMPTY
+import androidx.compose.ui.test.getBoundsInRoot
+import org.junit.Assert.assertNotNull
+import org.robolectric.Shadows.shadowOf
 import app.venkat.offkit.ui.components.TAG_JOB_CANCEL
 import app.venkat.offkit.ui.components.TAG_JOB_ERROR
 import app.venkat.offkit.ui.components.TAG_JOB_PROGRESS
@@ -45,8 +56,9 @@ import app.venkat.offkit.ui.components.fileRowDownTag
 import app.venkat.offkit.ui.components.fileRowRemoveTag
 import app.venkat.offkit.ui.components.fileRowTag
 import app.venkat.offkit.ui.components.fileRowUpTag
+import app.venkat.offkit.ui.components.pdfErrorBody
 import app.venkat.offkit.ui.nav.AppNavHost
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -57,7 +69,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -89,7 +100,7 @@ class MergeScreenTest {
         fake = FakePdfEngine()
         (app as PdfUtilApp).engine = fake
         resetRecents()
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { MergeScreen(onBack = { backCalls++ }) } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { MergeScreen(onBack = { backCalls++ }) } } }
         rule.waitForIdle()
         vm = ViewModelProvider(rule.activity)[MergeViewModel::class.java]
     }
@@ -122,20 +133,18 @@ class MergeScreenTest {
         override fun write(b: ByteArray, off: Int, len: Int) = throw IOException("disk full")
     }
 
-    private fun dest(sink: OutputStream): Uri {
-        val uri = Uri.parse("content://dest.test/${System.nanoTime()}/merged.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(uri, sink)
-        return uri
-    }
+    /** A save destination whose provider reports "merged.pdf" as its display name. */
+    private fun dest(sink: OutputStream): Uri =
+        CoreTestSupport.saveDestination(app, sink, displayName = "merged.pdf")
 
-    private fun back() {
-        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+    private fun tap(tag: String) {
+        rule.onNodeWithTag(tag).performClick()
         rule.waitForIdle()
     }
 
     private fun runToReady() {
-        click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        tap(TAG_JOB_RUN)
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         rule.waitForIdle()
     }
 
@@ -143,14 +152,13 @@ class MergeScreenTest {
     private fun assertResultDiscarded() {
         assertEquals(JobUiState.Idle, state())
         assertTrue(CoreTestSupport.jobsEmpty(app))
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsDisplayed()
         rule.onNodeWithTag(TAG_JOB_SAVE).assertDoesNotExist()
         val sink = ByteArrayOutputStream()
         rule.runOnUiThread { vm.save(dest(sink)) }
         rule.waitForIdle()
         assertEquals(JobUiState.Idle, state())
         assertEquals(0, sink.size())
-        assertEquals(app.getString(R.string.core_result_unavailable), vm.saveError.value)
     }
 
     private fun pdf(name: String, content: String = name): Uri =
@@ -172,16 +180,25 @@ class MergeScreenTest {
         }
     }
 
+    /** Clicks a node in the scrolling content (rows, their toolbar, the header button). */
     private fun click(tag: String) {
         rule.onNodeWithTag(tag).performScrollTo().performClick()
         rule.waitForIdle()
     }
 
+    /** Selects row [index] so that its move / remove toolbar appears. */
+    private fun select(index: Int) = click(fileRowTag(index))
+
+    private fun names() = vm.items.value.map { it.file.name }
+
+    private fun pagesText(pages: Int) = app.resources.getQuantityString(R.plurals.pages_count, pages, pages)
+
     private fun state() = vm.jobState.value
+
 
     @Test
     fun opensFromHomeThroughNavigation() {
-        rule.runOnUiThread { rule.activity.setContent { PdfUtilsTheme { AppNavHost() } } }
+        rule.runOnUiThread { rule.activity.setContent { OffkitTheme { AppNavHost() } } }
         rule.waitForIdle()
         click("tool_merge")
         rule.onNodeWithTag(TAG_MERGE_ADD).performScrollTo().assertIsDisplayed()
@@ -189,23 +206,121 @@ class MergeScreenTest {
     }
 
     @Test
-    fun runEnabledOnlyWithTwoOrMoreAndNoteShown() {
+    fun emptyListShowsTextNoteAndDisabledRun() {
+        rule.onNodeWithText(app.getString(R.string.screen_merge)).assertIsDisplayed()
+        rule.onNodeWithText(app.getString(R.string.merge_section_count, 0)).assertIsDisplayed()
+        rule.onNodeWithText(app.getString(R.string.merge_hint)).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_FILE_LIST_EMPTY).performScrollTo()
+            .assertTextEquals(app.getString(R.string.merge_empty))
         rule.onNodeWithTag(TAG_MERGE_NOTE).performScrollTo().assertIsDisplayed()
             .assertTextEquals(app.getString(R.string.merge_note))
         rule.onNodeWithTag(TAG_MERGE_ADD).performScrollTo().assertIsDisplayed().assertIsEnabled()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
+            .assertTextEquals(app.getString(R.string.add_pdfs))
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled().assertTextEquals(app.getString(R.string.action_merge))
+        rule.onNodeWithText(app.resources.getQuantityString(R.plurals.files_count, 0, 0)).assertIsDisplayed()
+        rule.onNodeWithText(app.getString(R.string.merge_need_two)).assertIsDisplayed()
+    }
 
+    @Test
+    fun addRowAfterFilesOpensTheSamePicker() {
+        // Empty: the explanation, then the Add row alone.
+        rule.onNodeWithTag(TAG_FILE_LIST_ADD).performScrollTo().assertIsDisplayed()
+            .assertTextEquals(app.getString(R.string.add_pdfs))
+        addAll(pdf("a.pdf"), pdf("b.pdf"))
+        rule.onNodeWithTag(fileRowTag(2)).assertDoesNotExist()
+        rule.onNodeWithText(app.getString(R.string.merge_section_count, 2)).assertExists()
+        rule.onNodeWithTag(TAG_FILE_LIST_ADD).assertIsDisplayed()
+        assertTrue(
+            rule.onNodeWithTag(TAG_FILE_LIST_ADD).getBoundsInRoot().top >= rule.onNodeWithTag(fileRowTag(1)).getBoundsInRoot().bottom,
+        )
+
+        shadowOf(rule.activity).clearNextStartedActivities()
+        click(TAG_MERGE_ADD)
+        val header = shadowOf(rule.activity).nextStartedActivity
+        assertNotNull(header)
+        click(TAG_FILE_LIST_ADD)
+        val row = shadowOf(rule.activity).nextStartedActivity
+        assertNotNull("the Add row opened no picker", row)
+        assertEquals(header.action, row.action)
+        assertEquals(header.type, row.type)
+    }
+
+    @Test
+    fun runEnabledOnlyWithTwoOrMore() {
         val a = pdf("a.pdf")
         addAll(a)
         rule.onNodeWithTag(fileRowTag(0)).performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("a.pdf").assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsNotEnabled()
+        rule.onNodeWithTag(TAG_FILE_LIST_EMPTY).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsNotEnabled()
+        rule.onNodeWithText(app.resources.getQuantityString(R.plurals.files_count, 1, 1)).assertIsDisplayed()
+        rule.onNodeWithText(app.getString(R.string.merge_need_two)).assertIsDisplayed()
 
         // The same file twice is allowed and yields two rows.
         addAll(a)
         rule.onNodeWithTag(fileRowTag(1)).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsEnabled()
+        rule.onNodeWithText(app.getString(R.string.merge_section_count, 2)).assertIsDisplayed()
+        rule.onNodeWithText(app.resources.getQuantityString(R.plurals.files_count, 2, 2)).assertIsDisplayed()
+        rule.onNodeWithText(app.getString(R.string.merge_order_hint)).assertIsDisplayed()
+        rule.onNodeWithText(app.getString(R.string.merge_need_two)).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsEnabled()
         assertEquals("merged.pdf", vm.suggestedFileName())
+    }
+
+    @Test
+    fun selectingARowShowsItsToolbar() {
+        addAll(pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf"))
+        rule.onNodeWithTag(fileRowTag(1)).performScrollTo().assertIsNotSelected()
+        rule.onNodeWithTag(fileRowUpTag(1)).assertDoesNotExist()
+
+        select(1)
+        rule.onNodeWithTag(fileRowTag(1)).assertIsSelected()
+        rule.onNodeWithTag(fileRowTag(0)).assertIsNotSelected()
+        rule.onNodeWithTag(fileRowUpTag(1)).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(fileRowDownTag(1)).assertIsEnabled()
+        rule.onNodeWithTag(fileRowRemoveTag(1)).assertIsEnabled()
+        rule.onNodeWithTag(fileRowUpTag(0)).assertDoesNotExist()
+
+        // Tapping the selected row again deselects it.
+        select(1)
+        rule.onNodeWithTag(fileRowTag(1)).assertIsNotSelected()
+        rule.onNodeWithTag(fileRowUpTag(1)).assertDoesNotExist()
+    }
+
+    @Test
+    fun firstRowCannotMoveUpAndLastCannotMoveDown() {
+        addAll(pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf"))
+        select(0)
+        rule.onNodeWithTag(fileRowUpTag(0)).performScrollTo().assertIsNotEnabled()
+        rule.onNodeWithTag(fileRowDownTag(0)).assertIsEnabled()
+        select(2)
+        rule.onNodeWithTag(fileRowUpTag(2)).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(fileRowDownTag(2)).assertIsNotEnabled()
+    }
+
+    @Test
+    fun selectionFollowsMovedRowAndClearsOnRemove() {
+        addAll(pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf"))
+        select(0)
+        click(fileRowDownTag(0))
+        assertEquals(listOf("b.pdf", "a.pdf", "c.pdf"), names())
+        rule.onNodeWithTag(fileRowTag(1)).assertIsSelected()
+        rule.onNodeWithTag(fileRowTag(0)).assertIsNotSelected()
+
+        click(fileRowDownTag(1))
+        assertEquals(listOf("b.pdf", "c.pdf", "a.pdf"), names())
+        rule.onNodeWithTag(fileRowTag(2)).assertIsSelected()
+
+        click(fileRowUpTag(2))
+        assertEquals(listOf("b.pdf", "a.pdf", "c.pdf"), names())
+        rule.onNodeWithTag(fileRowTag(1)).assertIsSelected()
+
+        click(fileRowRemoveTag(1))
+        assertEquals(listOf("b.pdf", "c.pdf"), names())
+        rule.onNodeWithTag(fileRowTag(0)).assertIsNotSelected()
+        rule.onNodeWithTag(fileRowTag(1)).assertIsNotSelected()
+        rule.onNodeWithTag(fileRowRemoveTag(0)).assertDoesNotExist()
+        rule.onNodeWithTag(fileRowRemoveTag(1)).assertDoesNotExist()
     }
 
     @Test
@@ -213,94 +328,104 @@ class MergeScreenTest {
         addAll(pdf("a.pdf", "A"), pdf("b.pdf", "B"), pdf("c.pdf", "C"), pdf("d.pdf", "D"))
         recordInputs()
 
+        select(0)
         click(fileRowDownTag(0)) // B A C D
+        select(3)
         click(fileRowUpTag(3)) // B A D C
+        select(1)
         click(fileRowRemoveTag(1)) // B D C
-        assertEquals(listOf("b.pdf", "d.pdf", "c.pdf"), vm.items.value.map { it.file.name })
+        assertEquals(listOf("b.pdf", "d.pdf", "c.pdf"), names())
+        listOf("b.pdf", "d.pdf", "c.pdf").forEachIndexed { i, name ->
+            rule.onNodeWithTag(fileRowTag(i)).performScrollTo().assertTextContains(name)
+        }
 
-        click(TAG_JOB_RUN)
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        tap(TAG_JOB_RUN)
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
 
         assertEquals(1, fake.callsFor(FakePdfEngine.Op.MERGE).size)
         assertEquals(listOf(listOf("B", "D", "C")), received)
     }
 
     @Test
-    fun progressSummarySaveAndSaved() {
+    fun progressResultSaveAndSaved() {
         addAll(pdf("a.pdf", "A"), pdf("b.pdf", "B"))
         fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Ok(pages = 5, bytes = 340L * 1024))
         fake.outputContent = "%PDF-1.7\nmerged output\n".toByteArray()
-        val atStep2 = CountDownLatch(1)
         val release = CountDownLatch(1)
-        recordInputs { step ->
-            if (step == 2) {
-                atStep2.countDown()
-                release.await(10, TimeUnit.SECONDS)
-            }
-        }
+        recordInputs { step -> if (step == 2) release.await(10, TimeUnit.SECONDS) }
 
-        click(TAG_JOB_RUN)
+        tap(TAG_JOB_RUN)
         CoreTestSupport.idleUntil(message = "Running(1, 3)") { state() == JobUiState.Running(1, 3) }
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_JOB_PROGRESS).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_PROGRESS).assertIsDisplayed()
         rule.onNodeWithText(app.getString(R.string.job_progress, 1, 3)).assertIsDisplayed()
-        // Inputs cannot be edited while the job runs.
-        rule.onNodeWithTag(fileRowUpTag(1)).assertDoesNotExist()
-        rule.onNodeWithTag(fileRowRemoveTag(0)).assertDoesNotExist()
-        rule.onNodeWithTag(TAG_MERGE_ADD).performScrollTo().assertIsNotEnabled()
+        // The options (and so the inputs) are not on screen while the job runs.
+        rule.onNodeWithTag(TAG_MERGE_ADD).assertDoesNotExist()
+        rule.onNodeWithTag(fileRowTag(0)).assertDoesNotExist()
 
         release.countDown()
-        CoreTestSupport.idleUntil(message = "ReadyToSave") { state() is JobUiState.ReadyToSave }
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
         rule.waitForIdle()
-        val summary = app.resources.getQuantityString(R.plurals.merge_summary, 5, 5, "340.0 KB")
-        assertEquals("5 pages · 340.0 KB", summary)
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo().assertTextEquals(summary)
-        rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pagesText(5))
+        rule.onNodeWithText("340.0 KB").assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsDisplayed()
         assertEquals(listOf(listOf("A", "B")), received)
 
         val sink = ByteArrayOutputStream()
-        val dest = Uri.parse("content://dest.test/${System.nanoTime()}/merged.pdf")
-        shadowOf(app.contentResolver).registerOutputStream(dest, sink)
-        rule.runOnUiThread { vm.save(dest) }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        rule.runOnUiThread { vm.save(dest(sink)) }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
 
         assertArrayEquals(fake.outputContent, sink.toByteArray())
-        rule.onNodeWithText(app.getString(R.string.job_saved_title)).performScrollTo().assertIsDisplayed()
-        rule.onNodeWithTag(TAG_JOB_SUMMARY).performScrollTo().assertTextEquals(summary)
+        assertEquals("merged.pdf", (state() as JobUiState.Done).savedName)
+        rule.onNodeWithText(app.getString(R.string.result_saved_as, "merged.pdf")).assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_SUMMARY).assertTextEquals(pagesText(5))
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(app.getString(R.string.action_done))
     }
 
     @Test
-    fun encryptedErrorShowsMessage() {
+    fun engineErrorShowsErrorScreenAndTryAgainReturnsToOptions() {
         addAll(pdf("a.pdf"), pdf("b.pdf"))
         fake.setResult(FakePdfEngine.Op.MERGE, PdfResult.Err(PdfError.Encrypted))
 
-        click(TAG_JOB_RUN)
+        tap(TAG_JOB_RUN)
         CoreTestSupport.idleUntil(message = "Failed") { state() is JobUiState.Failed }
         rule.waitForIdle()
 
         rule.onNodeWithTag(TAG_JOB_ERROR).performScrollTo()
-            .assertTextEquals(app.getString(R.string.error_encrypted))
+            .assertTextEquals(app.getString(pdfErrorBody(PdfError.Encrypted)))
+        rule.onNodeWithTag(TAG_MERGE_ADD).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(app.getString(R.string.job_try_again))
+        tap(TAG_JOB_RESET)
+
+        assertEquals(JobUiState.Idle, state())
+        assertEquals(0, backCalls)
+        rule.onNodeWithTag(TAG_JOB_ERROR).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsDisplayed().assertIsEnabled()
+        rule.onNodeWithTag(fileRowTag(1)).performScrollTo().assertIsDisplayed()
+        assertEquals(listOf("a.pdf", "b.pdf"), names())
     }
 
     @Test
-    fun cancelReturnsToIdle() {
+    fun cancelReturnsToOptionsWithFilesKept() {
         addAll(pdf("a.pdf"), pdf("b.pdf"))
         val release = CountDownLatch(1)
         recordInputs { step -> if (step == 2) release.await(10, TimeUnit.SECONDS) }
 
-        click(TAG_JOB_RUN)
+        tap(TAG_JOB_RUN)
         CoreTestSupport.idleUntil(message = "Running(1, 3)") { state() == JobUiState.Running(1, 3) }
         rule.waitForIdle()
-        click(TAG_JOB_CANCEL)
+        tap(TAG_JOB_CANCEL)
         release.countDown()
         CoreTestSupport.idleUntil(message = "Idle") { state() == JobUiState.Idle && !vm.isRunning }
         rule.waitForIdle()
 
-        rule.onNodeWithTag(TAG_JOB_RUN).performScrollTo().assertIsDisplayed().assertIsEnabled()
+        rule.onNodeWithTag(TAG_JOB_RUN).assertIsDisplayed().assertIsEnabled()
         rule.onNodeWithTag(TAG_JOB_CANCEL).assertDoesNotExist()
+        select(1)
         rule.onNodeWithTag(fileRowUpTag(1)).performScrollTo().assertIsEnabled()
         assertEquals(2, vm.items.value.size)
+        assertEquals(0, backCalls)
         assertTrue(CoreTestSupport.jobsEmpty(app))
     }
 
@@ -309,11 +434,14 @@ class MergeScreenTest {
         addAll(pdf("a.pdf"), pdf("b.pdf"), pdf("c.pdf"))
         runToReady()
         assertFalse(CoreTestSupport.jobsEmpty(app))
-        click(fileRowDownTag(0))
+        // The result screen hides the list; the ViewModel still discards on any change.
+        rule.runOnUiThread { vm.moveDown(0) }
+        rule.waitForIdle()
         assertResultDiscarded()
 
         runToReady()
-        click(fileRowRemoveTag(2))
+        rule.runOnUiThread { vm.remove(2) }
+        rule.waitForIdle()
         assertResultDiscarded()
 
         runToReady()
@@ -332,12 +460,14 @@ class MergeScreenTest {
             rule.runOnUiThread { vm.save(dest(sink)) }
             CoreTestSupport.idleUntil(message = "copy started") { sink.entered.count == 0L }
             rule.waitForIdle()
-            assertTrue(state() is JobUiState.Saving)
-            rule.onNodeWithTag(TAG_JOB_SAVING).performScrollTo().assertIsDisplayed()
-            rule.onNodeWithTag(fileRowUpTag(1)).assertDoesNotExist()
-            rule.onNodeWithTag(fileRowDownTag(0)).assertDoesNotExist()
-            rule.onNodeWithTag(fileRowRemoveTag(0)).assertDoesNotExist()
-            rule.onNodeWithTag(TAG_MERGE_ADD).performScrollTo().assertIsNotEnabled()
+            assertTrue(state().isSavingNow)
+            rule.onNodeWithTag(TAG_JOB_SAVING).assertIsDisplayed().assertIsNotEnabled()
+            rule.onNodeWithTag(TAG_MERGE_ADD).assertDoesNotExist()
+            rule.onNodeWithTag(fileRowTag(0)).assertDoesNotExist()
+            // Leaving is ignored while saving.
+            tap(TAG_ACTION_CLOSE)
+            rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
+            assertEquals(0, backCalls)
             // The ViewModel ignores changes too.
             rule.runOnUiThread {
                 vm.moveDown(0)
@@ -345,38 +475,60 @@ class MergeScreenTest {
                 vm.add(listOf(pdf("c.pdf")))
             }
             rule.waitForIdle()
-            assertEquals(listOf("a.pdf", "b.pdf"), vm.items.value.map { it.file.name })
-            assertTrue(state() is JobUiState.Saving)
+            assertEquals(listOf("a.pdf", "b.pdf"), names())
+            assertTrue(state().isSavingNow)
         } finally {
             release.countDown()
         }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_MERGE_ADD).performScrollTo().assertIsEnabled()
-        rule.onNodeWithTag(fileRowRemoveTag(0)).performScrollTo().assertIsEnabled()
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsEnabled()
         assertArrayEquals(fake.outputContent, sink.bytes.toByteArray())
     }
 
     @Test
-    fun backWithResultAsksBeforeLeaving() {
-        back()
+    fun backFromOptionsLeavesWithoutDialog() {
+        tap(TAG_ACTION_BACK)
         assertEquals(1, backCalls)
         rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
+    }
 
+    @Test
+    fun discardOnUnsavedResultAsksThenLeaves() {
         addAll(pdf("a.pdf"), pdf("b.pdf"))
         runToReady()
-        back()
-        rule.onNodeWithTag(TAG_LEAVE_STAY).assertIsDisplayed().performClick()
-        rule.waitForIdle()
-        assertEquals(1, backCalls)
-        assertTrue(state() is JobUiState.ReadyToSave)
-        rule.onNodeWithTag(TAG_JOB_SAVE).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(app.getString(R.string.action_discard))
+        tap(TAG_JOB_RESET)
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertIsDisplayed()
+        tap(TAG_LEAVE_STAY)
+        assertEquals(0, backCalls)
+        assertTrue(state().isReadyToSave)
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsDisplayed()
 
+        // Close and system back ask too.
+        tap(TAG_ACTION_CLOSE)
+        tap(TAG_LEAVE_STAY)
         rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
         rule.waitForIdle()
-        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertIsDisplayed().performClick()
+        rule.onNodeWithTag(TAG_LEAVE_CONFIRM).assertIsDisplayed()
+        tap(TAG_LEAVE_CONFIRM)
+        assertEquals(1, backCalls)
+        assertEquals(JobUiState.Idle, state())
+        assertTrue(CoreTestSupport.jobsEmpty(app))
+    }
+
+    @Test
+    fun doneAfterSaveLeavesWithoutDialog() {
+        addAll(pdf("a.pdf"), pdf("b.pdf"))
+        runToReady()
+        rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         rule.waitForIdle()
-        assertEquals(2, backCalls)
+        rule.onNodeWithTag(TAG_JOB_RESET).assertTextEquals(app.getString(R.string.action_done))
+        tap(TAG_JOB_RESET)
+        rule.onNodeWithTag(TAG_LEAVE_STAY).assertDoesNotExist()
+        assertEquals(1, backCalls)
+        assertEquals(JobUiState.Idle, state())
     }
 
     @Test
@@ -384,7 +536,7 @@ class MergeScreenTest {
         addAll(pdf("a.pdf"), pdf("b.pdf"))
         runToReady()
         rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
-        CoreTestSupport.idleUntil(message = "Saved") { state() is JobUiState.Saved }
+        CoreTestSupport.idleUntil(message = "Saved") { state().isSaved }
         val recents = RecentFilesStore.get(app).recents.value
         assertEquals(1, recents.size)
         assertEquals("merge", recents.single().tool)
@@ -392,32 +544,14 @@ class MergeScreenTest {
     }
 
     @Test
-    fun failedSaveErrorStaysUntilNextAction() {
+    fun failedSaveShowsSnackbarAndKeepsResult() {
         addAll(pdf("a.pdf"), pdf("b.pdf"))
         runToReady()
         rule.runOnUiThread { vm.save(dest(FailingSink)) }
-        CoreTestSupport.idleUntil(message = "saveError") { vm.saveError.value != null }
+        CoreTestSupport.idleUntil(message = "save finished") { !state().isSavingNow }
         rule.waitForIdle()
-        val failed = app.getString(R.string.core_save_failed)
-        rule.onNodeWithTag(TAG_MERGE_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_MERGE_SAVE_ERROR).performScrollTo().assertTextEquals(failed)
-        assertTrue(state() is JobUiState.ReadyToSave)
-
-        // Changing the list (the next action) clears it along with the result.
-        click(fileRowDownTag(0))
-        rule.onNodeWithTag(TAG_MERGE_SAVE_ERROR).assertDoesNotExist()
-
-        // "Result no longer available" arrives in Idle and stays visible.
-        rule.runOnUiThread { vm.save(dest(ByteArrayOutputStream())) }
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_MERGE_SAVE_ERROR).performScrollTo()
-            .assertTextEquals(app.getString(R.string.core_result_unavailable))
-        rule.waitForIdle()
-        rule.onNodeWithTag(TAG_MERGE_SAVE_ERROR).assertExists()
-        runToReady()
-        rule.onNodeWithTag(TAG_MERGE_SAVE_ERROR).assertDoesNotExist()
-        click(TAG_JOB_RESET)
-        assertEquals(JobUiState.Idle, state())
+        rule.onNodeWithText("Couldn't save. There may not be enough space. Your result is still here, so try another folder.").assertIsDisplayed()
+        assertTrue(state().isReadyToSave)
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertIsEnabled()
     }
 }

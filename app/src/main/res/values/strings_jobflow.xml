@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Processing / Result / Error screens (ui/components/JobFlow*.kt) -->
+<resources>
+    <string name="processing_add_pages">Adding pages…</string>
+    <string name="error_unsupported_image_title">Image format not supported</string>
+    <string name="error_out_of_memory_title">Too large or too complex</string>
+    <string name="error_out_of_memory_body">Offkit ran out of memory on this file. Try fewer or smaller files.</string>
+    <string name="error_image_too_large_title">Image is too large</string>
+    <string name="error_engine_crashed_title">Couldn\'t process this file</string>
+    <string name="error_timed_out_title">Taking too long</string>
+    <string name="error_engine_unavailable_title">Processing was interrupted</string>
+    <string name="error_engine_unavailable_body">Please try again.</string>
+</resources>

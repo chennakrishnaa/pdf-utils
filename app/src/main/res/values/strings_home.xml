@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The full stop after the "Offkit" wordmark on Home, drawn in the brand colour. -->
+    <string name="home_wordmark_dot" translatable="false">.</string>
+    <!-- Recent row meta line when the tool or the size is unknown: two of tool, size, time. -->
+    <string name="recent_meta_two">%1$s · %2$s</string>
+</resources>

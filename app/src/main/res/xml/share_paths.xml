@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Paths the share FileProvider may hand out: ONLY cacheDir/shared/ (copies made for a share).
+     Never cacheDir/jobs/ or anything else. -->
+<paths>
+    <cache-path name="shared" path="shared/" />
+</paths>

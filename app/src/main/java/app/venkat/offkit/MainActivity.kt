@@ -12,7 +12,7 @@ import androidx.compose.runtime.setValue
 import app.venkat.offkit.ui.nav.AppNavHost
 import app.venkat.offkit.ui.onboarding.OnboardingScreen
 import app.venkat.offkit.ui.onboarding.OnboardingStore
-import app.venkat.offkit.ui.theme.PdfUtilsTheme
+import app.venkat.offkit.ui.theme.OffkitTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -25,7 +25,7 @@ class MainActivity : ComponentActivity() {
         // Read before the first frame, so neither the introduction nor home flashes.
         val firstRun = !onboarding.seen
         setContent {
-            PdfUtilsTheme {
+            OffkitTheme {
                 var showIntroduction by rememberSaveable { mutableStateOf(firstRun) }
                 if (showIntroduction) {
                     OnboardingScreen(onFinished = {

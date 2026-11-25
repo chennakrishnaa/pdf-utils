@@ -15,7 +15,7 @@ import app.venkat.offkit.engine.PDF_PAGE_OVERHEAD_BYTES
 import app.venkat.offkit.engine.PageSize
 import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.ui.components.JobUiState
-import app.venkat.offkit.ui.components.formatBytes
+import app.venkat.offkit.ui.components.isSaving
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -117,7 +117,7 @@ class ImagesToPdfViewModel(
     override val toolId: String = TOOL_ID
 
     /** Inputs and options cannot change while a job runs or its result is being saved. */
-    private val locked: Boolean get() = isRunning || jobState.value is JobUiState.Saving
+    private val locked: Boolean get() = isRunning || jobState.value.isSaving
 
     init {
         // Resume estimation of still-pending images once a job has finished (or a save completed).
@@ -176,18 +176,10 @@ class ImagesToPdfViewModel(
         if (list.isEmpty() || locked) return
         val size = _pageSize.value
         val compression = _quality.value
-        val app = getApplication<Application>()
         // Keep the engine thread free for the real job; pending estimates resume afterwards.
         pauseEstimates()
         startJob(
             inputs = list.map { JobInput.Image(it.file.uri) },
-            summarize = { ok ->
-                app.getString(
-                    R.string.imagestopdf_summary,
-                    app.resources.getQuantityString(R.plurals.imagestopdf_pages, ok.pages, ok.pages),
-                    formatBytes(ok.bytes),
-                )
-            },
         ) { engine, files, out, job -> engine.imagesToPdf(files, size, out, job, compression = compression) }
     }
 
@@ -219,7 +211,7 @@ class ImagesToPdfViewModel(
     private fun ensureEstimator() {
         // Gate on the state, not isRunning: once the state has left Running the engine call has returned.
         val state = jobState.value
-        if (estimator != null || state is JobUiState.Running || state is JobUiState.Saving) return
+        if (estimator != null || state is JobUiState.Running || state.isSaving) return
         if (entries.none { estimateById[it.id] == ImageEstimate.Pending }) return
         lateinit var worker: Job
         worker = viewModelScope.launch(start = CoroutineStart.LAZY) {

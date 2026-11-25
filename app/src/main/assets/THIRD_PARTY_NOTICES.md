@@ -323,6 +323,13 @@ org.jspecify — jspecify 1.0.0 — Apache License, Version 2.0 (H) — The JSpe
 
 The vector icons in the app (res/drawable/ic_*.xml, except the launcher icon, which is original artwork) use path data from Material Symbols / Material Icons, Copyright Google LLC, licensed under the Apache License, Version 2.0 (H).
 
+4. FONT
+-------
+
+The app's interface text uses the Manrope typeface (res/font/manrope_*.ttf: Regular, Medium, SemiBold, Bold and ExtraBold).
+
+Manrope — 4.505 — SIL Open Font License 1.1 (K) — Copyright 2018 The Manrope Project Authors (https://github.com/googlefonts/manrope)
+
 LICENCE TEXTS
 =============
 
@@ -1116,10 +1123,11 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-(K) SIL Open Font License, Version 1.1 (URW++ fonts)
-----------------------------------------------------
+(K) SIL Open Font License, Version 1.1 (URW++ fonts, Manrope)
+-------------------------------------------------------------
 
 Copyright 2016 by (URW)++ Design & Development.
+Copyright 2018 The Manrope Project Authors (https://github.com/googlefonts/manrope)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

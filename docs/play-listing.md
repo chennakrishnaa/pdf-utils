@@ -23,7 +23,7 @@ Files you save are listed under Recent files on the home screen, so you can open
 
 PRIVATE BY DESIGN
 
-• No permissions. You choose files with Android's own file and photo picker, so Offkit only ever sees the files you hand it.
+• No permissions. You choose files with Android's own file picker, so Offkit only ever sees the files you hand it.
 • No internet. The app has no network access at all. Your documents are processed on the device and Offkit sends them nowhere.
 • No ads, no accounts, no analytics.
 • GPS location and camera settings (EXIF) are removed from photos you put into a PDF.

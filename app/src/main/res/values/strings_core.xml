@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Shown when copying the finished PDF to the chosen location fails. -->
-    <string name="core_save_failed">Could not save the file there. Please choose another location.</string>
     <!-- Default name suggested in the save dialog. -->
     <string name="core_default_file_name" translatable="false">document.pdf</string>
     <!-- Shown while the finished PDF is being copied to the chosen location. -->
@@ -9,11 +7,7 @@
     <!-- Shown when the save dialog returns but the result was lost (e.g. the app was closed meanwhile). -->
     <string name="core_result_unavailable">The result is no longer available. Please run it again.</string>
     <!-- Leave-confirmation dialog shown on Back while a job runs or a result is unsaved. -->
-    <string name="core_leave_title">Leave this screen?</string>
-    <string name="core_leave_text">Work in progress or an unsaved result will be lost.</string>
-    <string name="core_leave_stay">Stay</string>
-    <string name="core_leave_confirm">Leave</string>
-    <!-- Shown when no app on the device can handle the document picker, photo picker or save dialog. -->
+    <!-- Shown when no app on the device can handle the document (file) picker for PDFs or images, or the save dialog. -->
     <string name="core_no_picker">No app on this device can open the file picker.</string>
     <!-- Shown when a picked image declares more pixels than the app can safely decode on a phone. -->
     <string name="core_error_image_too_large">This image is too large to process on this device.</string>

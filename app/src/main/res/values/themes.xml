@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.PdfUtils" parent="android:Theme.Material.Light.NoActionBar">
-        <!-- Matches the Compose static surface colour, so the launch window does not flash. -->
-        <item name="android:windowBackground">#FFF9F9FF</item>
+    <!-- Platform parent on purpose: the app has no Material Components dependency.
+         Colours match the Compose OffkitTheme so the launch window does not flash. Light only. -->
+    <style name="Base.Theme.PdfUtils" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/offkit_background</item>
+        <item name="android:colorBackground">@color/offkit_background</item>
+        <!-- Edge-to-edge: draw behind system bars; pad content with WindowInsets. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
+
+    <style name="Theme.PdfUtils" parent="Base.Theme.PdfUtils" />
 </resources>

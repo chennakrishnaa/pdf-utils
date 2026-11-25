@@ -38,6 +38,18 @@
             android:exported="false"
             android:process=":engine" />
 
+        <!-- Hands a copy of a result to the app the user shares it with (temporary read grant via
+             the share intent). Not exported; exposes only cacheDir/shared/ (see share_paths). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/share_paths" />
+        </provider>
+
         <!-- Exported receiver merged in by androidx.profileinstaller; not wanted in this app.
              The class is only on the runtime classpath, hence the MissingClass suppression. -->
         <receiver

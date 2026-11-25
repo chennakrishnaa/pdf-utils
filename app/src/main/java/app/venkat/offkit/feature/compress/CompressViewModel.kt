@@ -11,7 +11,7 @@ import app.venkat.offkit.core.UriIo
 import app.venkat.offkit.core.sanitizeDisplayName
 import app.venkat.offkit.engine.CompressionLevel
 import app.venkat.offkit.ui.components.JobUiState
-import app.venkat.offkit.ui.components.formatBytes
+import app.venkat.offkit.ui.components.isSaving
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,7 +36,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
     override val toolId: String = TOOL_ID
 
     /** True while inputs and options must not change: a job is running or its result is being saved. */
-    private val locked: Boolean get() = isRunning || jobState.value is JobUiState.Saving
+    private val locked: Boolean get() = isRunning || jobState.value.isSaving
 
     /**
      * Chooses [uri] as the PDF to compress, replacing any previous choice. Any result of the
@@ -67,7 +67,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
         copiedInputBytes = null
         startJob(
             inputs = listOf(JobInput.Pdf(picked.uri)),
-            summarize = { ok -> summarize(copiedInputBytes ?: picked.sizeBytes, ok.bytes) },
+            originalBytes = { copiedInputBytes ?: picked.sizeBytes },
         ) { engine, files, out, job ->
             val input = files.first()
             copiedInputBytes = input.length()
@@ -82,20 +82,6 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
     private fun inputsChanged() {
         invalidateResult()
         clearSaveError()
-    }
-
-    private fun summarize(originalBytes: Long?, newBytes: Long): String {
-        val app = getApplication<Application>()
-        return when {
-            originalBytes == null || originalBytes <= 0 -> app.getString(R.string.compress_summary_size_only, formatBytes(newBytes))
-            newBytes >= originalBytes -> app.getString(R.string.compress_summary_no_gain)
-            else -> app.getString(
-                R.string.compress_summary,
-                formatBytes(originalBytes),
-                formatBytes(newBytes),
-                savingPercent(originalBytes, newBytes),
-            )
-        }
     }
 
     companion object {
@@ -121,9 +107,7 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
         }
 
         /** Saving in whole percent, rounded down but at least 1 when the file did get smaller. */
-        fun savingPercent(originalBytes: Long, newBytes: Long): Int {
-            if (originalBytes <= 0 || newBytes >= originalBytes) return 0
-            return ((originalBytes - newBytes) * 100 / originalBytes).toInt().coerceIn(1, 100)
-        }
+        fun savingPercent(originalBytes: Long, newBytes: Long): Int =
+            app.venkat.offkit.ui.components.savingPercent(originalBytes, newBytes)
     }
 }
