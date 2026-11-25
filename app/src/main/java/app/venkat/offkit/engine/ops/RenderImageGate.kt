@@ -382,6 +382,9 @@ internal object RenderImageGate {
                     "FlateDecode", "LZWDecode" -> {
                         val predictor = intOf(t, t.add(p.get("Predictor")))
                         if (predictor > 1) {
+                            // RF-7: the DCT header is read from the inflated bytes WITHOUT the predictor
+                            // MuPDF would apply, so a predictor in front of DCT is refused.
+                            if ("DCTDecode" in filters) refuse()
                             val columns = maxOf(1, intOf(t, t.add(p.get("Columns")))).toLong()
                             val colors = maxOf(1, intOf(t, t.add(p.get("Colors")))).toLong()
                             val bits = intOf(t, t.add(p.get("BitsPerComponent"))).let { if (it <= 0) 8 else it }.toLong()
