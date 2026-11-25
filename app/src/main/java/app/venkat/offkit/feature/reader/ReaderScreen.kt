@@ -79,6 +79,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
 import app.venkat.offkit.engine.PageDims
+import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.MIME_PDF
 import app.venkat.offkit.ui.components.OffkitJobErrorScreen
@@ -86,6 +87,7 @@ import app.venkat.offkit.ui.components.OffkitTonalButton
 import app.venkat.offkit.ui.components.TAG_ACTION_BACK
 import app.venkat.offkit.ui.components.launchOrExplain
 import app.venkat.offkit.ui.components.mirrorInRtl
+import app.venkat.offkit.ui.components.pdfErrorTitle
 import app.venkat.offkit.ui.reader.ZoomableList
 import app.venkat.offkit.ui.reader.ZoomableListState
 import app.venkat.offkit.ui.reader.rememberZoomableListState
@@ -115,6 +117,9 @@ fun readerPageTag(index: Int): String = "reader_page_$index"
 
 /** Test tag of the Retry action of page [index] after its render failed. */
 fun readerPageRetryTag(index: Int): String = "reader_page_${index}_retry"
+
+/** Test tag of the reason shown under a failed page's message. */
+fun readerPageReasonTag(index: Int): String = "reader_page_${index}_reason"
 
 /** Semantics flag of a page item: true once its whole-page bitmap is drawn. */
 val ReaderPageRendered = SemanticsPropertyKey<Boolean>("ReaderPageRendered")
@@ -445,7 +450,7 @@ private fun ReaderPage(
             }
         }
         when {
-            state.error != null && base == null -> PageError(index, onRetry, Modifier.align(Alignment.Center))
+            state.error != null && base == null -> PageError(index, state.error, onRetry, Modifier.align(Alignment.Center))
             state.error != null -> RetryIcon(index, onRetry, Modifier.align(Alignment.TopEnd).padding(4.dp))
             state.isLoading -> CircularProgressIndicator(
                 strokeWidth = 3.dp,
@@ -465,18 +470,34 @@ private fun DrawScope.drawBitmap(image: ImageBitmap, dst: DrawRect) {
     )
 }
 
-/** A failed page with nothing to show: a short message and a Retry button. */
+/**
+ * A failed page with nothing to show: a short message, the reason ([pdfErrorTitle]) and a Retry
+ * button. A page that ran the engine out of memory or time says it is too large or complex (Retry
+ * is still offered, though it will likely fail the same way).
+ */
 @Composable
-private fun PageError(index: Int, onRetry: () -> Unit, modifier: Modifier) {
+private fun PageError(index: Int, error: PdfError, onRetry: () -> Unit, modifier: Modifier) {
+    val tooBig = error == PdfError.OutOfMemory || error == PdfError.TimedOut
     Column(modifier = modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(AppIcons.warning, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            text = stringResource(R.string.reader_page_error),
+            text = stringResource(if (tooBig) R.string.reader_page_too_complex else R.string.reader_page_error),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
-            modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
+            modifier = Modifier.padding(top = 8.dp, bottom = if (tooBig) 12.dp else 2.dp),
         )
+        if (!tooBig) {
+            Text(
+                text = stringResource(pdfErrorTitle(error)),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(bottom = 12.dp).testTag(readerPageReasonTag(index)),
+            )
+        }
         OffkitTonalButton(
             text = stringResource(R.string.reader_retry),
             onClick = onRetry,

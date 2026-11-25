@@ -41,6 +41,7 @@ import app.venkat.offkit.feature.reader.TAG_READER_LIST
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
 import app.venkat.offkit.feature.reader.TAG_READER_TITLE
 import app.venkat.offkit.feature.reader.VIEWPORT_SETTLE_MS
+import app.venkat.offkit.feature.reader.readerPageReasonTag
 import app.venkat.offkit.feature.reader.readerPageRetryTag
 import app.venkat.offkit.feature.reader.readerPageTag
 import app.venkat.offkit.ui.components.MIME_PDF
@@ -359,6 +360,8 @@ class ReaderScreenTest {
         answer(enterReader(), pdf("report.pdf"))
         waitFor(readerPageRetryTag(0))
         assertTrue(!isRendered(0))
+        rule.onNodeWithText(str(R.string.reader_page_error)).assertExists()
+        rule.onNodeWithTag(readerPageReasonTag(0)).assertTextEquals(str(pdfErrorTitle(PdfError.Corrupt)))
         val before = renderRequests().count { it.page == 0 }
         failPage0.set(false)
         rule.onNodeWithTag(readerPageRetryTag(0)).performClick()
@@ -366,6 +369,20 @@ class ReaderScreenTest {
         waitUntilRendered(0)
         assertTrue(renderRequests().count { it.page == 0 } > before)
         assertTrue(!exists(readerPageRetryTag(0)))
+    }
+
+    @Test
+    fun pageThatRunsTheEngineOutOfMemoryOrTimeSaysItIsTooComplex() {
+        for (error in listOf(PdfError.OutOfMemory, PdfError.TimedOut)) {
+            fake.beforeRender = { request -> fake.readerError = if (request.page == 0) error else null }
+            answer(enterReader(), pdf("big.pdf"))
+            waitFor(readerPageRetryTag(0))
+            rule.onNodeWithText(str(R.string.reader_page_too_complex)).assertExists()
+            assertTrue(!exists(readerPageReasonTag(0)))
+            rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+            rule.waitForIdle()
+            waitFor(TAG_TOOL_READ)
+        }
     }
 
     @Test
