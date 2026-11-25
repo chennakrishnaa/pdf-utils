@@ -12,6 +12,7 @@ import app.venkat.offkit.feature.addimages.AddImagesScreen
 import app.venkat.offkit.feature.compress.CompressScreen
 import app.venkat.offkit.feature.imagestopdf.ImagesToPdfScreen
 import app.venkat.offkit.feature.merge.MergeScreen
+import app.venkat.offkit.feature.reader.ReaderScreen
 import app.venkat.offkit.ui.about.AboutScreen
 import app.venkat.offkit.ui.home.HomeScreen
 import app.venkat.offkit.ui.support.SupportScreen
@@ -23,6 +24,7 @@ object Routes {
     const val COMPRESS = "compress"
     const val MERGE = "merge"
     const val ADD_IMAGES = "add-images"
+    const val READER = "reader"
     const val ABOUT = "about"
     const val SUPPORT = "support"
 }
@@ -58,6 +60,14 @@ fun AppNavHost(
         }
         composable(Routes.ADD_IMAGES) {
             AddImagesScreen(onBack = dropUnlessResumed { navController.popBackStack() })
+        }
+        composable(Routes.READER) {
+            ReaderScreen(
+                onBack = dropUnlessResumed { navController.popBackStack() },
+                // Not gated on RESUMED: a cancelled picker reports before the activity resumes.
+                // Idempotent: does nothing once the reader has left the back stack.
+                onExit = { navController.popBackStack(Routes.READER, inclusive = true) },
+            )
         }
         composable(Routes.ABOUT) { entry ->
             AboutScreen(

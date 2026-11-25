@@ -125,6 +125,9 @@ fun recentRowShareTag(index: Int): String = "recent_row_${index}_share"
 /** Test tag of the remove-from-list button of recent row [index]. */
 fun recentRowRemoveTag(index: Int): String = "recent_row_${index}_remove"
 
+/** Test tag of the full-width "Read a PDF" card below the tool grid. */
+const val TAG_TOOL_READ = "tool_read"
+
 /** A tool card of the home grid: the design's [OffkitTool], the route it opens and its test tag. */
 private data class HomeTool(val tool: OffkitTool, val route: String, val testTag: String)
 
@@ -233,6 +236,8 @@ private fun HomeContent(
             PrivacyLine()
             Spacer(Modifier.height(20.dp))
             ToolGrid(onOpenTool)
+            Spacer(Modifier.height(OffkitDimens.itemGap))
+            ReadCard(onClick = { onOpenTool(Routes.READER) })
             Spacer(Modifier.height(OffkitDimens.sectionGap))
             RecentSection(recents, onOpen, onShare, onRemove, onClear)
             Spacer(Modifier.height(OffkitDimens.itemGap))
@@ -354,6 +359,38 @@ private fun ToolCard(tool: HomeTool, onClick: () -> Unit, modifier: Modifier = M
             )
             Text(
                 text = stringResource(tool.tool.description),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** The full-width "Read a PDF" card: the tool cards' look, laid out as one row. */
+@Composable
+private fun ReadCard(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .homeCard()
+            .clickable(role = Role.Button, onClick = onClick)
+            .testTag(TAG_TOOL_READ)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(
+            painterResource(R.drawable.ic_tool_read_badge),
+            contentDescription = null,
+            modifier = Modifier.size(OffkitDimens.iconContainer),
+        )
+        Column(modifier = Modifier.padding(start = 16.dp).weight(1f)) {
+            Text(
+                text = stringResource(R.string.tool_read_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = stringResource(R.string.tool_read_desc),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
