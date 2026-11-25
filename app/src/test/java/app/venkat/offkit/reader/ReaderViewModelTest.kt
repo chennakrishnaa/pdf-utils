@@ -32,6 +32,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -163,6 +164,7 @@ class ReaderViewModelTest {
         CoreTestSupport.idleUntil(message = "base 2") { vm.page(2).value.base != null }
         assertEquals(RenderRequest(2, ReaderPlanner.basePlan(2, fake.readerPages[2], WIDTH, ReaderLimits()).request.scale, 0, 0, WIDTH, 1529), renders().first())
         assertNull(vm.page(2).value.detail)
+        assertSame(vm.page(2), vm.page(2))
 
         val visible = ItemRect(200f, 300f, 200f + WIDTH / 2.5f, 300f + 700f)
         vm.onViewport(WIDTH, 2.5f, listOf(VisiblePage(2, visible)))
@@ -250,6 +252,43 @@ class ReaderViewModelTest {
         CoreTestSupport.idleUntil(message = "retried") { vm.page(1).value.base != null }
         assertNull(vm.page(1).value.error)
         assertEquals(2, renders().count { it.page == 1 })
+    }
+
+    @Test
+    fun visiblePagesAreKeptEvenBeyondTheBudget() {
+        fake.readerPages = List(10) { PageDims(595f, 842f) }
+        val onePage = ReaderPlanner.basePlan(0, fake.readerPages[0], WIDTH, ReaderLimits()).bytes
+        val vm = newVm(ReaderLimits(baseCacheBytes = onePage))
+        openVm(vm)
+        vm.onViewport(WIDTH, 1f, listOf(band(4), band(5)))
+        CoreTestSupport.idleUntil(message = "both visible") { vm.page(4).value.base != null && vm.page(5).value.base != null }
+        Thread.sleep(50)
+        CoreTestSupport.idleUntil { true }
+        assertNotNull(vm.page(4).value.base)
+        assertNotNull(vm.page(5).value.base)
+        assertEquals(setOf(4, 5), renders().map { it.page }.toSet())
+    }
+
+    @Test
+    fun closingWhileOpeningLeavesNoFiles() {
+        val vm = newVm()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blocking = object : PdfEngine by fake, PdfPageRenderer by fake {
+            override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo {
+                entered.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                return fake.pageInfo(pdf, job)
+            }
+        }
+        (app as PdfUtilApp).engine = blocking
+        vm.open(pdf())
+        CoreTestSupport.idleUntil(message = "pageInfo entered") { entered.count == 0L }
+        assertEquals(1, readerDirs().size)
+        vm.close()
+        release.countDown()
+        CoreTestSupport.idleUntil(message = "no reader dir") { readerDirs().isEmpty() }
+        assertEquals(ReaderDocState.Idle, vm.document.value)
     }
 
     private companion object {

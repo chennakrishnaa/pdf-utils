@@ -184,7 +184,8 @@ class ReaderViewModel internal constructor(
         private val wake = Channel<Unit>(Channel.CONFLATED)
         private val worker: Job = viewModelScope.launch { work() }
 
-        fun flow(index: Int): StateFlow<ReaderPageState>? = mutableFlow(index)?.asStateFlow()
+        /** The same instance for the life of this document, so collectors are not restarted. */
+        fun flow(index: Int): StateFlow<ReaderPageState>? = mutableFlow(index)
 
         private fun mutableFlow(index: Int): MutableStateFlow<ReaderPageState>? =
             if (index in 0 until pageCount) states.getOrPut(index) { MutableStateFlow(ReaderPageState()) } else null
