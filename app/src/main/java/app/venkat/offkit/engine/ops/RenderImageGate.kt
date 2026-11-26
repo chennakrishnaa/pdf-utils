@@ -124,11 +124,30 @@ internal object RenderImageGate {
     /** Predictor row buffer (65,500 px × 4 colours × 16 bit = 524,000 B). */
     const val MAX_PREDICTOR_ROW_BYTES = 1L shl 20
 
-    /** Nested resource levels (page → form → form …); real documents use a handful. */
-    const val MAX_NESTING = 32
+    /**
+     * Nested resource levels (page → form → form …); most documents use a handful. W3: raised
+     * from 32 for real files whose forms nest deeply. pdf.js `issue6961.pdf` (renders in stock
+     * MuPDF) has forms nested up to 271 levels; this walk reaches level 136 on its page 1 (91 on
+     * page 2), because a dictionary keeps the level at which it was FIRST listed, and that
+     * depends on the walk's order. 512 is about 1.9× the 271-level structure, so another
+     * order of the same shape still passes. The walk is iterative: a level is only a number kept
+     * with each listed dictionary, so this limit costs no stack, and the walk's memory is bounded by [MAX_VISITS]
+     * and [MAX_WALK_MILLIS], not by this. It does not limit MuPDF's own recursion when the page
+     * is drawn: that follows the content's `Do` calls and runs on [app.venkat.offkit.engine.EngineStack].
+     */
+    const val MAX_NESTING = 512
 
-    /** Entries (resource entries, objects, annotations) one page check may visit. */
-    const val MAX_VISITS = 20_000
+    /**
+     * Budget units (resource entries, objects, annotations, 1 per 64 `/XObject` keys listed) one
+     * page check may spend. W3: raised from 20,000 for real files: `issue6961.pdf` spends 70,769
+     * on its page 1 (36,403 on page 2; host walk 285 ms); pdf.js `bug1978317.pdf` (one page,
+     * 32,768 annotations, 1 unit each) spends 32,772. 100,000 is about 1.4× the larger.
+     * The clock is read on every unit ([MAX_WALK_MILLIS]), so raising this does not lengthen
+     * the time between checks; on the host, hostile pages that list millions of shared
+     * `/XObject` keys reach the time limit (at 22,000–50,000 units, about 1.4–1.8 M keys kept)
+     * before this one.
+     */
+    const val MAX_VISITS = 100_000
 
     const val MAX_WALK_MILLIS = 2_000L
 

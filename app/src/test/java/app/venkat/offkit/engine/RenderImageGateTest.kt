@@ -169,6 +169,61 @@ class RenderImageGateTest {
         })
     }
 
+    /**
+     * A chain of forms, each with its own `/Resources`, whose last dictionary is listed at
+     * nesting level [last] (page dictionary = 1, form k of the chain = k + 1) and holds [lastRes].
+     * The forms are nested in their resources only (their content does not draw the next one),
+     * like `issue6961.pdf`: a `Do` chain this deep is refused by MuPDF itself ("exception stack
+     * overflow!": its 256-slot `fz_try` stack), while the gate still walks every level.
+     */
+    private fun chain(last: Int, lastRes: String, lastContent: String, more: HostilePdf.() -> Unit = {}): ByteArray {
+        val forms = last - 1
+        return page("<</XObject<</Fm0 100 0 R>>>>", drawFm0) {
+            for (i in 0 until forms - 1) form(100 + i, "<</XObject<</Fm0 ${101 + i} 0 R>>>>", "")
+            form(100 + forms - 1, lastRes, lastContent)
+            more()
+        }
+    }
+
+    @Test
+    fun w3_nestingAtTheLimitRenders_andABombAtTheDeepestLevelIsRefused() {
+        val atLimit = RenderImageGate.MAX_NESTING
+        assertTrue(atLimit > 32) // the W3 files need 136 (issue6961.pdf)
+        val small = "/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray/BitsPerComponent 8"
+        assertRenders("deep-ok", file("deep-ok.pdf", chain(atLimit, "<</XObject<</Im0 90 0 R>>>>", drawIm0) {
+            stream(90, small, ByteArray(4))
+        }))
+        assertRefused("deep-bomb", chain(atLimit, "<</XObject<</Im0 90 0 R>>>>", drawIm0) { dctImage(90, bomb) })
+    }
+
+    @Test
+    fun w3_nestingOneBeyondTheLimitIsRefused() {
+        assertRefused("deep+1", chain(RenderImageGate.MAX_NESTING + 1, "<<>>", ""))
+    }
+
+    /** One page drawing [n] distinct `/XObject` names that all point at one 1×1 image (about 2 units each). */
+    private fun manyEntries(n: Int): ByteArray {
+        val dict = (0 until n).joinToString("") { "/I$it 10 0 R" }
+        val content = (0 until n).joinToString(" ") { "/I$it Do" }
+        return page("<</XObject<<$dict>>>>", content) {
+            stream(10, "/Subtype/Image/Width 1/Height 1/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(1))
+        }
+    }
+
+    @Test
+    fun w3_pageNeedingMoreVisitsThanTheOldLimitRenders() {
+        // 45,000 entries ≈ 90,700 units: over the old 20,000, under MAX_VISITS (100,000).
+        val n = (RenderImageGate.MAX_VISITS - 10_000) / 2
+        assertTrue(2 * n > 20_000)
+        assertRenders("visits-ok", file("visits-ok.pdf", manyEntries(n)))
+    }
+
+    @Test
+    fun w3_pageNeedingMoreVisitsThanTheLimitIsRefused() {
+        // 51,000 entries ≈ 102,800 units (under MAX_PAGE_NAMES, so the page stays narrowed).
+        assertRefused("visits-over", manyEntries(RenderImageGate.MAX_VISITS / 2 + 1_000))
+    }
+
     @Test
     fun jpxWhoseCodestreamDeclaresAHugeImage() {
         // SOC, SIZ: Lsiz 41, Rsiz 0, Xsiz=Ysiz=60000, offsets 0, tiles, Csiz 3 (+ 3 component triples).
