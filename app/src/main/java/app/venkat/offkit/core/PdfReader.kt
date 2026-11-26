@@ -264,7 +264,7 @@ class PdfReader internal constructor(
         val pw = password?.takeIf { it.isNotEmpty() }
         val info = withContext(jobs.engineDispatcher) {
             val job = coroutineContext.job
-            engine.pageInfo(file, pw, cancelWhen { !job.isActive })
+            if (pw == null) engine.pageInfo(file, cancelWhen { !job.isActive }) else engine.pageInfo(file, pw, cancelWhen { !job.isActive })
         }
         currentCoroutineContext().ensureActive()
         return when (info) {
@@ -313,7 +313,11 @@ class PdfReader internal constructor(
                 if (document.closed) {
                     PdfRender.Err(PdfError.Cancelled)
                 } else {
-                    engine.renderPage(document.file, request, out, document.password, cancelWhen { document.closed })
+                    document.password.let { pw ->
+                        // Without a password, the plain call (as before K1).
+                        if (pw == null) engine.renderPage(document.file, request, out, cancelWhen { document.closed })
+                        else engine.renderPage(document.file, request, out, pw, cancelWhen { document.closed })
+                    }
                 }
             }
             return when (result) {
@@ -363,7 +367,10 @@ class PdfReader internal constructor(
                 if (document.closed) {
                     PdfPageText.Err(PdfError.Cancelled)
                 } else {
-                    engine.pageText(document.file, page, out, document.password, cancelWhen { document.closed })
+                    document.password.let { pw ->
+                        if (pw == null) engine.pageText(document.file, page, out, cancelWhen { document.closed })
+                        else engine.pageText(document.file, page, out, pw, cancelWhen { document.closed })
+                    }
                 }
             }
             return when (result) {

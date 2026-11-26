@@ -158,6 +158,18 @@ class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
     /** The password sent with each reader call (info, render, text), in order; null for none. */
     val readerPasswords: MutableList<String?> = CopyOnWriteArrayList()
 
+    /** Set while a password overload, its password checked, runs the plain call. */
+    private val unlocked = ThreadLocal<Boolean>()
+
+    private inline fun <T> asUnlocked(block: () -> T): T {
+        unlocked.set(true)
+        try { return block() } finally { unlocked.remove() }
+    }
+
+    /** A plain (no-password) reader call on a PDF that needs one: `Encrypted`. */
+    private fun plainError(): PdfError? =
+        if (unlocked.get() == true || readerPassword == null) null else passwordError(null)
+
     private fun passwordError(password: String?): PdfError? {
         readerPasswords += password
         val required = readerPassword ?: return null
@@ -168,10 +180,13 @@ class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
         }
     }
 
-    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo = pageInfo(pdf, null, job)
+    // The password overloads check the password, then call the plain ones, so a test subclass that
+    // overrides a plain one still sees every reader call.
+    override fun pageInfo(pdf: File, password: String?, job: JobControl): PdfPageInfo =
+        passwordError(password)?.let { PdfPageInfo.Err(it) } ?: asUnlocked { pageInfo(pdf, job) }
 
-    override fun pageInfo(pdf: File, password: String?, job: JobControl): PdfPageInfo {
-        passwordError(password)?.let { return PdfPageInfo.Err(it) }
+    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo {
+        plainError()?.let { return PdfPageInfo.Err(it) }
         readerCalls += ReaderCall(pdf)
         readerError?.let { return PdfPageInfo.Err(it) }
         if (job.isCancelled()) return PdfPageInfo.Err(PdfError.Cancelled)
@@ -186,11 +201,16 @@ class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
         )
     }
 
-    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender =
-        renderPage(pdf, request, out, null, job)
-
     override fun renderPage(pdf: File, request: RenderRequest, out: File, password: String?, job: JobControl): PdfRender {
         passwordError(password)?.let {
+            out.delete()
+            return PdfRender.Err(it)
+        }
+        return asUnlocked { renderPage(pdf, request, out, job) }
+    }
+
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+        plainError()?.let {
             out.delete()
             return PdfRender.Err(it)
         }
@@ -221,11 +241,16 @@ class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
      */
     val readerTexts: MutableMap<Int, PageText> = ConcurrentHashMap()
 
-    override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText =
-        pageText(pdf, page, out, null, job)
-
     override fun pageText(pdf: File, page: Int, out: File, password: String?, job: JobControl): PdfPageText {
         passwordError(password)?.let {
+            out.delete()
+            return PdfPageText.Err(it)
+        }
+        return asUnlocked { pageText(pdf, page, out, job) }
+    }
+
+    override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
+        plainError()?.let {
             out.delete()
             return PdfPageText.Err(it)
         }
