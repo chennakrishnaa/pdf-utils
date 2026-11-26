@@ -33,7 +33,7 @@ PRIVATE BY DESIGN
 GOOD TO KNOW
 
 • Works on Android 8.0 and newer, on 64-bit devices.
-• The reader opens password-protected PDFs; the tools do not. The password is used only to open the file and is never saved. A PDF opened with a password cannot be printed yet.
+• The reader opens password-protected PDFs; the tools do not. The password is used only to open the file and is never saved. Printing one makes an unprotected copy for the print system.
 • Search finds words regardless of case, across line breaks, but not words split by a hyphen at the end of a line.
 • The reader only shows a PDF. It does not change it, save it or add it to Recent files.
 • Text is copied one page at a time, and only from PDFs that contain text: a scanned page with no text layer has nothing to copy. Copied text goes to the system clipboard, where other apps and your keyboard can read it.
