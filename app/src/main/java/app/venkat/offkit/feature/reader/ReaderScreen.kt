@@ -263,6 +263,10 @@ fun ReaderScreen(
         is ReaderDocState.Open -> key(openCount) {
             ReaderDocument(vm, d, onBack = onBack, onOpenAnother = pick)
         }
+        is ReaderDocState.Locked -> {
+            ReaderFrame(title = stringResource(R.string.tool_read_title), indicator = null, onBack = onBack) {}
+            PasswordPrompt(d, onUnlock = vm::unlock, onCancel = vm::cancelPassword)
+        }
         ReaderDocState.Opening, ReaderDocState.Idle -> ReaderFrame(
             title = stringResource(R.string.tool_read_title),
             indicator = null,
