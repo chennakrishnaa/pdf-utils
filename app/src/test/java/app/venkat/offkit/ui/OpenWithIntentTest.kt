@@ -337,6 +337,21 @@ class OpenWithIntentTest {
     }
 
     @Test
+    fun aViewRelaunchedFromRecentsIsNotOpenedAgain() {
+        // Back finished the task's root (or the process died) and the user picks the task in
+        // Recents: the original VIEW comes back, with no saved state, flagged as from history.
+        val uri = pdf("old.pdf")
+        for (type in listOf("application/pdf", null)) {
+            val activity = start(view(uri, type).addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY))
+            assertScrubbed(activity)
+            assertNoPicker(activity)
+            assertHome()
+            controller!!.pause().stop().destroy()
+            controller = null
+        }
+    }
+
+    @Test
     fun unreadableDocumentShowsTheReadersErrorScreen() {
         // A content: Uri with no data behind it (as one without a grant): the reader's Io error.
         val activity = start(view(Uri.parse("content://other.provider/doc/secret.pdf")))

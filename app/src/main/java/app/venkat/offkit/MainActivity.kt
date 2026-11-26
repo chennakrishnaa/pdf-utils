@@ -73,9 +73,14 @@ class MainActivity : ComponentActivity() {
      * main thread): the reader asks it on the IO dispatcher before copying anything. Everything
      * else on the intent (extras, clip data, categories, flags) is ignored. Only a read is ever
      * done with the Uri, so a write or persistable grant on the intent is never used.
+     *
+     * An intent relaunched from Recents (`FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`) is never a
+     * request: after Back finished the task's root (API 26-30) or after process death, the system
+     * redelivers the original VIEW with no saved state, and its document was not asked for again.
      */
     private fun documentUri(received: Intent?): Received? {
         if (received?.action != Intent.ACTION_VIEW) return null
+        if (received.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return null
         val uri = received.data ?: return null
         if (uri.scheme != ContentResolver.SCHEME_CONTENT) return null
         val type = received.type ?: return Received(uri, typeVerified = false)
