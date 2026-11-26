@@ -15,4 +15,19 @@
     <string name="reader_page_too_complex">This page is too large or complex to show.</string>
     <string name="reader_retry">Retry</string>
     <string name="reader_retry_page_cd">Retry page %1$d</string>
+    <!-- Text selection -->
+    <string name="reader_selection_title">Text selected</string>
+    <string name="reader_copy">Copy</string>
+    <string name="reader_copy_cd">Copy the selected text</string>
+    <string name="reader_select_all">Select all</string>
+    <string name="reader_select_all_cd">Select all the text on this page</string>
+    <string name="reader_selection_close_cd">Close the selection</string>
+    <!-- Accessibility action on a page -->
+    <string name="reader_copy_page_action">Copy page text</string>
+    <string name="reader_copied">Copied</string>
+    <string name="reader_copied_cut">Copied. This page\'s text was too long, so only the first part was copied.</string>
+    <string name="reader_text_cut">This page\'s text was too long, so only the first part was copied.</string>
+    <string name="reader_no_text">This page has no text to select</string>
+    <!-- The page's text could not be read; %1$s is the short reason -->
+    <string name="reader_text_error">Could not read the text on this page. %1$s</string>
 </resources>

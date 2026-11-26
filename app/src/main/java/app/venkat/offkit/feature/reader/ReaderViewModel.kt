@@ -4,17 +4,24 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.core.ReaderDocument
 import app.venkat.offkit.core.ReaderOpenResult
+import app.venkat.offkit.core.ReaderText
 import app.venkat.offkit.core.ReaderTile
 import app.venkat.offkit.engine.PageDims
+import app.venkat.offkit.engine.PageText
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.RenderRequest
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -80,15 +87,38 @@ data class ReaderPageState(val base: Bitmap? = null, val detail: PageDetail? = n
  * (neither its base nor its detail) until [retry]; other pages go on (after an engine crash the
  * next call binds a fresh engine). The document stays open.
  *
+ * Text selection: a page's text is fetched on the first [longPress] (or [copyPageText]) on it,
+ * through [PdfReader.text] (the same engine thread as renders, queued between them; a render is
+ * never cancelled for it), and kept in a small LRU ([ReaderTextLimits]) until the document closes.
+ * [selection] is on one page at a time; it is cleared when the document closes or another opens,
+ * and when the viewport moves more than [SELECTION_KEEP_PAGES] pages away from it. Copy results
+ * and messages arrive on [textEvents].
+ *
  * All methods must be called on the main thread.
  */
 class ReaderViewModel internal constructor(
     application: Application,
     private val reader: PdfReader,
     private val limits: ReaderLimits,
+    private val textLimits: ReaderTextLimits = ReaderTextLimits(),
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : AndroidViewModel(application) {
     /** Used by the default `ViewModelProvider` factory. */
     constructor(application: Application) : this(application, PdfReader.get(application), ReaderLimits())
+
+    /** Used by the screen, with the destination's saved state. */
+    constructor(application: Application, savedState: SavedStateHandle) :
+        this(application, PdfReader.get(application), ReaderLimits(), ReaderTextLimits(), savedState)
+
+    /** The screen's automatic picker has run (kept across process death). */
+    var pickerLaunched: Boolean
+        get() = savedState[KEY_LAUNCHED] ?: false
+        set(value) { savedState[KEY_LAUNCHED] = value }
+
+    /** A picker is out and its result not yet received (kept across process death). */
+    var pickerPending: Boolean
+        get() = savedState[KEY_PENDING] ?: false
+        set(value) { savedState[KEY_PENDING] = value }
 
     private val _document = MutableStateFlow<ReaderDocState>(ReaderDocState.Idle)
 
@@ -96,6 +126,19 @@ class ReaderViewModel internal constructor(
     val document: StateFlow<ReaderDocState> = _document.asStateFlow()
 
     private var session: Session? = null
+
+    private val _selection = MutableStateFlow<ReaderSelection?>(null)
+
+    /** The current text selection, or null. */
+    val selection: StateFlow<ReaderSelection?> = _selection.asStateFlow()
+
+    private val _textEvents = Channel<ReaderTextEvent>(Channel.BUFFERED)
+
+    /** Copy requests and messages of text actions; collect once, from the screen. */
+    val textEvents: Flow<ReaderTextEvent> = _textEvents.receiveAsFlow()
+
+    /** Bumped by every long-press, so only the latest one selects once its text arrives. */
+    private var pressCount = 0
     private var openJob: Job? = null
     private var generation = 0
 
@@ -155,12 +198,65 @@ class ReaderViewModel internal constructor(
         session?.retry(index)
     }
 
+    /**
+     * Long-press at page point ([xPt], [yPt]) of [page]: selects the word there (within
+     * [tolerancePt]) once the page's text is known. No text within reach: nothing happens, unless
+     * the page has no text at all ([ReaderTextEvent.NoText]).
+     */
+    fun longPress(page: Int, xPt: Float, yPt: Float, tolerancePt: Float) {
+        val s = session ?: return
+        val press = ++pressCount
+        s.withText(page) { text ->
+            if (press != pressCount) return@withText
+            if (text.length == 0) {
+                _textEvents.trySend(ReaderTextEvent.NoText)
+            } else {
+                SelectionMath.selectWord(page, text, xPt, yPt, tolerancePt)?.let { _selection.value = it }
+            }
+        }
+    }
+
+    /** Selects all the text of the selected page. */
+    fun selectAll() {
+        val s = _selection.value ?: return
+        SelectionMath.selectAll(s.page, s.text)?.let { _selection.value = it }
+    }
+
+    /** Moves the anchor (else the focus) handle to the character nearest page point ([xPt], [yPt]), clamped to the page. */
+    fun dragHandle(anchor: Boolean, xPt: Float, yPt: Float) {
+        val s = _selection.value ?: return
+        val dims = session?.doc?.pages?.getOrNull(s.page) ?: return
+        _selection.value = SelectionMath.drag(s, anchor, xPt, yPt, dims)
+    }
+
+    fun clearSelection() {
+        pressCount++
+        _selection.value = null
+    }
+
+    /** Sends the selected text to be copied ([ReaderTextEvent.Copy]) and clears the selection. */
+    fun copySelection() {
+        val s = _selection.value ?: return
+        clearSelection()
+        _textEvents.trySend(ReaderTextEvent.Copy(s.string(), s.cut))
+    }
+
+    /** Copies all the text of [page] (the accessibility action), fetching it first if needed. */
+    fun copyPageText(page: Int) {
+        session?.withText(page) { text ->
+            _textEvents.trySend(
+                if (text.length == 0) ReaderTextEvent.NoText else ReaderTextEvent.Copy(text.string(0 until text.length), text.truncated),
+            )
+        }
+    }
+
     override fun onCleared() {
         closeAll()
         generation++
     }
 
     private fun closeAll() {
+        clearSelection()
         openJob?.cancel()
         openJob = null
         session?.close()
@@ -198,6 +294,11 @@ class ReaderViewModel internal constructor(
 
         fun onViewport(vp: ReaderViewport) {
             viewport = vp
+            val sel = _selection.value
+            if (sel != null && vp.visible.isNotEmpty()) {
+                val shown = vp.visible.map { it.index }
+                if (sel.page < shown.min() - SELECTION_KEEP_PAGES || sel.page > shown.max() + SELECTION_KEEP_PAGES) clearSelection()
+            }
             // Keep a page's detail only while the new plan still wants one for it (zoomed in, or a
             // base softer than the screen at zoom 1); it is replaced when the new one arrives.
             val wanted = ReaderPlanner.plan(doc.pages, vp, limits)
@@ -214,7 +315,53 @@ class ReaderViewModel internal constructor(
             wake.trySend(Unit)
         }
 
+        /** Text of each fetched page, least recently used first. */
+        private val texts = LinkedHashMap<Int, PageText>(16, 0.75f, true)
+        private val fetching = HashMap<Int, Deferred<ReaderText>>()
+        private var closed = false
+
+        /** Runs [then] with [page]'s text: now if cached, else once fetched (not if it fails or the document closes). */
+        fun withText(page: Int, then: (PageText) -> Unit) {
+            if (page !in 0 until pageCount) return
+            texts[page]?.let { return then(it) }
+            val call = fetching.getOrPut(page) { viewModelScope.async { reader.text(doc, page) } }
+            viewModelScope.launch {
+                val result = call.await()
+                fetching.remove(page)
+                if (closed) return@launch
+                when (result) {
+                    is ReaderText.Ok -> {
+                        texts[page] = result.text
+                        trimTexts(keep = page)
+                        then(result.text)
+                    }
+                    is ReaderText.Err -> if (result.error != PdfError.Cancelled) {
+                        _textEvents.trySend(ReaderTextEvent.Failed(result.error))
+                    }
+                }
+            }
+        }
+
+        /** Number of cached pages' texts (for tests). */
+        val cachedTexts: Int get() = texts.size
+
+        private fun trimTexts(keep: Int) {
+            val selected = _selection.value?.page
+            var total = texts.values.sumOf { it.length }
+            val it = texts.entries.iterator()
+            while (it.hasNext() && (texts.size > textLimits.pages || total > textLimits.chars)) {
+                val e = it.next()
+                if (e.key == keep || e.key == selected) continue
+                total -= e.value.length
+                it.remove()
+            }
+        }
+
         fun close() {
+            closed = true
+            texts.clear()
+            for (f in fetching.values) f.cancel()
+            fetching.clear()
             worker.cancel()
             reader.close(doc)
             for (flow in states.values) flow.value = ReaderPageState()
@@ -313,7 +460,16 @@ class ReaderViewModel internal constructor(
         }
     }
 
-    private companion object {
+    /** Number of pages' texts cached for the open document (for tests). */
+    @androidx.annotation.VisibleForTesting
+    fun cachedTextPagesForTest(): Int = session?.cachedTexts ?: 0
+
+    internal companion object {
+        /** A selection is cleared once the viewport is more than this many pages away from it. */
+        const val SELECTION_KEEP_PAGES = 2
+        private const val KEY_LAUNCHED = "reader.pickerLaunched"
+        private const val KEY_PENDING = "reader.pickerPending"
+
         val EMPTY_PAGE: StateFlow<ReaderPageState> = MutableStateFlow(ReaderPageState()).asStateFlow()
     }
 }
