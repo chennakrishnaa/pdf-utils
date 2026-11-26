@@ -37,11 +37,13 @@ import java.util.zip.InflaterInputStream
  * - DCT (the last filter): the stream's own frame header (SOF), which is what libjpeg sizes its
  *   buffers from (SA-6), must pass [ImageLimits.jpeg] (progressive/multi-scan JPEGs capped in
  *   samples, the SA-2 bomb) and its `w × h × components` must also fit [MAX_IMAGE_DECODED_BYTES].
- *   The header is read from the raw stream (≤ [MAX_INSPECT_BYTES]); a `[/FlateDecode /DCTDecode]`
- *   chain is inflated only as far as the header (≤ [MAX_JPEG_HEADER_BYTES]). Any other filter in
- *   front of DCT (ASCIIHex, ASCII85, LZW, RunLength, Brotli, two Flates...), a missing or
- *   unparsable header, or a larger stream is refused: those are the bomb spellings of
- *   `CompressFilterGateTest` and the header cannot be reached cheaply;
+ *   The header is read from the raw stream (≤ [MAX_INSPECT_BYTES]); a `[/FlateDecode /DCTDecode]`,
+ *   `[/ASCIIHexDecode /DCTDecode]` or `[/ASCII85Decode /DCTDecode]` chain (W2: old distilled
+ *   files) is decoded only as far as the header (≤ [MAX_JPEG_HEADER_BYTES]), the ASCII ones
+ *   exactly as MuPDF decodes them ([AsciiHexInput], [Ascii85Input]). Any other filter in front of
+ *   DCT (LZW, RunLength, Brotli, two filters...), a missing, corrupt or unparsable header, or a
+ *   larger stream is refused: those are the bomb spellings of `CompressFilterGateTest` and the
+ *   header cannot be reached cheaply;
  * - JPX: MuPDF ignores the dictionary size and openjpeg allocates from the codestream's SIZ
  *   marker (32-bit samples): SIZ must be found where openjpeg reads it ([jpxSize]) and `w × h × components ≤` [MAX_JPX_SAMPLES];
  *   JPX behind any other filter is refused (MuPDF itself only honours a JPX stream on its own);
@@ -516,9 +518,13 @@ internal object RenderImageGate {
             if (filters.last() != "DCTDecode") refuse()
             val input: InputStream = when (filters.size) {
                 1 -> ByteArrayInputStream(raw)
-                2 -> if (filters[0] == "FlateDecode") {
-                    Capped(InflaterInputStream(ByteArrayInputStream(raw), Inflater()), MAX_JPEG_HEADER_BYTES.toLong())
-                } else refuse()
+                2 -> when (filters[0]) {
+                    "FlateDecode" -> Capped(InflaterInputStream(ByteArrayInputStream(raw), Inflater()), MAX_JPEG_HEADER_BYTES.toLong())
+                    // W2: old distilled files wrap JPEG data in ASCII; decoded as MuPDF decodes it.
+                    "ASCIIHexDecode" -> Capped(AsciiHexInput(raw), MAX_JPEG_HEADER_BYTES.toLong())
+                    "ASCII85Decode" -> Capped(Ascii85Input(raw), MAX_JPEG_HEADER_BYTES.toLong())
+                    else -> refuse()
+                }
                 else -> refuse()
             }
             val layout = try {
@@ -856,6 +862,103 @@ internal object RenderImageGate {
             left -= k
             return k
         }
+    }
+
+    /**
+     * W2: MuPDF's `ASCIIHexDecode` (`filter-basic.c` `next_ahxd`), byte for byte: whitespace is
+     * NUL, TAB, LF, FF, CR, BS, space and DEL; `>` ends the data (an odd last digit padded with 0);
+     * an odd digit at the end of the input is dropped; any other byte is an error, which MuPDF
+     * treats as the end of the data (`IOException` here, so the header scan fails and the image is
+     * refused, as for corrupt Flate data). Output is never shorter than MuPDF's (same bytes, up to
+     * the point MuPDF stops).
+     */
+    internal class AsciiHexInput(private val raw: ByteArray) : InputStream() {
+        private var i = 0
+        private var eod = false
+
+        override fun read(): Int {
+            var hi = -1
+            while (!eod && i < raw.size) {
+                val c = raw[i++].toInt() and 0xFF
+                val d = hexDigit(c)
+                when {
+                    d >= 0 -> if (hi < 0) hi = d else return (hi shl 4) or d
+                    c == '>'.code -> {
+                        eod = true
+                        return if (hi >= 0) hi shl 4 else -1
+                    }
+                    !asciiWhite(c) -> throw IOException("bad data in ahxd")
+                }
+            }
+            return -1
+        }
+    }
+
+    /**
+     * W2: MuPDF's `ASCII85Decode` (`filter-basic.c` `next_a85d`), byte for byte: `!`..`u` are
+     * digits (a 32-bit word wrapping as MuPDF's `uint32_t`); `z` is four zero bytes only at a group
+     * start; `~` ends the data whatever byte follows it, a final group of 2, 3 or 4 digits giving
+     * 1, 2 or 3 bytes (1 digit: none); a partial group at the end of the input is dropped; there
+     * is no `<~` prefix; whitespace as in [AsciiHexInput]; any other byte is an error
+     * (`IOException`, the image is refused).
+     */
+    internal class Ascii85Input(private val raw: ByteArray) : InputStream() {
+        private var i = 0
+        private var eod = false
+        private val out = ByteArray(4)
+        private var outPos = 0
+        private var outLen = 0
+
+        override fun read(): Int {
+            if (outPos < outLen) return out[outPos++].toInt() and 0xFF
+            if (!fill()) return -1
+            return out[outPos++].toInt() and 0xFF
+        }
+
+        private fun emit(word: Int, n: Int): Boolean {
+            for (k in 0 until n) out[k] = (word ushr (24 - 8 * k)).toByte()
+            outPos = 0
+            outLen = n
+            return n > 0
+        }
+
+        private fun fill(): Boolean {
+            var count = 0
+            var word = 0
+            while (!eod && i < raw.size) {
+                val c = raw[i++].toInt() and 0xFF
+                when {
+                    c in '!'.code..'u'.code -> {
+                        word = word * 85 + (c - '!'.code)
+                        if (count == 4) return emit(word, 4)
+                        count++
+                    }
+                    c == 'z'.code && count == 0 -> return emit(0, 4)
+                    c == '~'.code -> {
+                        if (i < raw.size) i++ // MuPDF reads the next byte, '>' or not
+                        eod = true
+                        return when (count) {
+                            2 -> emit(word * (85 * 85 * 85) + 0xffffff, 1)
+                            3 -> emit(word * (85 * 85) + 0xffff, 2)
+                            4 -> emit(word * 85 + 0xff, 3)
+                            else -> false
+                        }
+                    }
+                    !asciiWhite(c) -> throw IOException("bad data in a85d")
+                }
+            }
+            return false
+        }
+    }
+
+    /** `filter-basic.c` `iswhite`. */
+    private fun asciiWhite(c: Int): Boolean = c == 0x0A || c == 0x0D || c == 0x09 || c == 0x20 || c == 0x00 || c == 0x0C || c == 0x08 || c == 0x7F
+
+    private fun hexDigit(c: Int): Int = when (c) {
+        in '0'.code..'9'.code -> c - '0'.code
+        in 'a'.code..'f'.code -> c - 'a'.code + 10
+        in 'A'.code..'F'.code -> c - 'A'.code + 10
+        else -> -1
     }
 
     /**

@@ -630,6 +630,84 @@ class RenderImageGateTest {
         }))
     }
 
+    // ------------------------------------------------------------------ W2: ASCII in front of DCT
+
+    private fun ahx(data: ByteArray) = (data.joinToString("") { "%02x".format(it.toInt() and 0xFF) }.chunked(64).joinToString("\n") + ">").latin1()
+
+    private fun a85(data: ByteArray): ByteArray {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < data.size) {
+            val n = minOf(4, data.size - i)
+            var word = 0L
+            for (k in 0 until 4) word = (word shl 8) or (if (k < n) (data[i + k].toLong() and 0xFF) else 0L)
+            if (n == 4 && word == 0L) sb.append('z') else {
+                val c = CharArray(5)
+                var w = word
+                for (k in 4 downTo 0) { c[k] = ('!'.code + (w % 85).toInt()).toChar(); w /= 85 }
+                sb.append(c, 0, n + 1)
+            }
+            i += 4
+            if (i % 64 == 0) sb.append('\n')
+        }
+        return (sb.toString() + "~>").latin1()
+    }
+
+    @Test
+    fun w2_asciiHexOrAscii85InFrontOfDct_renders() {
+        val jpeg = flatJpeg(ColorSpace.DeviceRGB, 300, 200)
+        for ((f, data) in listOf("[/ASCIIHexDecode/DCTDecode]" to ahx(jpeg), "[/AHx/DCT]" to ahx(jpeg),
+            "[/ASCII85Decode/DCTDecode]" to a85(jpeg), "[/A85/DCT]" to a85(jpeg))) {
+            val tag = "ascii-${f.length}-${data.size}"
+            assertRenders(tag, file("$tag.pdf", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) {
+                dctImage(10, data, 300, 200, filter = f)
+            }))
+        }
+    }
+
+    @Test
+    fun w2_dctBombBehindAscii_isStillRefused() {
+        assertRefused("a85-bomb", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) { dctImage(10, a85(bomb), filter = "[/A85/DCT]") })
+        assertRefused("ahx-bomb", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) { dctImage(10, ahx(bomb), filter = "[/ASCIIHexDecode/DCTDecode]") })
+        // A baseline JPEG whose header declares 16000 x 16000 x 3 (768 MB > the per-image limit).
+        val big = EngineSecurityTest.jpegDeclaring(16000, 16000, progressive = false)
+        assertRefused("ahx-big", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) { dctImage(10, ahx(big), filter = "[/AHx/DCT]") })
+        // Malformed ASCII data before the header: refused, as corrupt Flate data is.
+        val jpeg = flatJpeg(ColorSpace.DeviceRGB, 30, 20)
+        assertRefused("ahx-bad", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) { dctImage(10, "ffd8zz".latin1() + ahx(jpeg), 30, 20, filter = "[/AHx/DCT]") })
+        assertRefused("a85-bad", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) { dctImage(10, "s8W-!{".latin1() + a85(jpeg), 30, 20, filter = "[/A85/DCT]") })
+        // Still only one layer: ASCII in front of Flate in front of DCT is refused.
+        assertRefused("ahx-fl-dct", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) {
+            dctImage(10, ahx(HostilePdf.deflate(bomb)), filter = "[/AHx/Fl/DCT]")
+        })
+    }
+
+    /** The gate's ASCII decoders give exactly MuPDF's bytes (`readStream`) on edge cases. */
+    @Test
+    fun w2_asciiDecodersMatchMuPdf() {
+        val hex = listOf("41 42\u0000\u0008\u007f43>", "414>", "41424", "4142>4344", "", ">", "aBcD\r\n\t\u000cEf>")
+        val a85 = listOf("87cURD]i,\"Ebo80~>", "z!!!!!~>", "87cUR~>", "87c~x", "87~>", "8~>", "s8W-!s8W-!~>", "87cURD", "<~87cURD]~>"
+            .removePrefix("<~"), "\u0000 87cURD\u007f]i~>")
+        val cases = hex.map { "/AHx" to it } + a85.map { "/A85" to it }
+        val pdf = HostilePdf()
+        pdf.add(1, "<</Type/Catalog/Pages 2 0 R>>")
+        pdf.add(2, "<</Type/Pages/Kids[3 0 R]/Count 1>>")
+        pdf.add(3, "<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>")
+        cases.forEachIndexed { i, (f, d) -> pdf.stream(10 + i, "/Filter$f", d.latin1(), flate = false) }
+        val doc = PdfInputs.open(file("ascii-eq.pdf", pdf.bytes()))
+        try {
+            cases.forEachIndexed { i, (f, d) ->
+                val ref = doc.newIndirect(10 + i, 0)
+                val want = try { ref.readStream() } finally { ref.destroy() }
+                val raw = d.latin1()
+                val got = (if (f == "/AHx") RenderImageGate.AsciiHexInput(raw) else RenderImageGate.Ascii85Input(raw)).readBytes()
+                assertEquals("$f '$d'", want.toList(), got.toList())
+            }
+        } finally {
+            doc.destroy()
+        }
+    }
+
     /** Overhead of the walk on a normal page (printed; asserted loosely so it is not flaky). */
     @Test
     fun walkOverheadOnAPhotoPage() {
