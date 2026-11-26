@@ -30,6 +30,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.util.Locale
 import java.util.UUID
@@ -398,6 +399,45 @@ class PdfJobs @VisibleForTesting internal constructor(
         }
     }
 
+    /**
+     * Copies [input] (not closed here) to a new `cacheDir/shared/<random id>/<name>` and returns the
+     * copy with its share Uri; [name] must already be a [shareFileName]. Reports (copied, [total])
+     * to [onProgress]. Only the new directory is created or deleted: other shared copies are never
+     * touched. On failure or cancellation the new directory is deleted and the error rethrown
+     * ([IOException] for a provider refusal). Call on the IO dispatcher.
+     */
+    internal suspend fun copyToShared(
+        input: InputStream,
+        name: String,
+        total: Long,
+        onProgress: (Long, Long) -> Unit,
+    ): SharedCopy {
+        val dir = File(sharedRoot, UUID.randomUUID().toString())
+        try {
+            if (!dir.mkdirs()) throw IOException("Cannot create share directory")
+            val target = File(dir, name)
+            val ctx = currentCoroutineContext()
+            target.outputStream().use { out ->
+                val buf = ByteArray(SHARE_BUFFER_BYTES)
+                var done = 0L
+                while (true) {
+                    ctx.ensureActive()
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    done += n
+                    onProgress(done, total)
+                }
+            }
+            val uri = FileProvider.getUriForFile(appContext, shareAuthority(appContext), target)
+            return SharedCopy(target, ShareRequest(uri, name))
+        } catch (e: Throwable) {
+            withContext(NonCancellable) { dir.deleteRecursively() }
+            if (e is IllegalArgumentException) throw IOException("Cannot share file", e)
+            throw e
+        }
+    }
+
     /** Deletes everything under `cacheDir/shared/` on the IO dispatcher. Never throws. */
     suspend fun wipeShared() {
         withContext(NonCancellable + ioDispatcher) { deleteShared() }
@@ -430,6 +470,7 @@ class PdfJobs @VisibleForTesting internal constructor(
         private const val JOBS_DIR = "jobs"
         private const val OUTPUT_NAME = "output.pdf"
         private const val SHARED_DIR = "shared"
+        private const val SHARE_BUFFER_BYTES = 64 * 1024
         private const val PDF_EXTENSION = ".pdf"
         private const val DEFAULT_SHARE_NAME = "document.pdf"
 

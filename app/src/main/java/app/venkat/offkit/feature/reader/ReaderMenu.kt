@@ -43,9 +43,15 @@ data class ReaderMenuItem(
  * Only features that exist are listed: no placeholders.
  */
 @Composable
-internal fun readerMenuItems(onGoToPage: () -> Unit, onOpenAnother: () -> Unit): List<ReaderMenuItem> = listOf(
+internal fun readerMenuItems(
+    onGoToPage: () -> Unit,
+    onOpenAnother: () -> Unit,
+    actions: ReaderActions? = null,
+): List<ReaderMenuItem> = listOfNotNull(
     ReaderMenuItem(TAG_READER_GO_TO_PAGE, stringResource(R.string.reader_go_to_page), onClick = onGoToPage),
     ReaderMenuItem(TAG_READER_OPEN_ANOTHER, stringResource(R.string.reader_open_another), onClick = onOpenAnother),
+    actions?.let { ReaderMenuItem(TAG_READER_SHARE, stringResource(R.string.reader_share), onClick = it::share) },
+    actions?.let { ReaderMenuItem(TAG_READER_PRINT, stringResource(R.string.reader_print), onClick = it::print) },
 )
 
 /** The three dots button and its drop-down of [items]. A chosen entry closes the menu first. */

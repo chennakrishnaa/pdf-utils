@@ -408,6 +408,7 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     val res by rememberUpdatedState(LocalResources.current)
     // Back clears a selection first, then leaves as before.
     BackHandler(enabled = selection != null) { vm.clearSelection() }
+    ReaderActionsEffect(vm.actions, snackbar)
     LaunchedEffect(vm) {
         vm.textEvents.collect { event ->
             val message = when (event) {
@@ -434,7 +435,7 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
         title = doc.name,
         indicator = (current + 1) to pageCount,
         onBack = onBack,
-        menu = readerMenuItems(onGoToPage = { goToOpen = true }, onOpenAnother = onOpenAnother),
+        menu = readerMenuItems(onGoToPage = { goToOpen = true }, onOpenAnother = onOpenAnother, actions = vm.actions),
         onIndicatorClick = { goToOpen = true },
         bar = if (selection != null) {
             { SelectionBar(onClose = vm::clearSelection, onSelectAll = vm::selectAll, onCopy = vm::copySelection) }

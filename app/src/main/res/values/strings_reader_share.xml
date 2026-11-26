@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Reader overflow menu: Share and Print -->
+    <string name="reader_share">Share</string>
+    <string name="reader_print">Print</string>
+    <!-- Shown while a large PDF is copied for sharing -->
+    <string name="reader_share_preparing">Preparing to share…</string>
+    <string name="reader_share_failed">Couldn\'t share this PDF. Check free space and try again.</string>
+    <string name="reader_print_protected">Protected PDFs can\'t be printed from Offkit yet.</string>
+    <string name="reader_print_unavailable">Printing isn\'t available on this device.</string>
+</resources>
