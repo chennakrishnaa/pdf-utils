@@ -19,11 +19,19 @@ import java.util.zip.Inflater
  * `1 0 R` costs ~900 MB; if the catalog lives in that stream, `Document.openDocument` /
  * `countPages` pays it. Parsed size grows with decoded size, so the decoded size is bounded here.
  *
- * What: one forward pass over the file (fixed 64 KiB buffer, positional reads; no whole-file array),
- * tokenising it roughly as MuPDF's lexer does (names with `#xx` escapes decoded, literal strings with
- * nesting and escapes, comments, hex strings; strings/comments longer than 64 KiB are cut there).
- * Every stream whose preceding dictionary (tokens since the last `obj`, `endobj`, `stream` or
- * `endstream` keyword) contains the name `/ObjStm` OR `/N` is a candidate: MuPDF loads any type-2
+ * What: one forward byte search for EVERY `obj` keyword in the file (fixed 64 KiB buffers,
+ * positional reads; no whole-file array), wherever it is, also inside strings and stream data (Q1).
+ * Each one starts a fresh parse of that object alone: nothing before its `obj` (another object, the
+ * binary data of an earlier stream) can change its state. The parse ends at once unless the first
+ * token is `<<` (MuPDF gives only the object right after `obj` a stream, and only a dictionary has
+ * `/N`); otherwise it tokenises roughly as MuPDF's lexer does (names with `#xx` escapes decoded,
+ * literal strings with nesting and escapes, comments, hex strings, all skipped to their real end) up
+ * to the first `stream`, `endstream`, `obj` or `endobj` keyword. Stream data is never tokenised. As
+ * MuPDF reaches an object through an xref offset at its `N G obj` header (or, on repair, by lexing
+ * `obj` tokens), every object MuPDF can load is parsed here; parses started at `obj` lookalikes in
+ * binary data only cost work (all parses together are bounded by twice the file size plus 64 MiB,
+ * past which the file is refused). A stream whose dictionary (the tokens from its `obj` to its
+ * `stream` keyword) contains the name `/ObjStm` OR `/N` is a candidate: MuPDF loads any type-2
  * xref target as an object stream reading only `/N` and `/First` (no `/Type` check), so the `/N`
  * test catches a dictionary without `/Type`. ICC profile streams also carry `/N`; they are small and
  * pass (`/N` anywhere, also in a nested dictionary, makes a candidate: a superset). The filter is
@@ -33,10 +41,10 @@ import java.util.zip.Inflater
  * parser can swallow a `<<` or `>>` after a key (`/K >>`, `/K 1 <<`), a candidate is refused when a
  * `/Filter` or `/F` name appears nested or in an array, appears twice at the top level, when a `>>`
  * closes nothing, when the nesting is unbalanced at `stream`, or when its dictionary held a string or
- * comment cut at 64 KiB. `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
+ * comment longer than 64 KiB. `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
  * has no external-file streams, no `/FFilter`, and would read the data raw) is refused like any
  * other non-name filter. Per candidate:
- * - no filter: its raw extent (to the next `endstream`) counts as decoded bytes;
+ * - no filter: its raw extent (to the next `endstream` bytes) counts as decoded bytes;
  * - `/Filter` exactly `/FlateDecode` or `/Fl` (a name or a one-element array): inflated with a
  *   bounded [Inflater] into a scratch buffer, stopping at the bound. A stream that is not valid
  *   zlib (e.g. encrypted) counts what it yielded and is otherwise ignored, so encrypted files still
@@ -46,9 +54,8 @@ import java.util.zip.Inflater
  *   reimplementing them; legitimate writers use Flate alone for object streams.
  * Refused (`OutOfMemory`, "too large") when one candidate decodes to more than [maxStream] bytes
  * (16 MiB) or all candidates together to more than [maxTotal] bytes (64 MiB). Compressed bytes
- * consumed by the inflater are charged against the same bounds, so overlapping candidates (a stream
- * keyword inside another stream's data; scanning resumes right after each `stream` keyword, the
- * data is tokenised too) keep the total work linear in the file size plus the bounds.
+ * consumed by the inflater are charged against the same bounds, so overlapping candidates (an
+ * object inside another stream's data) keep the total work linear in the file size plus the bounds.
  *
  * Encrypted files (reader only; the tools refuse every encrypted PDF): the data of an encrypted
  * object stream is ciphertext here, so pass 1 cannot measure it (not valid zlib: ignored above;
@@ -66,10 +73,10 @@ import java.util.zip.Inflater
  * [MAX_RECORDED] Flate candidates, a recorded object that MuPDF does not resolve to a stream, or a
  * raw stream over [maxStream].
  *
- * This is a MITIGATION, not a guarantee. MuPDF reaches objects through xref offsets, not by scanning,
- * and xref repair can find streams anywhere; an object stream can evade the scan if, for example,
- * its dictionary hides a reset keyword inside a string or comment longer than 64 KiB, or the scan's
- * tokenisation of preceding binary data diverges from MuPDF's view at that offset. The `:engine`
+ * This is a MITIGATION, not a guarantee. The remaining mismatch with MuPDF's own object discovery:
+ * the scan's lexer is an approximation of MuPDF's (shapes known to differ are refused, M2-2); an
+ * unfiltered candidate is measured to the next `endstream` bytes, while MuPDF reads `/Length`; and
+ * the scan only measures what it finds as `obj` headers (MuPDF needs one too). The `:engine`
  * process (killed on cancel, its death reported as an error) remains the backstop.
  */
 internal object ObjStmScan {
