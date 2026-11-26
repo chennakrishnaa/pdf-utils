@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Reader top bar: the overflow (three dots) button and its menu -->
+    <string name="reader_more_cd">More options</string>
+    <string name="reader_go_to_page">Go to page</string>
+    <!-- Go to page dialog -->
+    <string name="reader_go_to_page_field">Page number</string>
+    <!-- After the page field: "of 12" -->
+    <string name="reader_go_to_page_of">of %1$d</string>
+    <!-- Shown under the field while its value is empty or not a page of the document -->
+    <string name="reader_go_to_page_hint">Enter a page from 1 to %1$d</string>
+    <string name="reader_go_to_page_go">Go</string>
+</resources>

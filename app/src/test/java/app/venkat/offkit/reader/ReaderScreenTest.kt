@@ -17,6 +17,22 @@ import app.venkat.offkit.feature.reader.TAG_READER_HANDLE_FOCUS
 import app.venkat.offkit.feature.reader.TAG_READER_SELECTION_BAR
 import app.venkat.offkit.feature.reader.TAG_READER_SELECTION_CLOSE
 import app.venkat.offkit.feature.reader.TAG_READER_SELECT_ALL
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isPopup
+import androidx.compose.ui.test.performImeAction
+import androidx.compose.ui.test.performTextReplacement
+import app.venkat.offkit.feature.reader.TAG_GO_TO_PAGE_CANCEL
+import app.venkat.offkit.feature.reader.TAG_GO_TO_PAGE_FIELD
+import app.venkat.offkit.feature.reader.TAG_GO_TO_PAGE_GO
+import app.venkat.offkit.feature.reader.TAG_GO_TO_PAGE_HINT
+import app.venkat.offkit.feature.reader.TAG_READER_GO_TO_PAGE
+import app.venkat.offkit.feature.reader.TAG_READER_MENU
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
@@ -174,6 +190,18 @@ class ReaderScreenTest {
     private fun renderRequests() = fake.readerCalls.mapNotNull { it.request }
 
     private fun indicator(page: Int, count: Int) = str(R.string.reader_page_indicator, page, count)
+
+    private fun openMenu() {
+        rule.onNodeWithTag(TAG_READER_MENU).performClick()
+        rule.waitForIdle()
+    }
+
+    /** "Open another PDF", from the overflow menu. */
+    private fun openAnother() {
+        openMenu()
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
+        rule.waitForIdle()
+    }
 
     private fun readerDirs(): List<File> =
         File(app.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith(PdfReader.READER_DIR_PREFIX) }
@@ -406,8 +434,7 @@ class ReaderScreenTest {
     @Test
     fun openAnotherReplacesTheDocumentAndCancellingKeepsIt() {
         openDocument("first.pdf")
-        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
-        rule.waitForIdle()
+        openAnother()
         answer(takePdfPicker(), pdf("second.pdf"))
         waitUntil("second open") {
             rule.onAllNodesWithTag(TAG_READER_TITLE).fetchSemanticsNodes()
@@ -415,8 +442,7 @@ class ReaderScreenTest {
         }
         waitUntilRendered(0)
 
-        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
-        rule.waitForIdle()
+        openAnother()
         answer(takePdfPicker(), null)
         rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("second.pdf")
         rule.onNodeWithTag(readerPageTag(0)).assert(rendered(0))
@@ -426,8 +452,7 @@ class ReaderScreenTest {
     @Test
     fun reopeningTheSameFileShowsItAgain() {
         openDocument("same.pdf")
-        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
-        rule.waitForIdle()
+        openAnother()
         answer(takePdfPicker(), pdf("same.pdf"))
         waitUntilRendered(0)
         rule.onNodeWithTag(TAG_READER_INDICATOR).assertTextEquals(indicator(1, 3))
@@ -463,7 +488,7 @@ class ReaderScreenTest {
     fun talkBackLabels() {
         openDocument()
         rule.onNodeWithTag(TAG_ACTION_BACK).assertContentDescriptionEquals(str(R.string.action_back))
-        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).assertContentDescriptionEquals(str(R.string.reader_open_another))
+        rule.onNodeWithTag(TAG_READER_MENU).assertContentDescriptionEquals(str(R.string.reader_more_cd))
         rule.onNodeWithTag(TAG_READER_INDICATOR)
             .assertTextEquals(indicator(1, 3))
             .assertContentDescriptionEquals(str(R.string.reader_page_cd, 1, 3))
@@ -471,6 +496,13 @@ class ReaderScreenTest {
         rule.onNode(hasScrollToIndexAction()).performScrollToIndex(1)
         rule.waitForIdle()
         rule.onNodeWithTag(readerPageTag(1)).assertContentDescriptionEquals(str(R.string.reader_page_cd, 2, 3))
+        // The page indicator is a button that opens Go to page.
+        val indicatorNode = rule.onNodeWithTag(TAG_READER_INDICATOR).fetchSemanticsNode()
+        assertEquals(Role.Button, indicatorNode.config[SemanticsProperties.Role])
+        assertEquals(str(R.string.reader_go_to_page), indicatorNode.config[SemanticsActions.OnClick].label)
+        openMenu()
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).assertContentDescriptionEquals(str(R.string.reader_open_another))
+        rule.onNodeWithTag(TAG_READER_GO_TO_PAGE).assertContentDescriptionEquals(str(R.string.reader_go_to_page))
     }
 
     // ---- Text selection ----
@@ -659,5 +691,179 @@ class ReaderScreenTest {
         rule.onNodeWithTag(TAG_READER_COPY).performClick()
         rule.waitForIdle()
         assertEquals("Second", clip())
+    }
+
+    // ---- Overflow menu and Go to page ----
+
+    private fun indicatorText(): String =
+        rule.onNodeWithTag(TAG_READER_INDICATOR).fetchSemanticsNode().config[SemanticsProperties.Text].joinToString()
+
+    private fun goToFromMenu() {
+        openMenu()
+        rule.onNodeWithTag(TAG_READER_GO_TO_PAGE).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assertExists()
+    }
+
+    private fun typePage(text: String) {
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).performTextReplacement(text)
+        rule.waitForIdle()
+    }
+
+    private fun pressGo() {
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_GO).performClick()
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun theMenuListsGoToPageThenOpenAnotherAndOpenAnotherLaunchesThePicker() {
+        openDocument()
+        assertTrue(!exists(TAG_READER_OPEN_ANOTHER))
+        openMenu()
+        val items = rule.onAllNodes(hasClickAction() and hasAnyAncestor(isPopup())).fetchSemanticsNodes()
+        assertEquals(listOf(TAG_READER_GO_TO_PAGE, TAG_READER_OPEN_ANOTHER), items.map { it.config[SemanticsProperties.TestTag] })
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
+        rule.waitForIdle()
+        answer(takePdfPicker(), null)
+        assertTrue("the menu closed", !exists(TAG_READER_GO_TO_PAGE))
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("report.pdf")
+    }
+
+    @Test
+    fun noMenuOrIndicatorBeforeADocumentIsOpenOrOnTheErrorScreen() {
+        val picker = enterReader()
+        // The frame shown before the picker answers (and while opening) has neither.
+        assertTrue(!exists(TAG_READER_MENU))
+        assertTrue(!exists(TAG_READER_INDICATOR))
+        fake.readerError = PdfError.Corrupt
+        answer(picker, pdf("bad.pdf"))
+        waitUntil("error screen") { exists(TAG_JOB_RESET) }
+        assertTrue(!exists(TAG_READER_MENU))
+        assertTrue(!exists(TAG_READER_INDICATOR))
+    }
+
+    @Test
+    fun goToPageFromTheMenuShowsTheCurrentPageAndCancelKeepsThePlace() {
+        fake.readerPages = List(12) { a4 }
+        openDocument()
+        goToFromMenu()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assert(hasText("1"))
+        rule.onNodeWithText(str(R.string.reader_go_to_page_of, 12)).assertExists()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_GO).assertIsEnabled()
+        // Focused, with the current page all selected, so typing replaces it.
+        val field = rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assertIsFocused().fetchSemanticsNode()
+        assertEquals(androidx.compose.ui.text.TextRange(0, 1), field.config[SemanticsProperties.TextSelectionRange])
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_CANCEL).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assertDoesNotExist()
+        assertEquals(indicator(1, 12), indicatorText())
+    }
+
+    @Test
+    fun goToPageFromTheIndicatorAndTheKeyboardsDone() {
+        fake.readerPages = List(12) { a4 }
+        openDocument()
+        rule.onNodeWithTag(TAG_READER_INDICATOR).performClick()
+        rule.waitForIdle()
+        typePage("7")
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).performImeAction()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assertDoesNotExist()
+        waitUntil("page 7") { indicatorText() == indicator(7, 12) }
+        waitUntilRendered(6)
+    }
+
+    @Test
+    fun invalidInputKeepsGoDisabledAndShowsAHint() {
+        fake.readerPages = List(12) { a4 }
+        openDocument()
+        goToFromMenu()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_HINT).assertDoesNotExist()
+        for (bad in listOf("", "0", "13", "99999999999999999999")) {
+            typePage(bad)
+            rule.onNodeWithTag(TAG_GO_TO_PAGE_GO).assertIsNotEnabled()
+            rule.onNodeWithTag(TAG_GO_TO_PAGE_HINT).assertTextEquals(str(R.string.reader_go_to_page_hint, 12))
+        }
+        // Pasted text keeps only its digits; leading zeros are fine.
+        typePage("p. 1x2")
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assert(hasText("12"))
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_GO).assertIsEnabled()
+        typePage("012")
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_GO).assertIsEnabled()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_HINT).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).performImeAction()
+        rule.waitForIdle()
+        waitUntil("page 12") { indicatorText() == indicator(12, 12) }
+    }
+
+    @Test
+    fun goingFarAwayRendersOnlyThatPlaceNotThePagesBetween() {
+        fake.readerPages = List(500) { a4 }
+        openDocument()
+        goToFromMenu()
+        typePage("400")
+        pressGo()
+        waitUntil("page 400") { indicatorText() == indicator(400, 500) }
+        waitUntilRendered(399)
+        assertTrue(renderRequests().any { it.page == 399 })
+        // Page 1 and its neighbours were drawn first; page 400 and its neighbours now; nothing between.
+        val between = renderRequests().filter { it.page in 5..396 }
+        assertTrue("pages between rendered: ${between.map { it.page }.distinct()}", between.isEmpty())
+        assertTrue("items between composed", !exists(readerPageTag(200)))
+    }
+
+    @Test
+    fun goToPageKeepsTheZoomAndPutsThePageAtTheTop() {
+        fake.readerPages = List(12) { a4 }
+        openDocument()
+        customAction(TAG_READER_LIST, str(R.string.reader_zoom_in))
+        rule.mainClock.advanceTimeBy(1000)
+        rule.waitForIdle()
+        // Zoomed in about the centre: the page's (transformed, unclipped) left edge is left of the list.
+        val zoomedLeft = rule.onNodeWithTag(readerPageTag(0)).fetchSemanticsNode().positionInRoot.x
+        val list = rule.onNodeWithTag(TAG_READER_LIST).fetchSemanticsNode().boundsInRoot
+        assertTrue("zoomed in: $zoomedLeft vs ${list.left}", zoomedLeft < list.left - 10f)
+        rule.onNodeWithTag(TAG_READER_INDICATOR).performClick()
+        rule.waitForIdle()
+        typePage("5")
+        pressGo()
+        waitUntil("page 5") { indicatorText() == indicator(5, 12) }
+        val page = rule.onNodeWithTag(readerPageTag(4)).fetchSemanticsNode().positionInRoot
+        assertEquals("zoom and horizontal pan kept", zoomedLeft, page.x, 1f)
+        val slack = 24 * app.resources.displayMetrics.density * 1.5f
+        assertTrue("page top at the viewport top: ${page.y} vs ${list.top}", page.y >= list.top - 1f && page.y <= list.top + slack)
+        // Still zoomed: a later page is drawn at the same zoom too.
+        assertTrue(rule.onNodeWithTag(TAG_READER_LIST).fetchSemanticsNode().config[SemanticsActions.CustomActions].any { it.label == str(R.string.reader_zoom_out) })
+    }
+
+    @Test
+    fun goToPageClearsTheSelection() {
+        fake.readerPages = List(12) { a4 }
+        fake.readerTexts[0] = TestPageTexts.grid("Hello world", "Second line")
+        openDocument()
+        rule.onNodeWithTag(TAG_READER_INDICATOR).performClick()
+        rule.waitForIdle()
+        // A selection made while the dialog is up (the dialog stays; the top bar becomes the selection bar).
+        val (x, y) = TestPageTexts.centre(0, 8)
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        typePage("3")
+        pressGo()
+        assertTrue("selection cleared", !selectionShown())
+        waitUntil("page 3") { indicatorText() == indicator(3, 12) }
+    }
+
+    @Test
+    fun theDialogAndItsTextSurviveRotation() {
+        fake.readerPages = List(12) { a4 }
+        openDocument()
+        goToFromMenu()
+        typePage("9")
+        rule.activityRule.scenario.recreate()
+        rule.waitForIdle()
+        waitFor(TAG_GO_TO_PAGE_FIELD)
+        rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assert(hasText("9"))
+        pressGo()
+        waitUntil("page 9") { indicatorText() == indicator(9, 12) }
     }
 }
