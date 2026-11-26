@@ -6,6 +6,9 @@ import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.TextRect
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 
 /** One search hit: characters [start] until [endExclusive] of page [page]'s [PageText]. */
 data class SearchHit(val page: Int, val start: Int, val endExclusive: Int) : Comparable<SearchHit> {
@@ -109,12 +112,24 @@ object SearchMath {
     /** First character index of each line of [t]. */
     fun lineStarts(t: PageText): IntArray = IntArray(t.lineCount) { t.lineRange(it).first }
 
+    /** Characters scanned by [find] between two calls of its checkpoint. */
+    const val CHECK_EVERY = 1024
+
     /**
      * Hits of [query] in [text] (a page's text, lines concatenated, line [i] starting at
-     * [lineStarts]`[i]`), at most [limit].
+     * [lineStarts]`[i]`), at most [limit]. [checkpoint] is called before the scan and then every
+     * [CHECK_EVERY] characters; it may throw (a cancelled scan) to stop the search of a long page.
      */
-    fun find(text: String, lineStarts: IntArray, query: SearchQuery, page: Int, limit: Int = MAX_HITS): List<SearchHit> {
+    fun find(
+        text: String,
+        lineStarts: IntArray,
+        query: SearchQuery,
+        page: Int,
+        limit: Int = MAX_HITS,
+        checkpoint: () -> Unit = {},
+    ): List<SearchHit> {
         if (limit <= 0) return emptyList()
+        checkpoint()
         val f = fold(text)
         val n = f.length
         val breakBefore = BooleanArray(n + 1)
@@ -122,7 +137,12 @@ object SearchMath {
         val out = ArrayList<SearchHit>()
         val first = query.words[0][0]
         var i = 0
+        var nextCheck = CHECK_EVERY
         while (i < n && out.size < limit) {
+            if (i >= nextCheck) {
+                checkpoint()
+                nextCheck = i + CHECK_EVERY
+            }
             val startsInsidePair = i > 0 && Character.isLowSurrogate(f[i]) && Character.isHighSurrogate(f[i - 1])
             val end = if (f[i] == first && !startsInsidePair) matchAt(f, breakBefore, query.words, i) else -1
             if (end > 0) {
@@ -172,13 +192,14 @@ object SearchMath {
         else -> (current - 1 + size) % size
     }
 
-    /** Highlight rectangles of [hits] on [text]. */
-    fun rectsOf(text: PageText, hits: List<SearchHit>): PageSearchRects =
-        PageSearchRects(hits, hits.map { text.rects(it.start until it.endExclusive) })
+    /** Highlight rectangles of [hits] on [text]; [checkpoint] is called before each hit (it may throw). */
+    fun rectsOf(text: PageText, hits: List<SearchHit>, checkpoint: () -> Unit = {}): PageSearchRects =
+        PageSearchRects(hits, hits.map { checkpoint(); text.rects(it.start until it.endExclusive) })
 }
 
 /**
- * The mutable results of one query (main thread only). Hits are kept in document order by
+ * The mutable results of one query, touched only on the main thread (the context that runs
+ * [scanPages]); the work [scanPages] sends to its compute context never sees this object. Hits are kept in document order by
  * inserting each page's hits at its place (the scan wraps, so earlier pages come last).
  */
 internal class SearchResults(val query: SearchQuery) {
@@ -213,6 +234,14 @@ internal class SearchResults(val query: SearchQuery) {
  * for pages [near] the viewport, and calls [publish] after each page. The first hit found becomes
  * current and is passed to [reveal]. Pages whose text cannot be read are counted as skipped.
  * Stops at [SearchMath.MAX_HITS] hits. Cancellable between and during pages.
+ *
+ * Threads: folding, matching and rectangle computation of a page run in [compute]
+ * (`Dispatchers.Default` in the app; empty: inline in the caller's context). That work gets only
+ * immutable inputs (the page's [PageText], the query, a hit limit read beforehand) and returns new
+ * lists; [results], [near], [publish] and [reveal] are used only in the caller's context, so
+ * [results] is never shared between threads and pages are recorded and published in scan order as
+ * before. The work in [compute] checks for cancellation every [SearchMath.CHECK_EVERY] characters
+ * and before each hit's rectangles, so a cancelled scan stops promptly also inside a long page.
  */
 internal suspend fun scanPages(
     pages: List<Int>,
@@ -222,7 +251,9 @@ internal suspend fun scanPages(
     near: (Int) -> Boolean,
     publish: () -> Unit,
     reveal: (SearchHit, List<TextRect>?) -> Unit,
+    compute: CoroutineContext = EmptyCoroutineContext,
 ) {
+    val query = results.query
     for (page in pages) {
         awaitTurn()
         val r = textOf(page)
@@ -230,12 +261,25 @@ internal suspend fun scanPages(
         when (r) {
             is ReaderText.Ok -> {
                 val text = r.text
-                val found = SearchMath.find(text.text, SearchMath.lineStarts(text), results.query, page, SearchMath.MAX_HITS - results.hits.size)
+                val limit = SearchMath.MAX_HITS - results.hits.size
+                val wantFirst = results.current == null
+                val (found, firstRects) = withContext(compute) {
+                    val ctx = currentCoroutineContext()
+                    val f = SearchMath.find(text.text, SearchMath.lineStarts(text), query, page, limit) { ctx.ensureActive() }
+                    f to if (wantFirst && f.isNotEmpty()) text.rects(f[0].start until f[0].endExclusive) else null
+                }
                 results.addPage(found)
-                if (found.isNotEmpty() && near(page)) results.rects[page] = SearchMath.rectsOf(text, found)
+                if (found.isNotEmpty() && near(page)) {
+                    val rects = withContext(compute) {
+                        val ctx = currentCoroutineContext()
+                        SearchMath.rectsOf(text, found) { ctx.ensureActive() }
+                    }
+                    // The viewport may have moved on while they were computed.
+                    if (near(page)) results.rects[page] = rects
+                }
                 if (results.current == null && found.isNotEmpty()) {
                     results.current = found[0]
-                    reveal(found[0], text.rects(found[0].start until found[0].endExclusive))
+                    reveal(found[0], firstRects ?: text.rects(found[0].start until found[0].endExclusive))
                 }
                 if (results.hits.size >= SearchMath.MAX_HITS) {
                     results.capped = true

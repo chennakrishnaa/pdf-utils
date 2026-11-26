@@ -35,6 +35,8 @@ import app.venkat.offkit.feature.reader.ReaderLimits
 import app.venkat.offkit.feature.reader.ReaderPlanner
 import app.venkat.offkit.feature.reader.ReaderViewModel
 import app.venkat.offkit.feature.reader.VisiblePage
+import androidx.lifecycle.SavedStateHandle
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -120,12 +122,17 @@ class ReaderViewModelTest {
     /** Fails every page-text call when set. */
     @Volatile private var textError: PdfError? = null
 
-    private fun newVm(limits: ReaderLimits = ReaderLimits(), textLimits: ReaderTextLimits = ReaderTextLimits()): ReaderViewModel =
+    private fun newVm(
+        limits: ReaderLimits = ReaderLimits(),
+        textLimits: ReaderTextLimits = ReaderTextLimits(),
+        compute: CoroutineDispatcher = Dispatchers.Default,
+    ): ReaderViewModel =
         ViewModelProvider(
             store,
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T = ReaderViewModel(app, reader, limits, textLimits) as T
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    ReaderViewModel(app, reader, limits, textLimits, SavedStateHandle(), compute) as T
             },
         )["reader-${System.nanoTime()}", ReaderViewModel::class.java]
 
@@ -506,6 +513,34 @@ class ReaderViewModelTest {
         assertEquals(SearchHit(4, 17, 20), vm.search.value!!.current)
         vm.closeSearch()
         assertNull(vm.search.value)
+    }
+
+    @Test
+    fun searchMatchingAndHitRectanglesRunOnTheComputeDispatcherNotTheMainThread() {
+        val compute = RecordingDispatcher()
+        try {
+            val vm = newVm(compute = compute)
+            fake.readerPages = List(8) { PageDims(595f, 842f) }
+            for (p in listOf(1, 6)) fake.readerTexts[p] = TestPageTexts.grid("a Cat and", "another cat")
+            openVm(vm)
+            vm.onViewport(WIDTH, 1f, listOf(band(6)))
+            vm.search("cat", 0)
+            searchDone(vm)
+            val s = vm.search.value!!
+            assertEquals(listOf(1, 1, 6, 6), s.hits.map { it.page })
+            assertEquals("rectangles only near the viewport (pages 4 to 8)", setOf(6), s.rects.keys)
+            // Eight pages matched and one page's rectangles; none of it on the main thread.
+            assertEquals(9, compute.threads.size)
+            assertEquals(setOf(RecordingDispatcher.THREAD), compute.threads.toSet())
+            // Rectangles fetched later for a page that comes into view are computed there too.
+            vm.onViewport(WIDTH, 1f, listOf(band(1)))
+            CoreTestSupport.idleUntil(message = "rects of page 1") { vm.search.value?.rects?.containsKey(1) == true }
+            assertEquals(setOf(1), vm.search.value!!.rects.keys)
+            assertEquals(10, compute.threads.size)
+            assertEquals(setOf(RecordingDispatcher.THREAD), compute.threads.toSet())
+        } finally {
+            compute.close()
+        }
     }
 
     @Test

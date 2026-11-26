@@ -17,9 +17,14 @@ import app.venkat.offkit.engine.PageText
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.ReaderPassword
 import app.venkat.offkit.engine.RenderRequest
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -127,7 +132,9 @@ data class ReaderPageState(val base: Bitmap? = null, val detail: PageDetail? = n
  * worker has nothing to send (no render in flight and nothing missing from the plan), so a
  * render asked for during a scan goes before the next scan page (a text call already sent is
  * not cancelled, and neither is a render). Scanned text is not put in the selection cache and
- * not kept: hits are stored as ranges, with rectangles only for pages near the viewport.
+ * not kept: hits are stored as ranges, with rectangles only for pages near the viewport. Folding,
+ * matching and hit rectangles are computed on [compute] (`Dispatchers.Default`); the results are
+ * recorded and published on the main thread.
  *
  * All methods must be called on the main thread.
  */
@@ -137,6 +144,7 @@ class ReaderViewModel internal constructor(
     private val limits: ReaderLimits,
     private val textLimits: ReaderTextLimits = ReaderTextLimits(),
     private val savedState: SavedStateHandle = SavedStateHandle(),
+    private val compute: CoroutineDispatcher = Dispatchers.Default,
 ) : AndroidViewModel(application) {
     /** Used by the default `ViewModelProvider` factory. */
     constructor(application: Application) : this(application, PdfReader.get(application), ReaderLimits())
@@ -573,6 +581,7 @@ class ReaderViewModel internal constructor(
                     near = ::nearViewport,
                     publish = { publish(res) },
                     reveal = { hit, rects -> _searchReveals.trySend(SearchReveal(hit.page, rects?.firstOrNull())) },
+                    compute = compute,
                 )
             }
         }
@@ -629,9 +638,18 @@ class ReaderViewModel internal constructor(
             rectJobs[page] = viewModelScope.launch {
                 val r = reader.text(doc, page)
                 if (results !== res) return@launch
+                if (r !is ReaderText.Ok) {
+                    rectJobs.remove(page)
+                    return@launch
+                }
+                val hits = res.hitsOn(page) // a copy, read here on the main thread
+                // Computed off the main thread; the page stays in rectJobs meanwhile (no second fetch).
+                val rects = withContext(compute) {
+                    val ctx = currentCoroutineContext()
+                    SearchMath.rectsOf(r.text, hits) { ctx.ensureActive() }
+                }
+                if (results !== res) return@launch
                 rectJobs.remove(page)
-                if (r !is ReaderText.Ok) return@launch
-                val rects = SearchMath.rectsOf(r.text, res.hitsOn(page))
                 res.rects[page] = rects
                 publish(res)
                 then(rects)
