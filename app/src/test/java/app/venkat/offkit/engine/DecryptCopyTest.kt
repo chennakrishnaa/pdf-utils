@@ -178,6 +178,44 @@ class DecryptCopyTest {
         }
     }
 
+    /** Z3-2: a copy onto its own source, a folder or a link is refused, and the source survives. */
+    @Test
+    fun aCopyOntoItsSourceOrANonRegularFileIsRefusedAndTheSourceSurvives() {
+        val root = tmp.root
+        val src = EncryptedFixtures.write(dir, "doc.pdf", EncryptedFixtures.OWNER_ONLY_B64)
+        val bytes = src.readBytes()
+        val folder = File(dir, "print-dir.pdf").apply { mkdirs() }
+        val link = File(dir, "print-link.pdf")
+        java.nio.file.Files.createSymbolicLink(link.toPath(), src.toPath())
+        val dangling = File(dir, "print-dangling.pdf")
+        java.nio.file.Files.createSymbolicLink(dangling.toPath(), File(dir, "nowhere.pdf").toPath())
+        val refused = listOf(
+            src.path,
+            File(dir, "./doc.pdf").path,
+            File(dir, "../reader-test/doc.pdf").path,
+            folder.path,
+            link.path,
+            dangling.path,
+        )
+        for (out in refused) {
+            try {
+                EngineServer.checkReaderPair(root, src.path, out)
+                fail("accepted $out")
+            } catch (e: SecurityException) {
+                // expected
+            }
+            val r = engine.decryptCopy(src, File(out), null)
+            assertTrue("$out: $r", r is PdfResult.Err && r.error is PdfError.Io)
+            assertTrue(src.readBytes().contentEquals(bytes))
+        }
+        assertTrue(folder.isDirectory)
+        assertTrue(java.nio.file.Files.isSymbolicLink(link.toPath()))
+        // A stale regular file is still accepted (and replaced by the op).
+        val stale = File(dir, "print-stale.pdf").apply { writeBytes(byteArrayOf(1)) }
+        EngineServer.checkReaderPair(root, src.path, stale.path)
+        assertTrue(engine.decryptCopy(src, stale, null) is PdfResult.Ok)
+    }
+
     @Test
     fun theRequestNeverPrintsThePassword() {
         val r = EngineRequest.DecryptCopy("/a.pdf", "/b.pdf", "hunter2")

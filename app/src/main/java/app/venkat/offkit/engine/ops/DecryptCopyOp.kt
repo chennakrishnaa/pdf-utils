@@ -10,6 +10,8 @@ import app.venkat.offkit.engine.ScanMemo
 import app.venkat.offkit.engine.classifyFailure
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.LinkOption
 
 /**
  * Implementation of [app.venkat.offkit.engine.PdfPageRenderer.decryptCopy]: the unencrypted copy
@@ -42,6 +44,7 @@ import java.io.IOException
  */
 class DecryptCopyOp {
     fun run(pdf: File, out: File, job: JobControl, password: String? = null): PdfResult {
+        outRefusal(pdf, out)?.let { return PdfResult.Err(PdfError.Io(IOException(it))) }
         val result = try {
             out.delete()
             EngineStack.run { PdfInputs.toResult { copy(pdf, out, job, password) } }
@@ -82,7 +85,26 @@ class DecryptCopyOp {
         }
     }
 
-    internal companion object {
+    companion object {
+        /**
+         * Why [out] must not be written (and, first, deleted) for [pdf], or null if it may: it is
+         * the same file as [pdf] after canonicalisation, or it already exists as something other
+         * than a regular file (a folder, a link, a device). Z3-2: without this, `out == pdf` would
+         * delete the source.
+         */
+        fun outRefusal(pdf: File, out: File): String? {
+            try {
+                if (pdf.canonicalFile == out.canonicalFile) return "the copy would replace its source"
+            } catch (e: IOException) {
+                return "cannot resolve path"
+            }
+            val path = out.toPath()
+            if (Files.exists(path, LinkOption.NOFOLLOW_LINKS) && !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                return "the copy's path is not a regular file"
+            }
+            return null
+        }
+
         /** MuPDF save options: write without encryption, everything else as stored. */
         const val SAVE_OPTIONS = "encrypt=none"
 

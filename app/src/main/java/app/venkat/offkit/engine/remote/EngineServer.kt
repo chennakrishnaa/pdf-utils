@@ -17,6 +17,7 @@ import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.ops.DecryptCopyOp
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -234,7 +235,9 @@ class EngineServer(
         /**
          * For [EngineRequest.DecryptCopy]: throws [SecurityException] unless [pdf] and [out] (after
          * canonicalisation) lie in the same folder, and that folder is a `reader-*` folder directly
-         * inside [jobsRoot] (one reader document's own folder).
+         * inside [jobsRoot] (one reader document's own folder); also unless [out] is a different file
+         * from [pdf] that is absent or a regular file, not a link ([DecryptCopyOp.outRefusal], Z3-2:
+         * the op deletes a stale [out] first).
          */
         fun checkReaderPair(jobsRoot: File, pdf: String, out: String) {
             try {
@@ -244,6 +247,7 @@ class EngineServer(
                 if (a == null || a != b || a.parentFile != root || !a.name.startsWith(READER_DIR_PREFIX)) {
                     throw SecurityException("decrypted copy outside the document's folder")
                 }
+                DecryptCopyOp.outRefusal(File(pdf), File(out))?.let { throw SecurityException(it) }
             } catch (e: IOException) {
                 throw SecurityException("cannot resolve path")
             }
