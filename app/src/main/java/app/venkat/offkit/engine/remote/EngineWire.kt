@@ -14,6 +14,8 @@ import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.PdfPageText
+import app.venkat.offkit.engine.PageTextFormat
 import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
@@ -77,6 +79,11 @@ sealed interface EngineRequest {
      * [PdfPageRenderer.renderPage] of [pdf] into [out]; the reply is [EngineWire.encodeRender].
      * [EngineWire.decodeRequest] rejects a [request] that fails `RenderLimits.check(request, null)`.
      */
+    /** [PdfPageRenderer.pageText] of [page] of [pdf] into [out]; the reply is [EngineWire.encodePageText]. */
+    data class PageText(val pdf: String, val page: Int, override val out: String) : EngineRequest {
+        override val paths get() = listOf(pdf, out)
+    }
+
     data class RenderPage(val pdf: String, val request: RenderRequest, override val out: String) : EngineRequest {
         override val paths get() = listOf(pdf, out)
     }
@@ -99,11 +106,13 @@ internal fun EngineRequest.execute(
     is EngineRequest.NormalizeImage -> preparer.prepareImage(File(raw), File(destDir), index, job)
     is EngineRequest.PageInfo -> renderer().pageInfo(File(pdf), job)
     is EngineRequest.RenderPage -> renderer().renderPage(File(pdf), request, File(out), job)
+    is EngineRequest.PageText -> renderer().pageText(File(pdf), page, File(out), job)
     else -> execute(engine(), job)
 }
 
 private fun EngineRequest.execute(engine: PdfEngine, job: JobControl): Any = when (this) {
-    is EngineRequest.NormalizeImage, is EngineRequest.PageInfo, is EngineRequest.RenderPage -> error("not an engine request")
+    is EngineRequest.NormalizeImage, is EngineRequest.PageInfo, is EngineRequest.RenderPage, is EngineRequest.PageText ->
+        error("not an engine request")
     is EngineRequest.ImagesToPdf -> engine.imagesToPdf(images.map(::File), pageSize, File(out), job, compression)
     is EngineRequest.Estimate -> engine.estimateImage(File(image))
     is EngineRequest.Compress -> engine.compress(File(pdf), level, File(out), job)
@@ -157,6 +166,9 @@ object EngineWire {
     private const val KIND_IMG_OK = "imgOk"
     private const val KIND_INFO_OK = "infoOk"
     private const val KIND_RENDER_OK = "renderOk"
+    private const val KIND_TEXT_OK = "textOk"
+    private const val UNITS = "units"
+    private const val TRUNCATED = "truncated"
 
     // ---------------------------------------------------------------- requests
 
@@ -199,6 +211,12 @@ object EngineWire {
             is EngineRequest.PageInfo -> {
                 putString(OP, "pageInfo")
                 putString(PDF, r.pdf)
+            }
+            is EngineRequest.PageText -> {
+                putString(OP, "pageText")
+                putString(PDF, r.pdf)
+                putString(OUT, r.out)
+                putInt(PAGE, r.page)
             }
             is EngineRequest.RenderPage -> {
                 putString(OP, "renderPage")
@@ -243,6 +261,11 @@ object EngineWire {
                 EngineRequest.NormalizeImage(str(RAW), str(DEST_DIR), index)
             }
             "pageInfo" -> EngineRequest.PageInfo(str(PDF))
+            "pageText" -> {
+                val page = int(PAGE)
+                require(page >= 0) { "bad page $page" }
+                EngineRequest.PageText(str(PDF), page, str(OUT))
+            }
             "renderPage" -> {
                 require(b.containsKey(SCALE)) { "missing $SCALE" }
                 val request = RenderRequest(int(PAGE), b.getFloat(SCALE), int(LEFT), int(TOP), int(WIDTH), int(HEIGHT))
@@ -386,6 +409,35 @@ object EngineWire {
         else -> PdfRender.Err(malformed())
     }
 
+    /** Encodes a [PdfPageText] (`truncated` as an int 0 / 1). */
+    fun encodePageText(r: PdfPageText): Bundle = when (r) {
+        is PdfPageText.Ok -> Bundle().apply {
+            putString(KIND, KIND_TEXT_OK)
+            putInt(UNITS, r.units)
+            putInt(TRUNCATED, if (r.truncated) 1 else 0)
+        }
+        is PdfPageText.Err -> encodeResult(PdfResult.Err(r.error))
+    }
+
+    /**
+     * Decodes a [PdfPageText] bundle; a malformed one (missing fields, units outside
+     * `0..PageTextFormat.MAX_UNITS`, truncated not 0 or 1) becomes `Err(Io)`. The file is checked
+     * by the caller.
+     */
+    fun decodePageText(b: Bundle): PdfPageText = when (b.getString(KIND)) {
+        KIND_TEXT_OK -> {
+            val units = b.getInt(UNITS, -1)
+            val truncated = b.getInt(TRUNCATED, -1)
+            if (b.containsKey(UNITS) && units in 0..PageTextFormat.MAX_UNITS && (truncated == 0 || truncated == 1)) {
+                PdfPageText.Ok(units, truncated == 1)
+            } else {
+                PdfPageText.Err(malformed())
+            }
+        }
+        KIND_ERR -> PdfPageText.Err(getError(b))
+        else -> PdfPageText.Err(malformed())
+    }
+
     /** The engine process id carried by an `Ok` [encodePrepared] bundle, or 0. */
     fun preparedPid(b: Bundle): Int = b.getInt(PID, 0)
 
@@ -396,6 +448,7 @@ object EngineWire {
         is PreparedImage -> encodePrepared(value)
         is PdfPageInfo -> encodePageInfo(value)
         is PdfRender -> encodeRender(value)
+        is PdfPageText -> encodePageText(value)
         else -> throw IllegalArgumentException("not a result: $value")
     }
 

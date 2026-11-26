@@ -14,6 +14,8 @@ import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.PdfPageText
+import app.venkat.offkit.engine.PageTextFormat
 import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
@@ -225,6 +227,35 @@ class RemoteEngine(
         return result
     }
 
+    /**
+     * [PdfPageRenderer.pageText] in the engine process. The reply is untrusted: an `Ok` must report
+     * at most [PageTextFormat.MAX_UNITS] units and [out] must exist and be no longer than
+     * [PageTextFormat.MAX_FILE_BYTES] (the caller parses it with [PageTextFormat.read]); else `Err(Io)`.
+     * [out] is deleted on every `Err`.
+     */
+    override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
+        if (page < 0) {
+            out.delete()
+            return PdfPageText.Err(PdfError.Io(IllegalArgumentException("page $page < 0")))
+        }
+        val result = when (val r = call(EngineRequest.PageText(pdf.path, page, out.path), job)) {
+            is Reply.Done -> when (val d = EngineWire.decodePageText(r.bundle)) {
+                is PdfPageText.Ok ->
+                    if (d.units in 0..PageTextFormat.MAX_UNITS && out.isFile && out.length() >= PageTextFormat.HEADER_BYTES &&
+                        out.length() <= PageTextFormat.MAX_FILE_BYTES
+                    ) {
+                        d
+                    } else {
+                        PdfPageText.Err(PdfError.Io(IOException("Text reply does not match its file")))
+                    }
+                is PdfPageText.Err -> d
+            }
+            is Reply.Failed -> PdfPageText.Err(r.error)
+        }
+        if (result is PdfPageText.Err) out.delete()
+        return result
+    }
+
     private fun result(request: EngineRequest, out: File, job: JobControl): PdfResult =
         when (val r = call(request, job)) {
             is Reply.Done -> EngineWire.decodeResult(r.bundle).also { if (it is PdfResult.Err) out.delete() }
@@ -340,12 +371,13 @@ class RemoteEngine(
             when {
                 request is EngineRequest.PageInfo -> limits.infoTotalMs
                 request is EngineRequest.RenderPage -> limits.renderTotalMs
+                request is EngineRequest.PageText -> limits.textTotalMs
                 request.isImageRequest() -> limits.imageTotalMs
                 else -> limits.totalMs
             },
         )
         // Reader requests report no progress: only their total limit applies.
-        val stallNs = if (request is EngineRequest.PageInfo || request is EngineRequest.RenderPage) Long.MAX_VALUE
+        val stallNs = if (request is EngineRequest.PageInfo || request is EngineRequest.RenderPage || request is EngineRequest.PageText) Long.MAX_VALUE
         else TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
         var sentAt = nanoTime()
         var lastActivity = sentAt

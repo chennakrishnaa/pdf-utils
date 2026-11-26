@@ -25,6 +25,20 @@ interface PdfPageRenderer {
      * a page index past the end gives the same. On any `Err`, [out] does not exist.
      */
     fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl = JobControl.None): PdfRender
+
+    /**
+     * Extracts the text of page [page] (0-based) of [pdf] with the box of every character, into
+     * [out] as a [PageTextFormat] file (read it with [PageTextFormat.read]). Coordinates are in the
+     * space of [PageDims]. A page without text (a scan) is `Ok(0, false)`; text past
+     * [PageTextFormat.MAX_UNITS] units is dropped and the result is `truncated`. A page index out of
+     * range gives `Err(Io(IllegalArgumentException))`. On any `Err`, [out] does not exist.
+     *
+     * The default (for renderers that have no text) is `Err(Io(UnsupportedOperationException))`.
+     */
+    fun pageText(pdf: File, page: Int, out: File, job: JobControl = JobControl.None): PdfPageText {
+        out.delete()
+        return PdfPageText.Err(PdfError.Io(UnsupportedOperationException("no page text")))
+    }
 }
 
 /** Displayed size of one page (its rotation applied), in PDF points (1/72 inch). Both finite and > 0. */

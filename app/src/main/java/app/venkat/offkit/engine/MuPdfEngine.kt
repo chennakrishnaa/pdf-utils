@@ -5,6 +5,7 @@ import app.venkat.offkit.engine.ops.CompressOp
 import app.venkat.offkit.engine.ops.ImagesToPdfOp
 import app.venkat.offkit.engine.ops.MergeOp
 import app.venkat.offkit.engine.ops.PageInfoOp
+import app.venkat.offkit.engine.ops.PageTextOp
 import app.venkat.offkit.engine.ops.RenderPageOp
 import java.io.File
 
@@ -52,6 +53,9 @@ class MuPdfEngine : PdfEngine, PdfPageRenderer {
 
     override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender =
         RenderPageOp().run(pdf, request, out, job)
+
+    override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText =
+        PageTextOp().run(pdf, page, out, job)
 }
 
 /**

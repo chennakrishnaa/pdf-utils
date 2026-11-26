@@ -13,6 +13,9 @@ import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.PdfPageText
+import app.venkat.offkit.engine.PageText
+import app.venkat.offkit.engine.PageTextFormat
 import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
@@ -164,6 +167,29 @@ class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
         val row = ByteArray(request.width * 4) { pixel[it % 4] }
         out.outputStream().buffered().use { s -> repeat(request.height) { s.write(row) } }
         return PdfRender.Ok(request.width, request.height)
+    }
+
+    /** Every [pageText] call as (pdf, page, out), in order. */
+    val textCalls: MutableList<Triple<File, Int, File>> = CopyOnWriteArrayList()
+
+    /**
+     * Canned [pageText] per page index; a page without an entry has no text (`Ok(0)`). Build one
+     * with [PageTextFormat.build]. [readerError] also fails [pageText].
+     */
+    val readerTexts: MutableMap<Int, PageText> = ConcurrentHashMap()
+
+    override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
+        textCalls += Triple(pdf, page, out)
+        fun fail(e: PdfError): PdfPageText {
+            out.delete()
+            return PdfPageText.Err(e)
+        }
+        readerError?.let { return fail(it) }
+        if (job.isCancelled()) return fail(PdfError.Cancelled)
+        if (page !in readerPages.indices) return fail(PdfError.Io(IllegalArgumentException("page $page out of range")))
+        val t = readerTexts[page] ?: PageText.EMPTY
+        PageTextFormat.write(out, t)
+        return PdfPageText.Ok(t.length, t.truncated)
     }
 
     fun setResult(op: Op, result: PdfResult) {

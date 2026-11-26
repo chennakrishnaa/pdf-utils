@@ -24,6 +24,7 @@ import java.io.File
  * @param infoTotalMs longest time a reader page-info request may take. Reader requests report no
  *   progress and have no stall limit, only this total.
  * @param renderTotalMs longest time one reader page render may take (total only, as [infoTotalMs]).
+ * @param textTotalMs longest time one reader page-text extraction may take (total only).
  */
 data class EngineLimits(
     val stallMs: Long = STALL_MS,
@@ -33,6 +34,7 @@ data class EngineLimits(
     val memorySampleMs: Long = MEMORY_SAMPLE_MS,
     val infoTotalMs: Long = INFO_TOTAL_MS,
     val renderTotalMs: Long = RENDER_TOTAL_MS,
+    val textTotalMs: Long = TEXT_TOTAL_MS,
 ) {
     companion object {
         /**
@@ -74,6 +76,9 @@ data class EngineLimits(
          * hostile or broken, and the reader shows an error for that tile only.
          */
         const val RENDER_TOTAL_MS = 30_000L
+
+        /** 30 s for one page's text and geometry: as a render, a page stuck longer is hostile or broken. */
+        const val TEXT_TOTAL_MS = 30_000L
 
         /**
          * 10 s: the shortest gap between two wake-ups of [RemoteEngine]'s wait loop (normally
