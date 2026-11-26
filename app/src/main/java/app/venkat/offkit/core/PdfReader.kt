@@ -226,10 +226,10 @@ class PdfReader internal constructor(
         } catch (e: Exception) {
             return ReaderTile.Err(PdfError.Io(e))
         } finally {
-            withContext(NonCancellable + jobs.ioDispatcher) {
-                out.delete()
-                if (document.closed) document.dir.deleteRecursively()
-            }
+            // Only this call's own file: the folder is deleted on the engine thread alone
+            // (two concurrent deleteRecursively walks of one folder can fail).
+            withContext(NonCancellable + jobs.ioDispatcher) { out.delete() }
+            if (document.closed) deleteFolder(document)
         }
     }
 
@@ -280,10 +280,10 @@ class PdfReader internal constructor(
         } catch (e: Exception) {
             return ReaderText.Err(PdfError.Io(e))
         } finally {
-            withContext(NonCancellable + jobs.ioDispatcher) {
-                out.delete()
-                if (document.closed) document.dir.deleteRecursively()
-            }
+            // Only this call's own file: the folder is deleted on the engine thread alone
+            // (two concurrent deleteRecursively walks of one folder can fail).
+            withContext(NonCancellable + jobs.ioDispatcher) { out.delete() }
+            if (document.closed) deleteFolder(document)
         }
     }
 
@@ -295,6 +295,15 @@ class PdfReader internal constructor(
      */
     fun close(document: ReaderDocument) {
         document.markClosed()
+        deleteFolder(document)
+    }
+
+    /**
+     * Deletes [document]'s folder on the engine thread, so deletions never run concurrently with
+     * each other or with an engine call writing into the folder. Queued, never blocks. Engine
+     * calls for a closed document are refused before they start, so nothing is written after.
+     */
+    private fun deleteFolder(document: ReaderDocument) {
         jobs.processScope.launch(jobs.engineDispatcher) {
             try {
                 document.dir.deleteRecursively()
