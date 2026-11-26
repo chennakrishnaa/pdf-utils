@@ -22,6 +22,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import app.venkat.offkit.MainActivity
@@ -45,7 +46,6 @@ import app.venkat.offkit.ui.components.TAG_JOB_SNACKBAR_OVERLAY
 import app.venkat.offkit.ui.components.TAG_LEAVE_CONFIRM
 import app.venkat.offkit.ui.components.TAG_LEAVE_STAY
 import app.venkat.offkit.ui.components.formatBytes
-import app.venkat.offkit.ui.components.openPdfIntent
 import app.venkat.offkit.ui.components.pdfErrorBody
 import app.venkat.offkit.ui.components.pdfErrorTitle
 import app.venkat.offkit.ui.components.sharePdfIntent
@@ -54,11 +54,13 @@ import app.venkat.offkit.ui.theme.OffkitTool
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.IOException
 
@@ -108,6 +110,7 @@ class JobFlowTest {
                 onShare = { calls += "share" },
                 onReset = { calls += "reset" },
                 onLeave = { calls += "leave" },
+                onOpen = { calls += "open $it" },
                 errorActionLabel = "Try again",
                 noGainAsError = noGain,
             ) { Text("OPTIONS", Modifier.testTag("options")) }
@@ -419,12 +422,15 @@ class JobFlowTest {
     }
 
     @Test
-    fun openPdfIntentViewsWithReadGrant() {
+    fun openHandsTheSavedUriToTheReaderWithNoIntent() {
         val uri = Uri.parse("content://docs/1")
-        val view = openPdfIntent(uri)
-        assertEquals(Intent.ACTION_VIEW, view.action)
-        assertEquals(uri, view.data)
-        assertEquals("application/pdf", view.type)
-        assertTrue(view.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        flow(unsaved.copy(savedName = "a.pdf", savedUri = uri))
+        val shadow = shadowOf(rule.activity)
+        while (shadow.nextStartedActivity != null) Unit
+        rule.onNodeWithTag(TAG_JOB_OPEN).performScrollTo().performClick()
+        rule.waitForIdle()
+        assertEquals(listOf("open $uri"), calls)
+        // In-app reader only: no ACTION_VIEW ("Open with" dialog) leaves the app.
+        assertNull(shadow.nextStartedActivity)
     }
 }

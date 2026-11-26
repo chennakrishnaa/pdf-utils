@@ -1,5 +1,6 @@
 package app.venkat.offkit.feature.compress
 
+import android.net.Uri
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -64,7 +65,7 @@ private fun levelDescription(level: CompressionLevel): Int = when (level) {
 
 /** "Compress PDF" tool: options, then the shared Processing / Result / Error screens. */
 @Composable
-fun CompressScreen(onBack: () -> Unit) {
+fun CompressScreen(onBack: () -> Unit, onOpenDocument: (Uri) -> Unit = {}) {
     // Explicit initializer: the default factory caches the first Application process-wide
     // (AndroidViewModelFactory.getInstance), which goes stale when tests create a fresh one.
     val vm: CompressViewModel = viewModel {
@@ -92,6 +93,7 @@ fun CompressScreen(onBack: () -> Unit) {
         onShare = vm::share,
         onReset = vm::reset,
         onLeave = onBack,
+        onOpen = onOpenDocument,
         errorActionLabel = stringResource(R.string.action_choose_another),
         noGainAsError = true,
     ) {

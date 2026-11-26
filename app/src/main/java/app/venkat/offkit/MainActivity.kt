@@ -54,8 +54,8 @@ class MainActivity : ComponentActivity() {
                     AppNavHost(
                         viewRequest = request,
                         onViewRequestHandled = viewRequests::handled,
-                        // In-app opens (a recent file) take the same path as "Open with", with no
-                        // intent: they never reach onNewIntent or the intent scrub.
+                        // In-app opens (a recent file, a tool's saved result) take the same path
+                        // as "Open with", with no intent: never onNewIntent or the intent scrub.
                         onOpenDocument = { uri -> viewRequests.post(uri) },
                     )
                 }

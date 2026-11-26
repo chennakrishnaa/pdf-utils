@@ -1,5 +1,6 @@
 package app.venkat.offkit.feature.imagestopdf
 
+import android.net.Uri
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -108,7 +109,7 @@ private fun estimateText(estimates: QualityEstimates, level: CompressionLevel?):
 
 /** "Images to PDF" tool: options, then the shared Processing / Result / Error screens. */
 @Composable
-fun ImagesToPdfScreen(onBack: () -> Unit) {
+fun ImagesToPdfScreen(onBack: () -> Unit, onOpenDocument: (Uri) -> Unit = {}) {
     // Explicit initializer: the default AndroidViewModelFactory caches the first Application of the
     // process, which under Robolectric binds later tests' ViewModels to a stale Application/engine.
     val vm: ImagesToPdfViewModel = viewModel {
@@ -147,6 +148,7 @@ fun ImagesToPdfScreen(onBack: () -> Unit) {
         onShare = vm::share,
         onReset = vm::reset,
         onLeave = onBack,
+        onOpen = onOpenDocument,
         errorActionLabel = stringResource(R.string.job_try_again),
     ) {
         ImagesToPdfOptions(

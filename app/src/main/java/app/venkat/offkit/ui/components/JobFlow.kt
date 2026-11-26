@@ -20,7 +20,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import app.venkat.offkit.R
 import app.venkat.offkit.core.ShareRequest
@@ -86,11 +85,11 @@ fun OffkitJobFlow(
     onShare: () -> Unit,
     onReset: () -> Unit,
     onLeave: () -> Unit,
+    onOpen: (Uri) -> Unit,
     errorActionLabel: String,
     noGainAsError: Boolean = false,
     options: @Composable () -> Unit,
 ) {
-    val context = LocalContext.current
     // True while the system save dialog is open: a fast double tap on Save must not open a second
     // one. Cleared when the dialog returns (a Uri or null) or could not be opened.
     var saverOpen by rememberSaveable { mutableStateOf(false) }
@@ -146,7 +145,7 @@ fun OffkitJobFlow(
                     },
                     onShare = onShare,
                     onFinish = requestLeave,
-                    onOpen = { uri -> openSavedPdf(context, uri) },
+                    onOpen = onOpen,
                     snackbarHostState = snackbar,
                 )
                 if (askDiscard) OffkitDiscardDialog(onKeep = { askDiscard = false }, onDiscard = leave)

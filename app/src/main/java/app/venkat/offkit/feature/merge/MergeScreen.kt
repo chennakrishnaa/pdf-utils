@@ -1,5 +1,6 @@
 package app.venkat.offkit.feature.merge
 
+import android.net.Uri
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
@@ -56,7 +57,7 @@ private const val MIN_FILES = 2
  * Processing, Result and Error screens of [OffkitJobFlow] cover the job.
  */
 @Composable
-fun MergeScreen(onBack: () -> Unit) {
+fun MergeScreen(onBack: () -> Unit, onOpenDocument: (Uri) -> Unit = {}) {
     // Explicit initializer: the default factory caches the first Application process-wide
     // (AndroidViewModelFactory.getInstance), which goes stale when tests create a fresh one.
     val vm: MergeViewModel = viewModel {
@@ -95,6 +96,7 @@ fun MergeScreen(onBack: () -> Unit) {
         onShare = vm::share,
         onReset = vm::reset,
         onLeave = onBack,
+        onOpen = onOpenDocument,
         errorActionLabel = stringResource(R.string.job_try_again),
     ) {
         MergeOptions(

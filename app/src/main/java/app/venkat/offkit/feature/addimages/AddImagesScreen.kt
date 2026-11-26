@@ -1,5 +1,6 @@
 package app.venkat.offkit.feature.addimages
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -69,7 +70,7 @@ const val TAG_ADDIMAGES_NOTE = "addimages_note"
  * tile is a placeholder in the tool's colours.
  */
 @Composable
-fun AddImagesScreen(onBack: () -> Unit) {
+fun AddImagesScreen(onBack: () -> Unit, onOpenDocument: (Uri) -> Unit = {}) {
     // Explicit initializer: the default factory caches the first Application process-wide
     // (AndroidViewModelFactory.getInstance), which goes stale when tests create a fresh one.
     val vm: AddImagesViewModel = viewModel {
@@ -110,6 +111,7 @@ fun AddImagesScreen(onBack: () -> Unit) {
         onShare = vm::share,
         onReset = vm::reset,
         onLeave = onBack,
+        onOpen = onOpenDocument,
         errorActionLabel = stringResource(R.string.action_choose_another),
     ) {
         AddImagesOptions(

@@ -4,8 +4,6 @@
     <string name="result_saved">Saved</string>
     <!-- Save-failure snackbar: %1$s is error_save_title, %2$s is error_save_body. -->
     <string name="error_save_message">%1$s. %2$s</string>
-    <!-- Result screen: Open found no app that can view PDFs. -->
-    <string name="core_no_pdf_viewer">No app on this device can open PDFs.</string>
     <!-- Result screen: Share found no app to share the file with. -->
     <string name="core_no_share_target">No app on this device can share this file.</string>
 </resources>

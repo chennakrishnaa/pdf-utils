@@ -29,7 +29,6 @@ import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.components.launchOrExplain
 import app.venkat.offkit.ui.components.rememberImagePicker
 import app.venkat.offkit.ui.components.rememberPdfPicker
-import app.venkat.offkit.ui.components.openSavedPdf
 import app.venkat.offkit.ui.components.ShareRequestEffect
 import app.venkat.offkit.core.ShareRequest
 import android.net.Uri
@@ -151,28 +150,9 @@ class ComponentsTest {
     @Test
     fun launchOrExplainShowsGivenMessage() {
         rule.runOnUiThread {
-            assertFalse(launchOrExplain(rule.activity, R.string.core_no_pdf_viewer) { throw ActivityNotFoundException() })
+            assertFalse(launchOrExplain(rule.activity, R.string.core_no_share_target) { throw ActivityNotFoundException() })
         }
-        assertEquals(rule.activity.getString(R.string.core_no_pdf_viewer), ShadowToast.getTextOfLatestToast())
-    }
-
-    @Test
-    fun openWithoutPdfViewerSaysSoNotFilePicker() {
-        shadowOf(rule.activity.application).checkActivities(true)
-        // Offkit itself now handles VIEW of a PDF ("Open with"); take it out to model a device
-        // with no PDF viewer at all.
-        rule.activity.packageManager.setComponentEnabledSetting(
-            android.content.ComponentName(rule.activity, app.venkat.offkit.MainActivity::class.java),
-            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-            android.content.pm.PackageManager.DONT_KILL_APP,
-        )
-        val uri = Uri.parse("content://app.venkat.offkit.test/doc.pdf")
-        var launched = true
-        rule.runOnUiThread { launched = openSavedPdf(rule.activity, uri) }
-        assertFalse(launched)
-        val msg = rule.activity.getString(R.string.core_no_pdf_viewer)
-        assertEquals("No app on this device can open PDFs.", msg)
-        assertEquals(msg, ShadowToast.getTextOfLatestToast())
+        assertEquals(rule.activity.getString(R.string.core_no_share_target), ShadowToast.getTextOfLatestToast())
     }
 
     @Test

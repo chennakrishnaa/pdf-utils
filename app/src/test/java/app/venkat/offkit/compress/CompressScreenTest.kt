@@ -60,6 +60,15 @@ import app.venkat.offkit.ui.components.formatBytes
 import app.venkat.offkit.ui.components.pdfErrorBody
 import app.venkat.offkit.ui.components.pdfErrorTitle
 import app.venkat.offkit.ui.nav.AppNavHost
+import java.io.File
+import app.venkat.offkit.core.PdfReader
+import app.venkat.offkit.ui.nav.Routes
+import app.venkat.offkit.ui.components.TAG_JOB_OPEN
+import app.venkat.offkit.ViewRequests
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavHostController
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import app.venkat.offkit.ui.theme.OffkitTheme
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -543,6 +552,64 @@ class CompressScreenTest {
     }
 
     /** Taps Share and returns the chooser it launched (asserting it is the PDF share intent). */
+    /**
+     * R1: "Open" on a saved result opens it in the in-app reader (through [ViewRequests], as
+     * MainActivity wires it), with no intent leaving the app. The tool stays below the reader, so
+     * Back returns to a working result screen: same output, Save again and Share still work.
+     */
+    @Test
+    fun openShowsTheSavedResultInTheReaderAndBackReturnsToAWorkingResult() {
+        val requests = ViewModelProvider(rule.activity)[ViewRequests::class.java]
+        lateinit var nav: NavHostController
+        rule.runOnUiThread {
+            rule.activity.setContent {
+                OffkitTheme {
+                    nav = rememberNavController()
+                    val request by requests.request.collectAsState()
+                    AppNavHost(
+                        navController = nav,
+                        viewRequest = request,
+                        onViewRequestHandled = requests::handled,
+                        onOpenDocument = { requests.post(it) },
+                    )
+                }
+            }
+        }
+        rule.waitForIdle()
+        click("tool_compress")
+        vm = ViewModelProvider(nav.currentBackStackEntry!!)[CompressViewModel::class.java]
+        choose(pdf("a.pdf"))
+        runToReady()
+        saveTo(ByteArrayOutputStream())
+        val done = state() as JobUiState.Done
+        // The tool's output (its job directory; the reader's own copies are "reader-" ones).
+        fun jobFiles() = File(app.cacheDir, "jobs").walkTopDown()
+            .filter { it.isFile && !it.parentFile!!.name.startsWith(PdfReader.READER_DIR_PREFIX) }.toList()
+        val output = jobFiles()
+        assertTrue(output.isNotEmpty())
+        shadowOf(rule.activity).clearNextStartedActivities()
+
+        click(TAG_JOB_OPEN)
+        CoreTestSupport.idleUntil(rule, message = "reader on top") { nav.currentDestination?.route == Routes.READER }
+        rule.waitForIdle()
+        assertEquals(listOf(Routes.HOME, Routes.COMPRESS, Routes.READER), nav.currentBackStack.value.mapNotNull { it.destination.route })
+        assertNull("no intent left the app", shadowOf(rule.activity).nextStartedActivity)
+        assertNull("no picker", shadowOf(rule.activity).nextStartedActivityForResult)
+        assertNull("request taken", requests.request.value)
+
+        click(TAG_ACTION_BACK)
+        CoreTestSupport.idleUntil(rule, message = "back on the tool") { nav.currentDestination?.route == Routes.COMPRESS }
+        rule.waitForIdle()
+        assertEquals(done, state())
+        assertEquals("output kept", output, jobFiles())
+        rule.onNodeWithTag(TAG_JOB_SAVE).assertTextEquals(str(R.string.action_save_copy))
+        shareAndGetChooser()
+        val again = ByteArrayOutputStream()
+        rule.runOnUiThread { vm.save(dest(again, "again.pdf")) }
+        CoreTestSupport.idleUntil(message = "saved again") { (state() as? JobUiState.Done)?.savedName == "again.pdf" }
+        assertArrayEquals(fake.outputContent, again.toByteArray())
+    }
+
     private fun shareAndGetChooser(): Intent {
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_JOB_SHARE)

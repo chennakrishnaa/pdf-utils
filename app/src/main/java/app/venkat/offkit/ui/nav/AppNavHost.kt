@@ -6,6 +6,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.dropUnlessResumed
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -46,8 +47,8 @@ class ViewRequest(val uri: Uri, val id: Long, val typeVerified: Boolean = true)
  * A non-null [viewRequest] opens the reader on its document, on top of the current back stack (so
  * Back returns to whatever was open, e.g. a tool's unsaved result, or to home); the reader calls
  * [onViewRequestHandled] once it has started opening it. [onOpenDocument] asks for such a request
- * from inside the app (home's recent files); it must post a [ViewRequest], the only way a Uri
- * enters the reader.
+ * from inside the app (home's recent files, a tool's saved result); it must post a [ViewRequest],
+ * the only way a Uri enters the reader. The reader goes on top, so Back returns to that screen.
  */
 @Composable
 fun AppNavHost(
@@ -66,6 +67,11 @@ fun AppNavHost(
             navController.navigate(Routes.READER) { launchSingleTop = true }
         }
     }
+    // Only from the destination on screen: a request made after it was left (e.g. once home's
+    // availability check returns) is dropped, so it never pushes the reader over another screen.
+    val openFrom: (NavBackStackEntry) -> (Uri) -> Unit = { entry ->
+        { uri -> if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) onOpenDocument(uri) }
+    }
     NavHost(navController = navController, startDestination = Routes.HOME, modifier = modifier) {
         composable(Routes.HOME) { entry ->
             // Ignore taps while a transition is in progress, so a double tap navigates once.
@@ -78,24 +84,20 @@ fun AppNavHost(
                 onOpenTool = navigate,
                 onOpenAbout = { navigate(Routes.ABOUT) },
                 onOpenSupport = { navigate(Routes.SUPPORT) },
-                // Called after an availability check off the main thread: dropped if home was
-                // left meanwhile, so a late answer never pushes the reader over another screen.
-                onOpenDocument = { uri ->
-                    if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) onOpenDocument(uri)
-                },
+                onOpenDocument = openFrom(entry),
             )
         }
-        composable(Routes.IMAGES_TO_PDF) {
-            ImagesToPdfScreen(onBack = dropUnlessResumed { navController.popBackStack() })
+        composable(Routes.IMAGES_TO_PDF) { entry ->
+            ImagesToPdfScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
         }
-        composable(Routes.COMPRESS) {
-            CompressScreen(onBack = dropUnlessResumed { navController.popBackStack() })
+        composable(Routes.COMPRESS) { entry ->
+            CompressScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
         }
-        composable(Routes.MERGE) {
-            MergeScreen(onBack = dropUnlessResumed { navController.popBackStack() })
+        composable(Routes.MERGE) { entry ->
+            MergeScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
         }
-        composable(Routes.ADD_IMAGES) {
-            AddImagesScreen(onBack = dropUnlessResumed { navController.popBackStack() })
+        composable(Routes.ADD_IMAGES) { entry ->
+            AddImagesScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
         }
         composable(Routes.READER) {
             ReaderScreen(
