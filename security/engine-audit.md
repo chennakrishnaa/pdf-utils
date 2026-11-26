@@ -516,3 +516,19 @@ Addendum written from the code at `561c0e6` (H2, page text for H3's selection an
 - Everything listed under "Not covered" in "Reader render path" applies here too (the same gate and `Page.run`).
 - Font loading during text extraction is MuPDF's, unbounded except by time and memory, as for renders.
 - The text path has not been run against the hostile-file set, on a device or on the host. On the host, `PageTextOpTest` runs the op with host MuPDF on ordinary PDFs and on a few small refused ones (a 60,000 x 60,000 px image refused by the gate, too many annotations, encrypted, corrupt), and `PageTextFormatTest` feeds malformed files to the parser.
+
+## Reader password addendum (K1)
+
+The reader (`pageInfo`, `renderPage`, `pageText`) now opens encrypted PDFs (`PdfInputs.openForReader`); the tools still refuse every encrypted PDF (`PdfInputs.open`, unchanged). The password travels in the request Bundle (documented exception to "only paths"), capped at 127 bytes of modified UTF-8 and free of U+0000 (`ReaderPassword`, checked by `RemoteEngine`, `EngineWire.decodeRequest` and `openForReader`; MuPDF truncates R5/R6 passwords at 127 bytes). It is never in a file, a log, an exception message or a `toString`.
+
+Pre-checks on an encrypted input, before and after:
+
+- **Size / object count** (`PdfInputs`): file length and xref length; independent of encryption. Unchanged.
+- **`ObjStmScan`** (raw file bytes): limits are per object stream 16 MiB decoded and 16 MiB consumed, 64 MiB decoded and consumed for all object streams together; filter none or Flate alone, anything else refused. On an encrypted file the data is ciphertext (not valid zlib: previously ignored "so encrypted files reach the Encrypted check"). Now pass 1 records every Flate candidate with its `num gen obj` header; after `authenticatePassword` and before `countPages`, pass 2 (`ObjStmScan.checkDecrypted`) reads each through MuPDF `readRawStream` (crypt applied, no other filter) and enforces the same limits on the plaintext (budget continues from the unfiltered bytes of pass 1). Refused: a candidate without a header, more than 10,000 candidates, an object that does not resolve to a stream, a stream-level `/Crypt` or any other filter, raw over 16 MiB.
+- **`checkPageAnnots` / `ObjectGraph.checkAnnots`**: MuPDF objects, decrypted after authentication. Effective as before.
+- **`RenderImageGate`**: dictionaries via MuPDF; JPEG SOF, JPX SIZ, Flate-before-DCT and ICC readers use `readRawStream`, which `pdf_open_raw_filter` (pdf-stream.c) decrypts unless the stream names its own `/Crypt` filter; such a stream has an extra filter, which every raw reader refuses. A reader that cannot parse what it gets refuses.
+- **`ScanMemo`**: key now includes `auth`, 8 bytes of SHA-256(per-process salt || password), 0 for none; verdicts are recorded only after MuPDF accepted the password.
+
+Crypt handler: `pdf_new_crypt` throws on unknown `/Filter`, `/V`, `/R`, missing `/O` `/U` (`/OE` `/UE` for R6), invalid key `/Length` and unknown `/CF` crypt filters; MuPDF reads only fixed-size key material. R6 key derivation (`pdf_compute_hardened_hash_r6`) runs at most 64 + 255 + 32 rounds over at most (127 + 64 + 48) x 64 bytes: bounded.
+
+Residual: (1) as for every pre-check, `ObjStmScan` is a mitigation: an object stream whose header number differs from MuPDF's xref view can be loaded by pass 2's own resolution before it is measured. (2) A PDF with an empty user password whose xref is broken is repaired inside `Document.openDocument`, after MuPDF authenticated the empty password; repair loads object streams before pass 2 can run (this also holds for the tools, which refuse encrypted files only after `openDocument`). The `:engine` process remains the backstop. (3) Non-BMP characters in an AES-256 password reach MuPDF as modified UTF-8 (CESU), not UTF-8, so such a password may not match.

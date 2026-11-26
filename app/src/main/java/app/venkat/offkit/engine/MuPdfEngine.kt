@@ -51,11 +51,19 @@ class MuPdfEngine : PdfEngine, PdfPageRenderer {
     // PdfPageInfo / PdfRender, not PdfResult, so guardedRun does not apply).
     override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo = PageInfoOp().run(pdf, job)
 
+    override fun pageInfo(pdf: File, password: String?, job: JobControl): PdfPageInfo = PageInfoOp().run(pdf, job, password)
+
     override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender =
         RenderPageOp().run(pdf, request, out, job)
 
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, password: String?, job: JobControl): PdfRender =
+        RenderPageOp().run(pdf, request, out, job, password)
+
     override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText =
         PageTextOp().run(pdf, page, out, job)
+
+    override fun pageText(pdf: File, page: Int, out: File, password: String?, job: JobControl): PdfPageText =
+        PageTextOp().run(pdf, page, out, job, password)
 }
 
 /**

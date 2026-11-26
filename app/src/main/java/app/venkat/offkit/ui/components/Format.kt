@@ -9,6 +9,7 @@ import java.util.Locale
 @StringRes
 fun pdfErrorMessage(error: PdfError): Int = when (error) {
     PdfError.Encrypted -> R.string.error_encrypted
+    PdfError.WrongPassword -> R.string.error_wrong_password_body
     PdfError.Corrupt -> R.string.error_corrupt
     PdfError.UnsupportedImage -> R.string.error_unsupported_image
     PdfError.OutOfMemory -> R.string.error_out_of_memory
@@ -25,6 +26,7 @@ fun pdfErrorMessage(error: PdfError): Int = when (error) {
 @StringRes
 fun pdfErrorTitle(error: PdfError): Int = when (error) {
     PdfError.Encrypted -> R.string.error_locked_title
+    PdfError.WrongPassword -> R.string.error_wrong_password_title
     PdfError.Corrupt -> R.string.error_unreadable_title
     PdfError.UnsupportedImage -> R.string.error_unsupported_image_title
     PdfError.OutOfMemory -> R.string.error_out_of_memory_title
@@ -41,6 +43,7 @@ fun pdfErrorTitle(error: PdfError): Int = when (error) {
 @StringRes
 fun pdfErrorBody(error: PdfError): Int = when (error) {
     PdfError.Encrypted -> R.string.error_locked_body
+    PdfError.WrongPassword -> R.string.error_wrong_password_body
     PdfError.Corrupt -> R.string.error_unreadable_body
     PdfError.UnsupportedImage -> R.string.error_unsupported_image
     PdfError.OutOfMemory -> R.string.error_out_of_memory_body

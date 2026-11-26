@@ -134,8 +134,15 @@ sealed interface PdfResult {
 
 /** Reasons an engine call can fail. */
 sealed interface PdfError {
-    /** An input PDF is password protected. */
+    /**
+     * An input PDF is password protected. For the tools: any encryption, also an owner password
+     * only (they refuse every encrypted PDF). For the reader ([PdfPageRenderer]): the PDF needs a
+     * password to open and none was given.
+     */
     data object Encrypted : PdfError
+
+    /** Reader only: the password given for an encrypted PDF is not its user or owner password. */
+    data object WrongPassword : PdfError
 
     /** An input PDF could not be parsed. */
     data object Corrupt : PdfError

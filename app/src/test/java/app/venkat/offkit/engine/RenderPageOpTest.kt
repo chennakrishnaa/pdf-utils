@@ -216,7 +216,8 @@ class RenderPageOpTest {
         assertEquals(PdfPageInfo.Err(PdfError.Encrypted), engine.pageInfo(enc))
         assertRenderErr(enc, req, { it == PdfError.Encrypted })
         val owner = Fixtures.ownerPasswordPdf(dir)
-        assertRenderErr(owner, req, { it == PdfError.Encrypted })
+        // K1: an owner-password-only PDF opens in the reader without a password (tools still refuse it).
+        assertTrue(engine.renderPage(owner, req, File(dir, "owner.rgba")) is PdfRender.Ok)
         val garbage = Fixtures.corruptPdf(dir)
         assertEquals(PdfPageInfo.Err(PdfError.Corrupt), engine.pageInfo(garbage))
         assertRenderErr(garbage, req, { it == PdfError.Corrupt })

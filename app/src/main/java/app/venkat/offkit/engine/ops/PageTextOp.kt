@@ -28,7 +28,7 @@ import kotlin.math.min
 /**
  * Implementation of [app.venkat.offkit.engine.PdfPageRenderer.pageText].
  *
- * Pre-checks, in the order of [RenderPageOp]: [PdfInputs.open] with the [ScanMemo] key (size,
+ * Pre-checks, in the order of [RenderPageOp]: [PdfInputs.openForReader] with the [ScanMemo] key (size,
  * object-stream pre-scan, Encrypted / Corrupt), page index, [checkPageAnnots], then
  * [RenderImageGate] (memoised per page, shared with renders). The gate is needed: running a page
  * into any device but a "don't decode images" one makes the PDF interpreter load every image it
@@ -44,12 +44,12 @@ import kotlin.math.min
  * Text past [maxUnits] is dropped (`truncated`). Empty lines are dropped.
  */
 class PageTextOp(private val maxUnits: Int = PageTextFormat.MAX_UNITS) {
-    fun run(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
+    fun run(pdf: File, page: Int, out: File, job: JobControl, password: String? = null): PdfPageText {
         val result = try {
             out.delete()
             EngineStack.run {
                 try {
-                    extract(pdf, page, out, job)
+                    extract(pdf, page, out, job, password)
                 } catch (e: PdfInputException) {
                     PdfPageText.Err(e.error)
                 }
@@ -63,11 +63,11 @@ class PageTextOp(private val maxUnits: Int = PageTextFormat.MAX_UNITS) {
         return result
     }
 
-    private fun extract(pdf: File, index: Int, out: File, job: JobControl): PdfPageText {
+    private fun extract(pdf: File, index: Int, out: File, job: JobControl, password: String?): PdfPageText {
         if (index < 0) return invalid("page $index < 0")
         if (job.isCancelled()) return PdfPageText.Err(PdfError.Cancelled)
-        val memo = ScanMemo.keyOf(pdf)
-        val doc = PdfInputs.open(pdf, memo)
+        val memo = ScanMemo.keyOf(pdf, password)
+        val doc = PdfInputs.openForReader(pdf, password, memo)
         try {
             if (job.isCancelled()) return PdfPageText.Err(PdfError.Cancelled)
             val count = doc.countPages()
