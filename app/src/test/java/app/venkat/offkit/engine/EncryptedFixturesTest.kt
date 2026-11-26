@@ -101,6 +101,48 @@ class EncryptedFixturesTest {
         }
     }
 
+    /** U1: a non-ASCII BMP password on R3 (RC4) and R4 (AES-128) files: PDFDocEncoding = Latin-1 here. */
+    @Test
+    fun latinPasswordOnRc4AndAes128() {
+        for ((name, b64) in listOf("rc4" to EncryptedFixtures.RC4_LATIN_B64, "aes128" to EncryptedFixtures.AES128_LATIN_B64)) {
+            val pdf = fixture("$name-latin.pdf", b64)
+            assertEquals(name, PdfPageInfo.Err(PdfError.WrongPassword), engine.pageInfo(pdf, "passwörd"))
+            assertEquals(name, PdfPageInfo.Err(PdfError.WrongPassword), engine.pageInfo(pdf, "passwoerd"))
+            assertOpens(pdf, EncryptedFixtures.LATIN_USER)
+        }
+    }
+
+    /**
+     * U1, KNOWN GAP on the host JVM: a password with a character outside the BMP does not open an
+     * R6 file encrypted with its real UTF-8 bytes. MuPDF's JNI takes the password with
+     * `GetStringUTFChars`, which on HotSpot is modified UTF-8 (U+1F511 as two 3-byte surrogates,
+     * ED A0 BD ED B4 91, instead of F0 9F 94 91), and `pdf_authenticate_password` hashes R5/R6
+     * bytes as given. No Java string makes HotSpot emit a 4-byte sequence, so this cannot be fixed
+     * above the JNI. The fixture itself is valid: its owner password opens it. On a device (ART)
+     * the outcome is checked by `EncryptedOnDeviceTest.encrypted_nonBmpPasswordOnAes256`.
+     */
+    @Test
+    fun nonBmpPasswordOnAes256_hostJvmKnownGap() {
+        val pdf = fixture("aes256-emoji.pdf", EncryptedFixtures.AES256_EMOJI_B64)
+        assertEquals(PdfPageInfo.Err(PdfError.WrongPassword), engine.pageInfo(pdf, EncryptedFixtures.NON_BMP_USER))
+        assertOpens(pdf, "owner-emoji")
+    }
+
+    /**
+     * U1, KNOWN LIMITATION (MuPDF policy, any runtime): for R2-R4 MuPDF converts the password to
+     * PDFDocEncoding and silently drops characters it cannot encode (`pdf_docenc_from_utf8`), so
+     * "p🔑w" is tried as "pw"; pypdf encrypted with the UTF-8 bytes instead. R2-R4 define no
+     * encoding for such characters, so neither side is wrong. The fixture is valid: its owner
+     * password opens it.
+     */
+    @Test
+    fun nonBmpPasswordOnAes128_droppedByPdfDocEncoding() {
+        val pdf = fixture("aes128-emoji.pdf", EncryptedFixtures.AES128_EMOJI_B64)
+        assertEquals(PdfPageInfo.Err(PdfError.WrongPassword), engine.pageInfo(pdf, EncryptedFixtures.NON_BMP_USER))
+        assertEquals(PdfPageInfo.Err(PdfError.WrongPassword), engine.pageInfo(pdf, "pw"))
+        assertOpens(pdf, "owner-emoji")
+    }
+
     // ------------------------------------------------------------------ regeneration
 
     /** The plaintext one-page PDF: [EncryptedFixtures.WORD] in Helvetica, and a black square. */

@@ -186,6 +186,27 @@ class EncryptedOnDeviceTest {
         assertTrue(remoteText(owner, null).contains(EncryptedFixtures.WORD))
     }
 
+    /** U1: a non-ASCII BMP password on R3 (RC4) and R4 (AES-128) pypdf files. */
+    @Test
+    fun encrypted_latinPasswordOnRc4AndAes128ThroughEngineProcess() {
+        for ((name, b64) in listOf("rc4" to EncryptedFixtures.RC4_LATIN_B64, "aes128" to EncryptedFixtures.AES128_LATIN_B64)) {
+            val pdf = EncryptedFixtures.write(engineDir, "$name-latin.pdf", b64)
+            assertPasswordFlow(pdf, EncryptedFixtures.LATIN_USER, wrong = "passwörd")
+        }
+    }
+
+    /**
+     * U1: a password with a character outside the BMP on an R6 file encrypted with its real UTF-8
+     * bytes (pypdf). Fails on the host JVM (HotSpot's JNI passes modified UTF-8, see
+     * `EncryptedFixturesTest.nonBmpPasswordOnAes256_hostJvmKnownGap`); this checks ART, whose
+     * `GetStringUTFChars` is expected to emit a valid surrogate pair as 4-byte UTF-8.
+     */
+    @Test
+    fun encrypted_nonBmpPasswordOnAes256() {
+        val pdf = EncryptedFixtures.write(engineDir, "aes256-emoji.pdf", EncryptedFixtures.AES256_EMOJI_B64)
+        assertPasswordFlow(pdf, EncryptedFixtures.NON_BMP_USER, wrong = "pw")
+    }
+
     // ---------------------------------------------------------------- reader view model
 
     @Test

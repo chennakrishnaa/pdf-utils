@@ -69,6 +69,13 @@ interface PdfPageRenderer {
  * and an R2-R4 one to 32 bytes after conversion; the JNI hands MuPDF the Java string as modified
  * UTF-8 (`GetStringUTFChars`). So a password is refused when its modified-UTF-8 form is longer than
  * [MAX_UTF8_BYTES] (127; this also caps it at 127 UTF-16 units) or when it contains U+0000.
+ * Each UTF-16 unit, surrogate halves included, counts its modified-UTF-8 size (1-3 bytes), so a
+ * character outside the BMP counts 6: an upper bound on what MuPDF receives whether the runtime
+ * passes it as two 3-byte surrogates (HotSpot) or as one 4-byte sequence.
+ *
+ * Known gap (U1): a password with a character outside the BMP matches an R5/R6 file encrypted
+ * with real UTF-8 only if the runtime's JNI hands MuPDF 4-byte UTF-8 (HotSpot does not; see
+ * `EncryptedFixturesTest`). For R2-R4 MuPDF drops characters outside PDFDocEncoding.
  */
 object ReaderPassword {
     const val MAX_UTF8_BYTES = 127
