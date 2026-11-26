@@ -61,16 +61,23 @@ import java.util.zip.InflaterInputStream
  * `/Resources`, tiling patterns' `/Resources` (`/Pattern`), soft-mask groups (`/ExtGState` →
  * `/SMask` → `/G`), Type 3 fonts' `/Resources` (`/Font`), the ICC profiles of `/ColorSpace`
  * resources, and every annotation's appearance streams (`/AP` `/N` `/R` `/D`, a stream or a
- * dictionary of states). A form, pattern, group or Type 3 font WITHOUT its own `/Resources` is
- * run by MuPDF with its caller's, so the caller's dictionary is walked again for it, once per
- * (object, parent dictionary) pair (RF-2). Each resource dictionary is listed once per check and
- * only entries actually checked are charged. When a dictionary has more than [NARROW_ABOVE]
- * `/XObject` entries (generators that share one resource dictionary across all pages) and every
- * key is a [plainKey], only the entries whose name occurs as a token in the content stream(s)
- * that use it are checked ([matchNames], MuPDF's tokenisation), provided those streams are
- * unfiltered or plain Flate, inflate within [MAX_CONTENT_SCAN_BYTES] and the page has scanned at
- * most [MAX_PAGE_SCAN_BYTES]; otherwise every entry is checked. Any `/` starts a token, so the
- * matched set is a superset of what the interpreter can look up.
+ * dictionary of states). Each resource dictionary is listed once per check and only entries
+ * actually checked are charged. When a dictionary has more than [NARROW_ABOVE] `/XObject` entries
+ * (generators that share one resource dictionary across all pages) and every key is a [plainKey],
+ * only the entries whose name occurs as a token in SOME content stream walked for the page (page
+ * contents, forms, patterns, soft-mask groups, appearance streams) are checked ([forEachName],
+ * MuPDF's tokenisation). The name set is page-wide (H5-1): MuPDF resolves a name through the whole
+ * resource stack (`pdf_lookup_resource`), so a form with its own `/Resources` still finds its
+ * callers' entries; a form, pattern or group without `/Resources` runs on its caller's stack
+ * (RF-2); and patterns and soft-mask groups run on the stack where they are painted, not where
+ * they are defined. Narrowing is given up for the whole page (every entry of every dictionary is
+ * checked) when a content stream is not unfiltered or plain Flate or inflates past
+ * [MAX_CONTENT_SCAN_BYTES], the page has scanned more than [MAX_PAGE_SCAN_BYTES] or found more
+ * than [MAX_PAGE_NAMES] distinct names, or a Type 3 font has no `/Resources` (its glyphs use the
+ * dictionary innermost when it was loaded). A Type 3 font with `/Resources` runs its glyphs on a
+ * fresh stack of that dictionary alone, which is checked in full. Any `/` starts a token, so the
+ * matched set is a superset of what the interpreter can look up. Only `/XObject` is narrowed:
+ * `/Pattern`, `/ExtGState`, `/Font` and `/ColorSpace` entries are always walked in full.
  *
  * **Not covered** (the RSS watchdog stays the backstop): inline images (`BI … ID … EI` inside a
  * content stream, including an inline DCT image whose SOF lies); JBIG2 internals (jbig2dec sizes
@@ -125,6 +132,9 @@ internal object RenderImageGate {
     /** Content bytes one page check scans for names; beyond, entries are checked without narrowing. */
     const val MAX_PAGE_SCAN_BYTES = 64L shl 20
 
+    /** Distinct content names one page check keeps for narrowing (H5-1); beyond, entries are checked without narrowing. */
+    const val MAX_PAGE_NAMES = 1 shl 16
+
     /** Longest dictionary key narrowing can match ([plainKey]). */
     const val MAX_KEY_CHARS = 127
 
@@ -150,11 +160,11 @@ internal object RenderImageGate {
 
         /**
          * One resource dictionary, listed once per page check: its `/XObject` keys, whether they may
-         * be narrowed ([plainKey]), which entries were already checked, and whether the other
-         * sections (patterns, soft masks, Type 3 fonts, colour spaces) were walked.
+         * be narrowed ([plainKey]), which entries were already checked, the nesting [level] it was
+         * first reached at, and whether the other sections (patterns, soft masks, Type 3 fonts,
+         * colour spaces) were walked.
          */
-        private class ResInfo(val dict: PDFObject, val xobject: PDFObject?, val keys: List<String>, val narrowable: Boolean) {
-            val keySet: Set<String> by lazy { keys.toHashSet() }
+        private class ResInfo(val dict: PDFObject, val xobject: PDFObject?, val keys: List<String>, val narrowable: Boolean, val level: Int) {
             val checked = HashSet<String>()
             var allChecked = xobject == null
             var othersDone = false
@@ -162,13 +172,28 @@ internal object RenderImageGate {
 
         private val infos = HashMap<Long, ResInfo>()
 
-        /** RF-2: (resource-less form/pattern/group/font object, parent resources id) pairs walked. */
-        private val pairs = HashSet<Pair<Int, Long>>()
+        /*
+         * H5-1: MuPDF looks a name up through the whole resource stack (`pdf_lookup_resource`), and a
+         * pattern or soft-mask group runs on the stack where it is painted, so a content stream can
+         * resolve a name in any resource dictionary of the page. Narrowing is therefore page-wide:
+         * every name token of every content stream walked ([tokens]) is checked in every narrowable
+         * dictionary ([byKey]), whichever of the two is found first.
+         */
+        private val tokens = HashSet<String>()
+        private val scannedStreams = HashSet<Int>()
 
-        /** A resource dictionary ([id] into [infos]) to walk with the streams that may narrow it. */
-        private class Item(val id: Long, val contents: List<PDFObject>?, val level: Int)
+        /** Streams found before the first narrowable dictionary (scanned only if one appears). */
+        private val pendingStreams = ArrayList<PDFObject>()
+        private val narrowed = ArrayList<ResInfo>()
+        private val byKey = HashMap<String, MutableList<ResInfo>>()
 
-        private val stack = ArrayList<Item>()
+        /** Set when narrowing is given up for the page: every dictionary is checked in full. */
+        private var unnarrowed = false
+
+        /** Work: entries to check, dictionaries to check in full, dictionaries whose other sections to walk. */
+        private val checks = ArrayList<Pair<ResInfo, String>>()
+        private val full = ArrayList<ResInfo>()
+        private val stack = ArrayList<ResInfo>()
 
         override fun close() = s.close()
 
@@ -181,10 +206,17 @@ internal object RenderImageGate {
         fun run(index: Int) {
             val page = s.add(doc.findPage(index))
             val pageRes = s.add(page.getInheritable("Resources"))
-            val pageId = idOf(pageRes)
-            push(pageId, pageRes, streamsOf(s.add(page.get("Contents"))), 1)
-            annotations(s.add(page.get("Annots")), pageId, pageRes)
-            while (stack.isNotEmpty()) resources(stack.removeAt(stack.size - 1))
+            register(idOf(pageRes), pageRes, 1)
+            scan(streamsOf(s.add(page.get("Contents"))))
+            annotations(s.add(page.get("Annots")))
+            while (true) {
+                when {
+                    checks.isNotEmpty() -> checks.removeAt(checks.size - 1).let { (info, name) -> check(info, name) }
+                    full.isNotEmpty() -> checkAll(full.removeAt(full.size - 1))
+                    stack.isNotEmpty() -> resources(stack.removeAt(stack.size - 1))
+                    else -> break
+                }
+            }
         }
 
         /** Marks [o]'s object number visited; false if it was already (or is out of range). */
@@ -202,36 +234,114 @@ internal object RenderImageGate {
          */
         private fun idOf(res: PDFObject): Long = if (res.isIndirect) res.asIndirect().toLong() else nextDirectId--
 
-        private fun push(id: Long, res: PDFObject, contents: List<PDFObject>?, level: Int) {
+        /**
+         * Lists resource dictionary [res] once: a narrowable one is checked for the page's names
+         * (those already found and those found later), any other in full (also with [forceFull]:
+         * a Type 3 font's, whose glyph procedures are not scanned); its other sections are queued.
+         */
+        private fun register(id: Long, res: PDFObject, level: Int, forceFull: Boolean = false) {
             tick()
             if (res.isNull || !res.isDictionary) return
             if (level > MAX_NESTING) refuse()
-            val info = infos.getOrPut(id) {
-                val xo = s.add(res.get("XObject")).let { if (it.isIndirect) s.add(it.resolve()) else it }
-                val keys = if (xo.isDictionary) keys(xo) else emptyList()
-                tick(keys.size / 64)
-                ResInfo(res, if (xo.isDictionary) xo else null, keys, keys.size > NARROW_ABOVE && keys.all(::plainKey))
+            infos[id]?.let { if (forceFull && !it.allChecked) full.add(it); return }
+            val xo = s.add(res.get("XObject")).let { if (it.isIndirect) s.add(it.resolve()) else it }
+            val keys = if (xo.isDictionary) keys(xo) else emptyList()
+            tick(keys.size / 64)
+            val info = ResInfo(res, if (xo.isDictionary) xo else null, keys, keys.size > NARROW_ABOVE && keys.all(::plainKey), level)
+            infos[id] = info
+            if (info.xobject != null) {
+                if (info.narrowable && !unnarrowed && !forceFull) {
+                    for (k in keys) {
+                        if (k in tokens) checks.add(info to k)
+                        byKey.getOrPut(k) { ArrayList(1) }.add(info)
+                    }
+                    narrowed.add(info)
+                    if (narrowed.size == 1) {
+                        val queued = ArrayList(pendingStreams)
+                        pendingStreams.clear()
+                        scan(queued)
+                    }
+                } else {
+                    full.add(info)
+                }
             }
-            if (info.allChecked && info.othersDone) return
-            stack.add(Item(id, contents, level))
+            stack.add(info)
+        }
+
+        /** Checks the `/XObject` entry [name] of [info] once. */
+        private fun check(info: ResInfo, name: String) {
+            if (info.allChecked || !info.checked.add(name)) return
+            tick()
+            xobject(s.add(info.xobject!!.get(name)), info.level)
+        }
+
+        private fun checkAll(info: ResInfo) {
+            if (info.allChecked) return
+            for (name in info.keys) check(info, name)
+            info.allChecked = true
+        }
+
+        /** Gives narrowing up for the page: every narrowable dictionary, found or to come, is checked in full. */
+        private fun unnarrow() {
+            if (unnarrowed) return
+            unnarrowed = true
+            full.addAll(narrowed)
+            narrowed.clear()
+            byKey.clear()
+            pendingStreams.clear()
+            tokens.clear()
         }
 
         /**
-         * A form, tiling pattern, soft-mask group or Type 3 font [obj] reached from resources
-         * [parentId]: with its own `/Resources` it is walked once (by object number); without, MuPDF
-         * runs it with its caller's resources, so the parent is walked again with [contents] as
-         * the names, once per (object, parent) pair (RF-2).
+         * Adds the name tokens of content [streams] to the page's [tokens] and queues the entries
+         * they name in narrowable dictionaries. Narrowing is given up ([unnarrow]) for contents of
+         * unknown shape (null), a stream [contentBytes] cannot read, more than [MAX_PAGE_NAMES]
+         * distinct names, or more than [MAX_PAGE_SCAN_BYTES] scanned. Each stream is scanned once.
          */
-        private fun child(obj: PDFObject, contents: List<PDFObject>?, level: Int, parentId: Long, parentRes: PDFObject) {
-            val own = s.add(obj.get("Resources"))
-            if (own.isNull) {
-                if (!obj.isIndirect || pairs.add(obj.asIndirect() to parentId)) push(parentId, parentRes, contents, level)
-            } else if (firstVisit(obj)) {
-                push(idOf(own), own, contents, level)
+        private fun scan(streams: List<PDFObject>?) {
+            if (unnarrowed) return
+            if (streams == null) return unnarrow()
+            if (narrowed.isEmpty()) {
+                pendingStreams.addAll(streams)
+                return
+            }
+            for (st in streams) {
+                tick()
+                if (!st.isStream) return unnarrow()
+                if (st.isIndirect && !scannedStreams.add(st.asIndirect())) continue
+                val data = contentBytes(st) ?: return unnarrow()
+                scanned += data.size
+                if (scanned > MAX_PAGE_SCAN_BYTES) return unnarrow()
+                forEachName(data, { tick(0) }) { name ->
+                    if (tokens.add(name)) {
+                        if (tokens.size > MAX_PAGE_NAMES) unnarrow() else byKey[name]?.forEach { checks.add(it to name) }
+                    }
+                    !unnarrowed
+                }
+                if (unnarrowed) return
             }
         }
 
-        private fun annotations(annots: PDFObject, pageId: Long, pageRes: PDFObject) {
+        /**
+         * A form, tiling pattern or soft-mask group [obj] with content [contents], or a Type 3 font
+         * (null: glyph procedures are not scanned). Content is scanned for the page's names; own
+         * `/Resources` are listed once (by object number). Without them MuPDF runs a form, pattern
+         * or group on its caller's stack, whose dictionaries are already listed (RF-2); a Type 3
+         * font's glyphs run with whichever dictionary was innermost when the font was loaded
+         * (`pdf-type3.c`), so narrowing is given up. With them, glyphs run on a fresh stack holding
+         * only the font's dictionary (`pdf_run_glyph`), which is checked in full.
+         */
+        private fun child(obj: PDFObject, contents: List<PDFObject>?, level: Int) {
+            val own = s.add(obj.get("Resources"))
+            if (own.isNull) {
+                if (contents == null) unnarrow() else scan(contents)
+            } else {
+                if (contents != null) scan(contents)
+                if (firstVisit(obj)) register(idOf(own), own, level, forceFull = contents == null)
+            }
+        }
+
+        private fun annotations(annots: PDFObject) {
             if (!annots.isArray) return
             for (i in 0 until annots.size()) {
                 tick()
@@ -241,32 +351,23 @@ internal object RenderImageGate {
                 if (!ap.isDictionary) continue
                 for (key in APPEARANCE_KEYS) {
                     val v = s.add(ap.get(key))
-                    if (v.isStream) xobject(v, 1, pageId, pageRes)
-                    else if (v.isDictionary && firstVisit(v)) for (k in keys(v)) xobject(s.add(v.get(k)), 1, pageId, pageRes)
+                    if (v.isStream) xobject(v, 1)
+                    else if (v.isDictionary && firstVisit(v)) for (k in keys(v)) xobject(s.add(v.get(k)), 1)
                 }
             }
         }
 
-        private fun resources(item: Item) {
-            val info = infos.getValue(item.id)
+        /** Walks the sections of [info] other than `/XObject` (whose entries [check] handles). */
+        private fun resources(info: ResInfo) {
             val res = info.dict
-            val xo = info.xobject
-            if (xo != null && !info.allChecked) {
-                val wanted = if (info.narrowable) item.contents?.let { usedKeys(it, info.keySet) } else null
-                for (name in wanted ?: info.keys) {
-                    if (!info.checked.add(name)) continue
-                    tick()
-                    xobject(s.add(xo.get(name)), item.level, item.id, res)
-                }
-                if (wanted == null) info.allChecked = true
-            }
+            val level = info.level
             if (info.othersDone) return
             info.othersDone = true
             val pat = s.add(res.get("Pattern"))
             if (pat.isDictionary) for (k in keys(pat)) {
                 tick()
                 val p = s.add(pat.get(k))
-                if (p.isStream) child(p, listOf(p), item.level + 1, item.id, res)
+                if (p.isStream) child(p, listOf(p), level + 1)
             }
             val gs = s.add(res.get("ExtGState"))
             if (gs.isDictionary) for (k in keys(gs)) {
@@ -274,7 +375,7 @@ internal object RenderImageGate {
                 val g = s.add(gs.get(k))
                 if (!g.isDictionary) continue
                 val sm = s.add(g.get("SMask"))
-                if (sm.isDictionary) xobject(s.add(sm.get("G")), item.level, item.id, res)
+                if (sm.isDictionary) xobject(s.add(sm.get("G")), level)
             }
             val fonts = s.add(res.get("Font"))
             if (fonts.isDictionary) for (k in keys(fonts)) {
@@ -282,7 +383,7 @@ internal object RenderImageGate {
                 val f = s.add(fonts.get(k))
                 if (!f.isDictionary || nameOf(s.add(f.get("Subtype"))) != "Type3") continue
                 // Glyph procedures are not scanned for names: their resources are walked in full.
-                child(f, null, item.level + 1, item.id, res)
+                child(f, null, level + 1)
             }
             // RF-6: ICC profiles (also under Indexed) of the colour-space resources.
             val cs = s.add(res.get("ColorSpace"))
@@ -293,12 +394,12 @@ internal object RenderImageGate {
         }
 
         /** An XObject reference found in resources [parentId]: an image is checked, a form is queued. */
-        private fun xobject(v: PDFObject, level: Int, parentId: Long, parentRes: PDFObject) {
+        private fun xobject(v: PDFObject, level: Int) {
             tick()
             if (!v.isStream) return
             when (nameOf(s.add(v.get("Subtype")))) {
                 "Image" -> if (firstVisit(v)) image(v, mask = false)
-                "Form" -> child(v, listOf(v), level + 1, parentId, parentRes)
+                "Form" -> child(v, listOf(v), level + 1)
             }
         }
 
@@ -458,36 +559,21 @@ internal object RenderImageGate {
         }
 
         /**
-         * The keys of [keySet] that occur as name tokens in [streams] (RF-1/RF-5), or null when a
-         * stream cannot be scanned (not raw or plain Flate, larger than [MAX_CONTENT_SCAN_BYTES]
-         * decoded, or the page's [MAX_PAGE_SCAN_BYTES] are spent): the caller then checks every
-         * entry. Each stream object is scanned once per call; only matched keys are kept.
+         * Decoded bytes of content stream [st] for name scanning (RF-1/RF-5), or null when it
+         * cannot be scanned: not raw or plain Flate, larger than [MAX_CONTENT_SCAN_BYTES] decoded,
+         * or past the page's [MAX_PAGE_SCAN_BYTES].
          */
-        private fun usedKeys(streams: List<PDFObject>, keySet: Set<String>): Set<String>? {
-            val found = HashSet<String>()
-            val seen = HashSet<Int>()
-            for (st in streams) {
-                tick()
-                if (!st.isStream) return null
-                if (st.isIndirect && !seen.add(st.asIndirect())) continue
-                val data = Scope().use { t ->
-                    val filters = filterNames(t, st) ?: return null
-                    if (!t.add(geta(t, st, "DecodeParms", "DP")).isNull) return null
-                    val len = intOf(t, t.add(st.get("Length")))
-                    if (len < 0 || len > MAX_CONTENT_SCAN_BYTES || scanned + len > MAX_PAGE_SCAN_BYTES) return null
-                    val raw = st.readRawStream()
-                    when {
-                        filters.isEmpty() -> raw
-                        filters.size == 1 && filters[0] == "FlateDecode" -> inflateWithin(raw, MAX_CONTENT_SCAN_BYTES) ?: return null
-                        else -> return null
-                    }
-                }
-                scanned += data.size
-                if (scanned > MAX_PAGE_SCAN_BYTES) return null
-                matchNames(data, keySet, found) { tick(0) }
-                if (found.size == keySet.size) break
+        private fun contentBytes(st: PDFObject): ByteArray? = Scope().use { t ->
+            val filters = filterNames(t, st) ?: return null
+            if (!t.add(geta(t, st, "DecodeParms", "DP")).isNull) return null
+            val len = intOf(t, t.add(st.get("Length")))
+            if (len < 0 || len > MAX_CONTENT_SCAN_BYTES || scanned + len > MAX_PAGE_SCAN_BYTES) return null
+            val raw = st.readRawStream()
+            when {
+                filters.isEmpty() -> raw
+                filters.size == 1 && filters[0] == "FlateDecode" -> inflateWithin(raw, MAX_CONTENT_SCAN_BYTES)
+                else -> null
             }
-            return found
         }
 
         private fun streamsOf(contents: PDFObject): List<PDFObject>? = when {
@@ -578,6 +664,17 @@ internal object RenderImageGate {
      * or comments are included too (a superset). [onMiB] runs after each MiB scanned.
      */
     internal fun matchNames(data: ByteArray, keys: Set<String>, out: MutableSet<String>, onMiB: () -> Unit = {}) {
+        forEachName(data, onMiB) { name ->
+            if (name in keys) out.add(name)
+            true
+        }
+    }
+
+    /**
+     * Passes to [onName] every name token of [data] that could equal a [plainKey], tokenised as in
+     * [matchNames]; stops when [onName] returns false. [onMiB] runs after each MiB scanned.
+     */
+    internal fun forEachName(data: ByteArray, onMiB: () -> Unit = {}, onName: (String) -> Boolean) {
         val buf = ByteArray(MAX_KEY_CHARS)
         var i = 0
         var nextTick = 1 shl 20
@@ -609,10 +706,7 @@ internal object RenderImageGate {
                 if (b < 0x21 || b > 0x7E || b == '#'.code || len == MAX_KEY_CHARS) ok = false
                 if (ok) buf[len++] = b.toByte()
             }
-            if (ok && len > 0) {
-                val name = String(buf, 0, len, Charsets.ISO_8859_1)
-                if (name in keys) out.add(name)
-            }
+            if (ok && len > 0 && !onName(String(buf, 0, len, Charsets.ISO_8859_1))) return
         }
     }
 

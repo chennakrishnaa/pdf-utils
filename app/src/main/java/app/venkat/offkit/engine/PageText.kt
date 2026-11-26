@@ -185,11 +185,19 @@ class PageText internal constructor(
         return minH > 0f && overlap >= minH / 2 && boxes[q] >= boxes[p + 2] - 1f
     }
 
+    /**
+     * [range] clamped to the text and widened to whole code points (H5-6): a range ending on a high
+     * surrogate takes its low surrogate, one starting on a low surrogate takes its high surrogate,
+     * so copied text and highlights never split a supplementary character.
+     */
     private fun clamp(range: IntRange): IntRange? {
         if (text.isEmpty() || range.isEmpty()) return null
-        val s = range.first.coerceIn(0, text.length - 1)
-        val e = range.last.coerceIn(0, text.length - 1)
-        return if (s <= e) s..e else null
+        var s = range.first.coerceIn(0, text.length - 1)
+        var e = range.last.coerceIn(0, text.length - 1)
+        if (s > e) return null
+        if (s > 0 && Character.isLowSurrogate(text[s]) && Character.isHighSurrogate(text[s - 1])) s--
+        if (e + 1 < text.length && Character.isHighSurrogate(text[e]) && Character.isLowSurrogate(text[e + 1])) e++
+        return s..e
     }
 
     private fun dist(x: Float, y: Float, x0: Float, y0: Float, x1: Float, y1: Float): Float {
@@ -308,6 +316,7 @@ object PageTextFormat {
             val prevStart = if (l == 0) -1 else starts[l - 1]
             val prevBlock = if (l == 0) -1 else lineBlocks[l - 1]
             if (l == 0 && s != 0) return err("first line does not start at 0")
+            if (l == 0 && b != 0) return err("first line is not in block 0")
             if (l > 0 && s <= prevStart) return err("empty or unordered line $l")
             if (s >= n) return err("line $l starts past the text")
             if (b != prevBlock && b != prevBlock + 1) return err("bad block $b at line $l")
