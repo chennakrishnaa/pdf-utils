@@ -301,6 +301,8 @@ fun OffkitResultScreen(
                 )
                 TextButton(
                     onClick = { onOpen(savedUri) },
+                    // Not while saving again: the reader would copy the file while it is being rewritten.
+                    enabled = !state.saving,
                     shape = CircleShape,
                     colors = ButtonDefaults.textButtonColors(contentColor = onSuccess),
                     contentPadding = PaddingValues(horizontal = 12.dp),

@@ -422,6 +422,17 @@ class JobFlowTest {
     }
 
     @Test
+    fun openIsDisabledWhileSavingAgain() {
+        val uri = Uri.parse("content://docs/1")
+        flow(unsaved.copy(savedName = "a.pdf", savedUri = uri, saving = true))
+        rule.onNodeWithTag(TAG_JOB_OPEN).performScrollTo().assertIsNotEnabled().performClick()
+        rule.waitForIdle()
+        assertTrue("Open ignored while saving: $calls", calls.none { it.startsWith("open") })
+        moveTo(unsaved.copy(savedName = "a.pdf", savedUri = uri))
+        rule.onNodeWithTag(TAG_JOB_OPEN).assertIsEnabled()
+    }
+
+    @Test
     fun openHandsTheSavedUriToTheReaderWithNoIntent() {
         val uri = Uri.parse("content://docs/1")
         flow(unsaved.copy(savedName = "a.pdf", savedUri = uri))
