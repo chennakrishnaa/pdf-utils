@@ -18,13 +18,13 @@ WHAT YOU CAN DO
 • Compress PDF: make a PDF smaller by shrinking the images inside it. Pick from three levels and compare the size before and after.
 • Merge PDFs: pick several PDFs, put them in the order you want, and combine them into one.
 • Add images to a PDF: append pictures as new pages at the end of an existing PDF.
-• Read a PDF: scroll through the pages and pinch or double-tap to zoom in, up to 5x, to read the small print.
+• Read a PDF: scroll through the pages and pinch or double-tap to zoom in, up to 5x, to read the small print. Long-press a word to select text on a page and copy it. You can also open a PDF in Offkit from your file manager or another app with "Open with".
 
 Files you save are listed under Recent files on the home screen, so you can open or share them again quickly.
 
 PRIVATE BY DESIGN
 
-• No permissions. You choose files with Android's own file picker, so Offkit only ever sees the files you hand it.
+• No permissions. You choose files with Android's own file picker, or open a PDF in Offkit from another app, so Offkit only ever sees the files you hand it.
 • No internet. The app has no network access at all. Your documents are processed on the device and Offkit sends them nowhere.
 • No ads, no accounts, no analytics.
 • GPS location and camera settings (EXIF) are removed from photos you put into a PDF.
@@ -35,6 +35,7 @@ GOOD TO KNOW
 • Works on Android 8.0 and newer, on 64-bit devices.
 • Password-protected PDFs are not supported, in the tools or in the reader.
 • The reader only shows a PDF. It does not change it, save it or add it to Recent files.
+• Text is copied one page at a time, and only from PDFs that contain text: a scanned page with no text layer has nothing to copy. Copied text goes to the system clipboard, where other apps and your keyboard can read it.
 • PDFs larger than 1 GB are not supported.
 • Compression reduces the images in a PDF. A PDF that is mostly text will not get much smaller.
 • Merging keeps page content and web links (up to 1,000 per page). Form fields, comments and bookmarks are not carried over.

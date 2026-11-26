@@ -49,7 +49,7 @@
 <body>
 <main>
 <h1>Offkit Privacy Policy</h1>
-<p class="date">Effective date: 25 November 2026</p>
+<p class="date">Effective date: 26 November 2026</p>
 
 <p>Offkit is an offline PDF and image toolkit for Android. This policy explains what the app does with your information. In short: no data collected. Works offline.</p>
 
@@ -60,15 +60,19 @@
 <p>The app requests no Android permissions and makes no network connections.</p>
 
 <h2>Your files</h2>
-<p>You choose files through the system file picker. They are processed entirely on your device.</p>
+<p>You choose files through the system file picker, or open a PDF in Offkit from another app, such as a file manager, with its "Open with" option. They are processed entirely on your device.</p>
 <p>While a job runs, the app keeps temporary working copies in its private cache. When a job finishes, the result stays there while its result screen is open, so that you can save it, save another copy, open it or share it. The temporary copies are deleted by the time you leave that screen or start another job, and when a job fails or is cancelled. If you share a result, the copy made for sharing is kept until the next job starts, or until a tool is next opened after the app restarts. Any copies left behind, for example if the app was closed mid-job, are deleted the next time a tool is opened after the app starts.</p>
 <p>When you open a PDF in the reader, the app reads it once and keeps a copy in its private cache while the reader is open, including while the app is in the background. The PDF is shown as it is: nothing in it is changed and nothing is saved. The copy is deleted when you close the reader or open another PDF in it. If the app was closed while the reader was open, the copy is deleted the next time a tool or the reader is opened after the app starts.</p>
+<p>A PDF you open in Offkit from another app is handled the same way: the app reads it once and copies it to its private cache, does not keep the link to it, and deletes the copy at the same times as a PDF you pick in the reader.</p>
 <p>The result is written only to the place you choose in the save dialog. If you choose a cloud storage location, that storage app may upload the file; Offkit itself never sends it anywhere.</p>
 
 <h2>Recent files</h2>
 <p>The Recent files list on the home screen shows files you saved with the app. For each one it keeps the file name, size, the time it was saved, which tool made it, and a link to the file so the app can open it again. This list is stored only on your device and is excluded from backup. It is removed when you tap Clear, when you clear the app's data, or when you uninstall the app. Clearing the list does not delete the files themselves. PDFs you open in the reader are not added to this list.</p>
-<p>If you open or share a file from the list, or open or share a result from its result screen, Android hands it to another app on your device.</p>
+<p>If you open or share a file from the list, or open or share a result from its result screen, Android hands it to another app on your device, or to Offkit's own reader if you choose Offkit.</p>
 <p>The app also remembers on your device that you have seen the introduction and which cards you have hidden; these are simple settings, contain nothing about you or your files, are excluded from backup, and are removed by clearing the app's data or uninstalling.</p>
+
+<h2>Copying text</h2>
+<p>In the reader you can select text on a page and copy it. The text is put on the system clipboard only when you tap Copy, or use the "Copy page text" accessibility action. Once text is on the clipboard, other apps and your keyboard may be able to read it, as with anything you copy, and Android may show a preview of it. To find the text, the app reads it from the page into a file in its private cache and deletes that file at once; it keeps the text only in memory while the PDF is open and does not save it.</p>
 
 <h2>Photo metadata</h2>
 <p>When the app places images into a PDF, it removes photo metadata such as location and camera details. Unusual or damaged image files may still keep some embedded metadata. Colour-profile data inside photos (which can name the camera or device model) is kept, because it is needed to show colours correctly. A PDF you give to Compress or Add images keeps its own document properties, such as author, title and other embedded metadata. Metadata inside the pages of PDFs you give to Merge may also remain in the result.</p>

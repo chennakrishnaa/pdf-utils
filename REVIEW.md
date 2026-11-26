@@ -541,3 +541,29 @@ All image-gate refusals are `OutOfMemory` and show "This page is too large or co
 ### Not verified on any device
 
 Never tried on a real phone: gesture feel, performance on large PDFs, low-memory behaviour when the engine nears its RSS cap, content behind the system bars, TalkBack, the real system picker, text without embedded fonts (base-14 and CJK). A tall-strip bitmap over the GPU texture limit may draw blank. None of the render path has been run against the hostile-file set of `security/engine-audit.md`; see its "Reader render path" addendum.
+
+## Reader: open with and copy text (H1–H3)
+
+Written 2026-11-26 by a docs worker from the code at `561c0e6` on branch `pdf-reader`. Not merged to `main`. Gate results for this state are pending with the conductor; none are stated here.
+
+**Built.**
+
+| Task | Change |
+|---|---|
+| H1 | "Open with": a second intent filter on `MainActivity` (`VIEW`, `DEFAULT`, `content`, `application/pdf`) and `launchMode="singleTask"`. The Uri is read before the SB-13 scrub, only for `VIEW` + `content` + PDF type, kept in memory in an activity-scoped `ViewModel`, never persisted, and copied into the private cache by `PdfReader.open` when the reader opens (after the introduction on a first run). Back from the reader goes to Offkit's previous screen. Offkit can answer its own Open. Tests: `ui/OpenWithIntentTest.kt`; on device `OpenWithOnDeviceTest` with a provider and trampoline in the test APK (the conductor reports the grant surviving the intent rewrite on the emulator, API 31). |
+| H2 | Engine page text: `PdfPageRenderer.pageText`, `engine/ops/PageTextOp.kt`, `engine/PageText.kt` (format "OKTX", parser, helpers), `EngineRequest.PageText`, `EngineLimits.textTotalMs` (30 s), `PdfReader.text`. Same pre-checks as a render, including `RenderImageGate`, because the interpreter loads images during text extraction. At most 200,000 UTF-16 units per page, with a truncated flag. See `security/engine-audit.md`, "Reader text path". |
+| H3 | Selection and copy: `feature/reader/ReaderSelection.kt`, changes in `ReaderViewModel`, `ReaderScreen` and `ZoomableList` (`childDragging`). Long-press selects a word, handles extend it, contextual top bar with Close / Select all / Copy, plain text to the system clipboard, one page at a time, text LRU of 8 pages / 400,000 characters, accessibility action "Copy page text", a message for pages with no text. Fix: a reader restored after process death without its document goes Home instead of launching the picker (`SavedStateHandle`). |
+
+**Open items.**
+
+- Not tried on a real phone.
+- The "Copied" message shown below Android 13 is untested on a device (the choice is unit-tested in `ReaderSelectionTest`; the screen tests run at SDK 36).
+- A selection handle can overhang into the next page.
+- Flaky: `ReaderScreenTest.reopeningTheSameFileShowsItAgain` fails at times with "rootDir must be verified to be directory beforehand" from the cleanup in `PdfReader.render`, a race between closing a document and its directory walk.
+- Selection across several pages is not built.
+- No search.
+- Owner decision 14 in `HANDOFF.md` (Open with, its two consequences).
+
+### Review (H1–H3)
+
+To be added by the reviewer.

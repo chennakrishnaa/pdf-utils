@@ -348,3 +348,53 @@ Written by the conductor from the workers' reports; the rows above are left as w
 | RA-2, RD-6 | Unchanged (accepted). |
 | `material-icons-core` | Removed from the build; it no longer resolves and is no longer in the notices. |
 | PI4R-1 (engine watchdog) | Fixed and independently reviewed; see `REVIEW.md`, "Later the same day". |
+
+## Reader "Open with" addendum (branch `pdf-reader`, 2026-11-26)
+
+Written by a docs worker from the code at `561c0e6` (H1 "Open with", H3 copy text). Not merged to `main`. This is a reading of the source, not a new audit: nothing was built, installed or run for it. Marks as in the redesign addendum: **R** read in the source, **NV** not verified by me. The rows above are not edited.
+
+### What changed
+
+| Area | Statement | Status | Evidence |
+|---|---|---|---|
+| Intent filter | `MainActivity` has a second filter: `VIEW`, `DEFAULT`, `scheme="content"`, `mimeType="application/pdf"`. It is still the only exported component; no component, permission or provider was added. | R | `AndroidManifest.xml:24-42`. |
+| Launch mode | `launchMode="singleTask"`, `taskAffinity=""` kept: one instance in Offkit's own task. A `VIEW` while Offkit runs arrives in `onNewIntent` and opens the reader on top of the current back stack; it does not start a second copy sharing the same jobs and engine. | R (manifest, `AppNavHost`) / NV (task placement on every Android version) | `AndroidManifest.xml:26-28`; `ui/nav/AppNavHost.kt` (`navigate(Routes.READER) { launchSingleTop = true }`). |
+| What is read from an intent | Only `data`, and only when the action is `ACTION_VIEW`, the scheme is `content` and the type is `application/pdf` (the intent's type, else `ContentResolver.getType` of the Uri). Extras, clip data, categories and flags are ignored. An explicit intent skips the filter, so this check, not the filter, is the gate. | R | `MainActivity.kt:72-82` (`documentUri`). |
+| SB-13 kept | The Uri is taken first, then `intent` is replaced by the bare MAIN/LAUNCHER copy (`launchIntentOnly`, grant flags dropped) **before** `super.onCreate` and `setContent`, as before; `onNewIntent` passes only the scrubbed copy to `super`. The NavController still never sees the received intent. The Uri goes to an activity-scoped `ViewModel` (`ViewRequests`), in memory only, never in navigation or saved state. On recreation (`savedInstanceState != null`) the intent is not read again; after process death the redelivered intent is not reused (the grant would be gone). | R | `MainActivity.kt:33-39`, `:60-63`, `:84-95`, `:100-115`; tests `ui/OpenWithIntentTest.kt` (`recreationDoesNotOpenTheDocumentAgain`, `afterProcessDeathTheRedeliveredViewIsNotReused`, `otherIntentsLandOnHome`, `onNewIntentIgnoresANonPdfView`) and `HostileIntentTest`. I did not run them. |
+| Read grant | The read grant of a `VIEW` intent belongs to the receiving activity, not to the `Intent` object, so the reader can still read the Uri after the rewrite. | NV (platform behaviour). Reported by the conductor as verified on the emulator (API 31) by `androidTest/.../OpenWithOnDeviceTest`, with a stand-in file manager in the test APK (own uid, non-exported `FixtureProvider`, `ViewTrampolineActivity`); its no-grant case shows the reader's error screen. |
+| What is done with the Uri | `ReaderViewModel.open` → `PdfReader.open`: the same path as a picked file. `UriIo.describe` (name sanitised), size check, one copy to `cacheDir/jobs/reader-<uuid>/document.pdf` capped at 1 GiB, then `PageInfo` in `:engine`. The Uri is not kept after the copy, never persisted, never `takePersistableUriPermission`; only a read is ever done with it. The copy is deleted when the reader closes or opens another PDF, or by the first `PdfJobs.get` of the next process. | R | `core/PdfReader.kt` (`open`, `close`); `feature/reader/ReaderViewModel.kt` (`open`, `closeAll`, `onCleared`). On a first run the request waits in memory behind the introduction, and the copy starts when the reader opens. |
+| Back | Back from the reader returns to Offkit's previous screen (Home, or the screen that was open, for example a tool's unsaved result), not to the calling app. | R | `AppNavHost.kt`; `OpenWithIntentTest` (`coldViewOpensTheReaderOnTheDocumentAndBackGoesHome`, `viewWhileOnAToolScreenPushesTheReaderAndBackReturnsToTheTool`). |
+| Offkit's own Open | The result screen's Open (`openPdfIntent`) and Recents' Open (`RecentFiles.viewIntent`) are implicit `ACTION_VIEW` of `application/pdf` with a read grant, no package set, so Offkit is now one of the apps that can answer them. Chosen, the reader opens on top of the result. | R | `ui/components/Pickers.kt:76-86`; `core/RecentFiles.kt:94-97`. |
+| Clipboard (H3) | The app now writes to the clipboard: `ClipboardManager.setPrimaryClip(ClipData.newPlainText("Offkit", text))`, only from the reader's Copy button or its "Copy page text" accessibility action. It never reads the clipboard. | R | `feature/reader/ReaderScreen.kt` (`copyToClipboard`, called only for a `ReaderTextEvent.Copy`, which `ReaderViewModel` sends only for the Copy button and `copyPageText`). |
+
+### What a hostile app on the device can now do
+
+- **Make Offkit copy and parse a file.** Send `VIEW` of a `content:` Uri with a read grant. Offkit copies up to 1 GiB into its private cache and parses it only in the `:engine` process. This is the same exposure as a file the user picks, with the same pre-checks, image gate, limits and watchdog (`security/engine-audit.md`, "Reader render path" and "Reader text path"). A provider that lies about the size or type gets the 1 GiB cap or an error screen.
+- **Bring Offkit to the front on the reader**, showing a document of its choosing under the name its provider reports, also replacing a document the user is reading. Starting an activity from the background is limited by Android's background-start rules (NV). Nothing is saved or shared without a user tap, and an unsaved tool result stays on the back stack under the reader.
+- **Name a Uri that Offkit itself can read** without granting it: an explicit `VIEW` of, for example, Offkit's own share provider (`cache/shared/<random UUID>/…`, only copies of results the user shared) or a saved file Offkit holds a persisted read grant for (Recents). The caller has to know the exact Uri. Offkit would show that file in its own reader; nothing is returned to the caller. (R for the code path; no such case is tested.)
+- **Delay the main thread.** With no type on the intent, `documentUri` calls `getType` on the named provider on the main thread before the first frame. A provider that answers slowly delays Offkit's start, at worst to an ANR of Offkit only (NV: not tried). Info.
+
+### What it still cannot do
+
+- Choose a screen other than the reader, or pass anything to navigation: data, extras and deep links never reach the NavController (SB-13).
+- Get anything back: Offkit sets no result, sends no reply and opens nothing towards the caller.
+- Write to the file, keep Offkit's access to it, or make Offkit persist the Uri: only a read is done, once, and nothing is persisted.
+- Have a `file:` or other non-`content:` Uri read, or a Uri whose declared type (or, with none, the provider's) is not `application/pdf`. A file of another kind sent as `application/pdf` only reaches the engine's checks and an error screen.
+- Start a job, a save, a share or a copy: each needs a user tap.
+- Read the clipboard through Offkit, or the text a user copies, except as any app can read the clipboard (Android's own rules apply, NV).
+- Reach the `:engine` service, the share provider or any other component: they are still not exported.
+
+### Earlier statements that are now out of date
+
+| Where in the body | Earlier statement | Corrected statement (on `pdf-reader` at `561c0e6`) |
+|---|---|---|
+| Summary; check 1, Components | "exactly one exported component, the launcher activity, which reads nothing from the incoming intent"; "`MainActivity` is `exported=true` with only MAIN/LAUNCHER, no data/BROWSABLE filters" | Still the only exported component, now with a `VIEW` filter for `content:` `application/pdf` and `singleTask`. It reads the `data` of a `VIEW` intent as above; still no BROWSABLE filter and no deep links. |
+| Check 2 | "`MainActivity.onCreate` never reads `intent`, data or extras" | It reads `action`, `data` and `type` (and may query the provider's type) of the received intent before the scrub, and nothing else. |
+| Check 4 | "No … clipboard writes in `app.venkat.offkit.*`" | The reader writes plain text to the clipboard on the user's Copy. |
+| SR re-check, SB-13 row; redesign addendum, "Exported components" | `onNewIntent` passes only the scrubbed copy; "MAIN/LAUNCHER only" | The scrub is unchanged and still runs before `super.onCreate`; the Uri is read just before it. The filter list is MAIN/LAUNCHER and VIEW (`content`, `application/pdf`). |
+
+### Not verified
+
+- No build, no APK and no test was run for this addendum. The emulator result for the read grant is the conductor's report.
+- Not tried on a real phone, or with a real file manager, mail or browser app as the caller.
+- Background-start rules, task placement with `singleTask` and `taskAffinity=""` across Android versions, and who can read the clipboard on each version are platform behaviour (NV).
