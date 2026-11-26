@@ -611,3 +611,38 @@ Built on `pdf-reader` after the H1–H3 review; merged at `f016e77` (K2 `435310a
 
 ### Review (K1–K5)
 
+Independent review (K7) of the code at `f016e77`, recorded by N1. The reviewer changed no files and ran no tests.
+
+**Verdict.** Sound for testing on a phone. Not to be merged to `main` until K7-1 is fixed. K7-1 was fixed afterwards in M1; that change has had no independent review.
+
+| Id | Severity | What | Status |
+|---|---|---|---|
+| K7-1 | Blocker | The image gate kept one visited set shared across roles, so an object first seen as a soft mask (or ICC profile, or annotation) was skipped when later drawn as a form or image, hiding an oversized image. | **Fixed in M1** (visited sets per role; tests failed before the fix). M1 also fixed the pattern / Type 3 overlap found in its re-read. The M1 change has had no independent review. |
+| K7-2 | Should fix | `ObjStmScan` read only `/Filter`, while MuPDF also accepts `/F`: an object-stream bomb passed the size check on every path, the tools included (older than this branch). | **Fixed in M1.** |
+| K7-3 | Note | On an encrypted file, resolving a candidate in pass 2 can make MuPDF load another object stream before it is measured, and a header-number mismatch triggers a repair. | **Mitigated in M1** (a repair during pass 2 is refused). The residual is contained by the engine's memory watchdog and process isolation. A damaged owner-password-only PDF repaired inside `openDocument` is unchanged (older than this branch). |
+| K7-4 | Note | The privacy text did not say that Share leaves a copy in private storage until the next tool job or app start. | **Fixed in N1** (`PRIVACY.md`, its asset copy, `docs/privacy/index.html`). |
+| K7-5 | Note | Print page count when page info is capped. | **No change needed:** page info is never capped (a document over `MAX_PAGES` is refused). |
+| K7-6 | Note | Search matching runs on the main thread, O(n·m) per page; acceptable for the user's own query. | Open (note). |
+
+**Found while fixing, being fixed in M2.** Status: being fixed in M2.
+
+- The gate trusts `/Subtype` where MuPDF does not: a soft mask's `/G` and annotation appearance streams are run as forms whatever their subtype.
+- `ObjStmScan` pass 1 does not track dictionary nesting, so a nested `/Filter` can hide the outer one.
+
+**Checked and found sound.**
+
+- No password in saved state, logs or `toString`.
+- The `ScanMemo` key includes the password hash.
+- The tools still refuse encrypted input.
+- Streams with their own `/Crypt` filter are refused.
+- Locked copies are cleaned up on every path.
+- Share file names cannot traverse out of their folder.
+- The H5-9 race is not reintroduced.
+- H5-2 and H5-3 are intact.
+
+**Not reviewed.** `RenderImageGateTest` contents; the search bar, menu and screen wiring; the wire decode paths beyond the password; H5-4 and process death on the open-with path; the privacy HTML.
+
+**Pattern.** Three reviews in a row (RF, H5, K7) have each found a way past the image gate after a rework. The owner should decide between continuing to patch the gate and a simpler, conservative design. M2's report will include an assessment.
+
+**L1 (test fix).** `OpenWithIntentTest.unreadableDocumentShowsTheReadersErrorScreen` failed once in a full verify at `f016e77`. The cause was a race in the test (it took the Opening frame for the error screen); the test was fixed and the product is unchanged.
+
