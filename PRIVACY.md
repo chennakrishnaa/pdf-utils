@@ -55,7 +55,7 @@ Search in the reader looks for your words in the text of the PDF's pages, on you
 SHARING AND PRINTING
 --------------------
 
-Share in the reader copies the PDF, unchanged, to a folder in the app's private cache, and Android hands that copy to the app you choose. A password-protected PDF is shared as it is, still protected. The app you choose receives the file and its own privacy terms apply. The copy in the cache is deleted when the next job starts, or when a tool or the reader is next opened after the app restarts.
+Share in the reader copies the PDF, unchanged, to a folder in the app's private cache, and Android hands that copy to the app you choose. A password-protected PDF is shared as it is, still protected. The app you choose receives the file and its own privacy terms apply. The copy stays in the app's private cache so that the app you choose can read it, also after you close the reader: it is deleted when the next job starts, or when a tool or the reader is next opened after the app restarts.
 
 Print hands the PDF to Android's print system, which prepares the pages and passes them to the printer or print app you choose, such as "Save as PDF" or a printer maker's app. That printer or app is outside Offkit, and its own privacy terms apply. A PDF that needed a password to open cannot be printed yet.
 
