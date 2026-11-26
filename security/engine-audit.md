@@ -486,7 +486,8 @@ Addendum written from the code at `6adc734` and the reader reviews (`REVIEW.md`,
 - From the gate's KDoc: inline images (including an inline DCT whose SOF lies); JBIG2 internals and `/JBIG2Globals` (the dictionary size is checked); DeviceN/Separation tint functions; shading patterns and `sh`; fonts other than Type 3; `/MK` icons of widgets without an appearance stream; an image's `/Alternates`; appearances MuPDF synthesises; colour-space lookups for inline images.
 - RF-4: a stream longer than its `/Length` is read to `endstream` before the size checks.
 - RF-6 remainder: ICC profiles of `/Shading`, `/Group /CS`, DeviceN/Separation alternates and an ICC stream's own `/Alternate`.
-- RF-8 (unverified): an xref repair during `Page.run` might re-point an image the gate passed to a later duplicate.
+- RF-8 (open): an xref repair during `Page.run` might re-point an image the gate passed to a later duplicate. The lazy-repair mechanism is confirmed in the MuPDF source; an exploit is unproven.
+- H5-1 (fixed): MuPDF's `pdf_lookup_resource` searches the whole resource stack, so a form with its own `/Resources` (a pattern or soft-mask group runs on the stack where it is painted) could draw an image named only in an ancestor's narrowed `/XObject` dictionary, which the gate never checked. The gate now narrows page-wide: every name in every content stream it walks is checked in every narrowable dictionary. Narrowing is given up for the page on an unscannable stream, more than 65,536 distinct names, or a Type 3 font without `/Resources`. Only `/XObject` is narrowed; the other resource categories are walked in full. Regression tests are in `RenderImageGateTest` (`h5_1_*`).
 - F4, the current form of the gate's walk, **has not been independently reviewed**.
 - **None of the render path has been run against this audit's hostile-file set on a device**, or on the host. The SR/SR2/SR3 reproducers were built for Compress, Merge and Add images.
 
