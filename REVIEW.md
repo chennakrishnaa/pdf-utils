@@ -721,3 +721,30 @@ Checked and sound (run): no picker over a document opened from Recents, includin
 - Phones: the gate's 2 s walk limit and the larger budgets were measured on the build machine only (`issue6961.pdf` walk 285 ms there).
 - The two false refusals left (Brotli object stream, non-JPEG DCT image).
 
+## Reader: printing protected PDFs (P1, Z3, P2) and icon credits (N2), 2026-11-26
+
+The owner asked for printing of protected PDFs and stated that the design pack's icons are the owner's own artwork.
+
+- **P1.** New engine request `DecryptCopy(pdf, out, password)` (`engine/ops/DecryptCopyOp.kt`): same pre-checks as the other reader calls (`openForReader` with both scan passes, authentication), then `ObjectGraph.checkAnnots` and `checkObjects`, then `doc.save(out, "encrypt=none")` and `validateOutput`. With only that option MuPDF copies every stream raw (`copystream`, decryption only), so no image, font or content stream is decoded. `EngineServer.checkReaderPair`: both paths in one `reader-*` folder directly under `cacheDir/jobs`. Limit: 120 s. `PdfReader.preparePrint` makes one copy `print-<uuid>.pdf` per open encrypted document (user password or owner-only) and reuses it; it is deleted with the document's folder. The reader shows "Preparing to print…" with Cancel; Share still sends the original. The no-print bit is not honoured (owner's decision). On the emulator the real engine decrypts an AES-256 fixture and the copy opens in the platform `PdfRenderer` (`EncryptedOnDeviceTest`).
+- **N2.** `THIRD_PARTY_NOTICES.md` section 3: all icons are original artwork by the app's author except six that still use Material Symbols / Material Icons path data (`ic_add_to_pdf`, `ic_chevron_right`, `ic_compress`, `ic_image`, `ic_merge`, `ic_pdf`). 30 files match the design pack byte for byte; 12 were drawn for the project later (five support-page icons had been wrongly credited to Material). Manrope 4.505 confirmed from the font files.
+
+### Review Z3 of P1 (read-only, experiments run on the host; full text was kept in the session scratch directory)
+
+Verdict: sound after fixing Z3-1.
+
+| Id | Severity | Finding | Status |
+|---|---|---|---|
+| Z3-1 | High (the reviewer's summary said Medium) | Output size unbounded: MuPDF copies each stream from its offset to `/Length` or the next `endstream`, so many overlapping streams are each written as the rest of the file. Run: an owner-password-only file of 934 KB gave 8.26 GB in 35 s at about 140 MB RSS; the free-space guard and the memory watchdog did not stop it. | **Fixed in P2 (`bde5ed5`).** Cap `2 × input + 160 MiB`. `RemoteEngine` samples the output's size every 50 ms for this request and kills the engine past the cap (or past free space minus 16 MiB), deletes the file and returns `OutOfMemory`; the op checks again after the save. Estimated overshoot 25 to 35 MB (not measured on a device). |
+| Z3-2 | Low | `checkReaderPair` accepted `out == pdf`; the op's leading `out.delete()` would delete the source. Not reachable from the app. | **Fixed in P2 (`b31a17f`)**: same file, folder or link refused in the server check and in the op. |
+| Z3-3 | Note | A stream with its own non-Identity `/Crypt` filter is copied still encrypted: one unreadable stream in the printed copy. | Open (documented in the op). |
+
+Found sound (run): no injected save options and no decode; deep nesting, huge `/Length`, large strings; path checks against symlinks, `..` and other folders. By reading: copy lifetime (close, startup wipe, `FileProvider` limited to `cache/shared/`, backups off), password handling, print flow (double start, cancel, descriptor lifetime), tools still refuse encrypted PDFs. Not reached: engine death mid-save across the real binder.
+
+**Tools checked for the same shape (P2):** an unencrypted file with 200 overlapping streams (211 KB): merge gives 472 B, compress returns the input size at every level. Neither amplifies.
+
+**Unreviewed:** P2 itself.
+
+### MuPDF version (checked 2026-11-26)
+
+`com.artifex.mupdf:fitz` 1.28.5 is the newest published artifact. Upstream tag 1.28.6 only updates the bundled Brotli library and is not published; see `HANDOFF.md`, "Open items".
+
