@@ -15,6 +15,7 @@ import app.venkat.offkit.engine.classifyFailure
 import app.venkat.offkit.engine.isOutOfMemoryFailure
 import com.artifex.mupdf.fitz.ColorSpace
 import com.artifex.mupdf.fitz.Cookie
+import com.artifex.mupdf.fitz.Document
 import com.artifex.mupdf.fitz.DrawDevice
 import com.artifex.mupdf.fitz.Matrix
 import app.venkat.offkit.engine.ObjectGraph
@@ -72,7 +73,8 @@ private inline fun <T> loadingPage(block: () -> T): T = try {
 /**
  * Implementation of [app.venkat.offkit.engine.PdfPageRenderer.pageInfo].
  *
- * Opens [pdf] with [PdfInputs.open] (size / object-stream pre-checks, Encrypted and Corrupt
+ * Opens [pdf] with [PdfInputs.openForReader] and the password, if any (size / object-stream
+ * pre-checks also on decrypted object streams, Encrypted / WrongPassword and Corrupt
  * classification, zero pages → Corrupt). More than [RenderLimits.MAX_PAGES] pages is
  * `Err(OutOfMemory)`, decided from the page count before any page is loaded. Then each page is
  * loaded, its bounds read and the page destroyed at once, so only one `Page` is alive at a time.
@@ -80,9 +82,9 @@ private inline fun <T> loadingPage(block: () -> T): T = try {
  * Cancellation is polled before every page; progress is reported every [PROGRESS_EVERY] pages.
  */
 class PageInfoOp {
-    fun run(pdf: File, job: JobControl): PdfPageInfo = guarded {
+    fun run(pdf: File, job: JobControl, password: String? = null): PdfPageInfo = guarded {
         if (job.isCancelled()) return@guarded PdfPageInfo.Err(PdfError.Cancelled)
-        val doc = PdfInputs.open(pdf, ScanMemo.keyOf(pdf))
+        val doc = PdfInputs.openForReader(pdf, password, ScanMemo.keyOf(pdf, password))
         try {
             val count = doc.countPages()
             if (count > RenderLimits.MAX_PAGES) return@guarded PdfPageInfo.Err(PdfError.OutOfMemory)
@@ -99,7 +101,13 @@ class PageInfoOp {
                 dims.add(d)
                 if ((i + 1) % PROGRESS_EVERY == 0 || i + 1 == count) job.progress(i + 1, count)
             }
-            PdfPageInfo.Ok(dims)
+            val encrypted = PdfInputs.isEncrypted(doc)
+            PdfPageInfo.Ok(
+                dims,
+                encrypted = encrypted,
+                canPrint = !encrypted || doc.hasPermission(Document.PERMISSION_PRINT),
+                canCopy = !encrypted || doc.hasPermission(Document.PERMISSION_COPY),
+            )
         } finally {
             doc.destroy()
         }
@@ -155,12 +163,12 @@ class PageInfoOp {
  * (no temporary sibling that a watchdog kill could orphan); the client deletes it on any failure.
  */
 class RenderPageOp {
-    fun run(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+    fun run(pdf: File, request: RenderRequest, out: File, job: JobControl, password: String? = null): PdfRender {
         val result = try {
             out.delete()
             EngineStack.run {
                 try {
-                    render(pdf, request, out, job)
+                    render(pdf, request, out, job, password)
                 } catch (e: PdfInputException) {
                     PdfRender.Err(e.error)
                 }
@@ -180,11 +188,11 @@ class RenderPageOp {
 
     private fun invalid(reason: String) = PdfRender.Err(PdfError.Io(IllegalArgumentException(reason)))
 
-    private fun render(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+    private fun render(pdf: File, request: RenderRequest, out: File, job: JobControl, password: String?): PdfRender {
         RenderLimits.check(request, null)?.let { return invalid(it) }
         if (job.isCancelled()) return PdfRender.Err(PdfError.Cancelled)
-        val memo = ScanMemo.keyOf(pdf) // RDR-4: pre-scan and image-gate verdicts once per document
-        val doc = PdfInputs.open(pdf, memo)
+        val memo = ScanMemo.keyOf(pdf, password) // RDR-4: pre-scan and image-gate verdicts once per document
+        val doc = PdfInputs.openForReader(pdf, password, memo)
         try {
             if (job.isCancelled()) return PdfRender.Err(PdfError.Cancelled)
             val count = doc.countPages()

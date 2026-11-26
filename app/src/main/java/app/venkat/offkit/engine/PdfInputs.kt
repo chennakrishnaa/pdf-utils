@@ -6,6 +6,8 @@ import com.artifex.mupdf.fitz.PDFObject
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.zip.CRC32
 
 /** An input PDF could not be used; [error] is the classification to report. */
@@ -29,18 +31,37 @@ class PdfInputException(val error: PdfError, cause: Throwable? = null) :
  * time, head or tail, misses and is scanned again. Residual: an in-place rewrite that keeps size,
  * mtime, head and tail would hit; the reader's copy is private and never rewritten in place, and
  * other operations do not use the memo.
+ *
+ * Passwords (reader): [Key.auth] is a tag of the password the document was opened with (0 for
+ * none): the first 8 bytes of SHA-256(per-process random salt || UTF-8 password), never the
+ * password. A verdict recorded under one password (or none) is therefore not found under another;
+ * a verdict is only ever recorded after MuPDF accepted the password, so a wrong password never
+ * reaches the memo.
  */
 internal object ScanMemo {
     const val FINGERPRINT_BYTES = 64 * 1024
     const val MAX_PAGES = 4096
 
-    data class Key(val path: String, val length: Long, val modified: Long, val fingerprint: Long)
+    data class Key(val path: String, val length: Long, val modified: Long, val fingerprint: Long, val auth: Long = 0L)
+
+    private val salt: ByteArray by lazy { ByteArray(16).also { SecureRandom().nextBytes(it) } }
+
+    /** The [Key.auth] tag of [password]: 0 for null or empty. */
+    fun authTag(password: String?): Long {
+        if (password.isNullOrEmpty()) return 0L
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(salt)
+        val d = md.digest(password.toByteArray(Charsets.UTF_8))
+        var v = 0L
+        for (i in 0 until 8) v = (v shl 8) or (d[i].toLong() and 0xFF)
+        return if (v == 0L) 1L else v
+    }
 
     private var key: Key? = null
     private val pages = HashSet<Int>()
 
     /** The key of [file] now, or null if it cannot be read (then nothing is remembered). */
-    fun keyOf(file: File): Key? = try {
+    fun keyOf(file: File, password: String? = null): Key? = try {
         val canonical = file.canonicalFile
         RandomAccessFile(canonical, "r").use { raf ->
             val length = raf.length()
@@ -52,7 +73,7 @@ internal object ScanMemo {
             raf.seek(maxOf(0L, length - buf.size))
             raf.readFully(buf)
             crc.update(buf)
-            Key(canonical.path, length, modified, crc.value)
+            Key(canonical.path, length, modified, crc.value, authTag(password))
         }
     } catch (e: IOException) {
         null
@@ -129,15 +150,40 @@ internal object PdfInputs {
      * ".pdf" is still handled: see [PdfInputsTest] — such files are opened as PDFs (MuPDF falls back
      * to content sniffing), and non-PDF content is reported as Corrupt.
      */
-    fun open(file: File, memo: ScanMemo.Key? = null): PDFDocument {
+    fun open(file: File, memo: ScanMemo.Key? = null): PDFDocument = openImpl(file, memo, reader = false, password = null)
+
+    /**
+     * [open] for the reader only ([app.venkat.offkit.engine.PdfPageRenderer]): an encrypted PDF is
+     * opened instead of refused. When it needs a password: none ([password] null or empty) is
+     * [PdfError.Encrypted], one MuPDF rejects (`authenticatePassword`) is [PdfError.WrongPassword].
+     * A PDF with only an owner password opens without one (MuPDF authenticates the empty user
+     * password at open); a [password] given for it, or for an unencrypted PDF, is ignored. A
+     * [password] that fails [ReaderPassword.check] is `Io(IllegalArgumentException)`.
+     *
+     * Pre-checks on an encrypted PDF (see `security/engine-audit.md`, "Reader password addendum"):
+     * the size and object-count limits are as for [open]; [ObjStmScan] pass 1 runs over the raw
+     * file and, after authentication and before the page count, pass 2
+     * ([ObjStmScan.checkDecrypted]) measures every Flate object stream on its decrypted data. A file
+     * that pass 1 could not read is refused when encrypted. [memo] must be the key for [password]
+     * ([ScanMemo.keyOf] with it); only a document that passed both passes is remembered.
+     */
+    fun openForReader(file: File, password: String?, memo: ScanMemo.Key?): PDFDocument {
+        if (password != null) {
+            ReaderPassword.check(password)?.let { throw PdfInputException(PdfError.Io(IllegalArgumentException(it))) }
+        }
+        return openImpl(file, memo, reader = true, password = password)
+    }
+
+    private fun openImpl(file: File, memo: ScanMemo.Key?, reader: Boolean, password: String?): PDFDocument {
         if (file.length() > ImageLimits.MAX_INPUT_PDF_BYTES) throw PdfInputException(PdfError.OutOfMemory)
-        if (memo == null || !ScanMemo.scanned(memo)) {
+        val memoHit = memo != null && ScanMemo.scanned(memo)
+        var scan: ObjStmScan.Result? = null
+        if (!memoHit) {
             try {
                 objStmScans++
-                ObjStmScan.check(file) // SR3-1: object-stream bombs are paid inside MuPDF's open
-                if (memo != null) ScanMemo.rememberScan(memo) // only a PASSED scan is remembered
+                scan = ObjStmScan.check(file) // SR3-1: object-stream bombs are paid inside MuPDF's open
             } catch (e: IOException) {
-                // Unreadable: MuPDF's own open below reports it (Io).
+                // Unreadable: MuPDF's own open below reports it (Io); an encrypted one is refused below.
             }
         }
         val doc = try {
@@ -146,9 +192,21 @@ internal object PdfInputs {
             throw classifyOpenFailure(e)
         }
         try {
-            if (doc.needsPassword()) throw PdfInputException(PdfError.Encrypted)
+            if (doc.needsPassword()) {
+                if (!reader || password.isNullOrEmpty()) throw PdfInputException(PdfError.Encrypted)
+                if (!doc.authenticatePassword(password)) throw PdfInputException(PdfError.WrongPassword)
+            }
             val pdf = doc as? PDFDocument ?: throw PdfInputException(PdfError.Corrupt)
-            if (isEncrypted(pdf)) throw PdfInputException(PdfError.Encrypted)
+            if (isEncrypted(pdf)) {
+                if (!reader) throw PdfInputException(PdfError.Encrypted)
+                if (!memoHit) {
+                    // Pass 1 saw ciphertext: measure the object streams again on decrypted data,
+                    // before countPages resolves the catalog (which may live in one).
+                    val pass1 = scan ?: throw PdfInputException(PdfError.OutOfMemory)
+                    checkGraph { ObjStmScan.checkDecrypted(pdf, pass1) }
+                }
+            }
+            if (memo != null && scan != null) ScanMemo.rememberScan(memo) // only a PASSED scan is remembered
             val pages = try {
                 pdf.countPages()
             } catch (e: RuntimeException) {
@@ -187,7 +245,7 @@ internal object PdfInputs {
      * True when [pdf] uses PDF encryption, independent of password state: MuPDF reports a crypt
      * handler (`isUnencryptedPDF()` is false) or the trailer has an `/Encrypt` entry.
      */
-    private fun isEncrypted(pdf: PDFDocument): Boolean {
+    internal fun isEncrypted(pdf: PDFDocument): Boolean {
         if (!pdf.isUnencryptedPDF) return true
         val trailer = pdf.trailer
         try {

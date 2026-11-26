@@ -17,6 +17,7 @@ import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.engine.PageTextFormat
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.ReaderPassword
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
 import java.io.IOException
@@ -198,18 +199,33 @@ class RemoteEngine(
         raw.delete()
     }
 
-    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo =
-        when (val r = call(EngineRequest.PageInfo(pdf.path), job)) {
+    /** A refused [password] ([ReaderPassword.check]) as an error, before anything is sent; null if none. */
+    private fun passwordError(password: String?): PdfError? =
+        password?.let { p -> ReaderPassword.check(p)?.let { PdfError.Io(IllegalArgumentException(it)) } }
+
+    override fun pageInfo(pdf: File, job: JobControl): PdfPageInfo = pageInfo(pdf, null, job)
+
+    override fun pageInfo(pdf: File, password: String?, job: JobControl): PdfPageInfo {
+        passwordError(password)?.let { return PdfPageInfo.Err(it) }
+        return when (val r = call(EngineRequest.PageInfo(pdf.path, password), job)) {
             is Reply.Done -> EngineWire.decodePageInfo(r.bundle)
             is Reply.Failed -> PdfPageInfo.Err(r.error)
         }
+    }
 
-    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender =
+        renderPage(pdf, request, out, null, job)
+
+    override fun renderPage(pdf: File, request: RenderRequest, out: File, password: String?, job: JobControl): PdfRender {
         RenderLimits.check(request, null)?.let {
             out.delete()
             return PdfRender.Err(PdfError.Io(IllegalArgumentException(it)))
         }
-        val result = when (val r = call(EngineRequest.RenderPage(pdf.path, request, out.path), job)) {
+        passwordError(password)?.let {
+            out.delete()
+            return PdfRender.Err(it)
+        }
+        val result = when (val r = call(EngineRequest.RenderPage(pdf.path, request, out.path, password), job)) {
             is Reply.Done -> when (val d = EngineWire.decodeRender(r.bundle)) {
                 is PdfRender.Ok ->
                     if (d.width == request.width && d.height == request.height &&
@@ -233,12 +249,18 @@ class RemoteEngine(
      * [PageTextFormat.MAX_FILE_BYTES] (the caller parses it with [PageTextFormat.read]); else `Err(Io)`.
      * [out] is deleted on every `Err`.
      */
-    override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
+    override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText = pageText(pdf, page, out, null, job)
+
+    override fun pageText(pdf: File, page: Int, out: File, password: String?, job: JobControl): PdfPageText {
         if (page < 0) {
             out.delete()
             return PdfPageText.Err(PdfError.Io(IllegalArgumentException("page $page < 0")))
         }
-        val result = when (val r = call(EngineRequest.PageText(pdf.path, page, out.path), job)) {
+        passwordError(password)?.let {
+            out.delete()
+            return PdfPageText.Err(it)
+        }
+        val result = when (val r = call(EngineRequest.PageText(pdf.path, page, out.path, password), job)) {
             is Reply.Done -> when (val d = EngineWire.decodePageText(r.bundle)) {
                 is PdfPageText.Ok ->
                     if (d.units in 0..PageTextFormat.MAX_UNITS && out.isFile && out.length() >= PageTextFormat.HEADER_BYTES &&
