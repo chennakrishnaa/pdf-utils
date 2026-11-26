@@ -63,7 +63,8 @@ import java.util.zip.InflaterInputStream
  * `/Resources` (`/Subtype /Form`; with `/Subtype2 /Image` also checked as an image, as
  * `pdf_process_Do` loads it), tiling patterns' `/Resources` (`/Pattern`, every stream entry whatever
  * its `/PatternType`), soft-mask groups (`/ExtGState` →
- * `/SMask` → `/G`), Type 3 fonts' `/Resources` (`/Font`), the ICC profiles of `/ColorSpace`
+ * `/SMask` → `/G`), Type 3 fonts' `/Resources` (`/Font`, and ExtGState `/Font`; a font with
+ * `/CharProcs` and no known `/Subtype` counts as Type 3, as MuPDF guesses it), the ICC profiles of `/ColorSpace`
  * resources, and every annotation's appearance streams (`/AP` `/N` `/R` `/D`, a stream or a
  * dictionary of states). M2-1: soft-mask groups and appearance streams are run by MuPDF as forms
  * without reading `/Subtype`, so they are walked as forms whatever it says (and also checked as
@@ -353,6 +354,17 @@ internal object RenderImageGate {
             }
         }
 
+        /**
+         * M2-1: a font `pdf_load_font` (`pdf-font.c`) loads as Type 3: `/Subtype /Type3`, or any
+         * `/Subtype` other than Type0, Type1, MMType1 and TrueType (or none) with `/CharProcs`
+         * ("guessing type3").
+         */
+        private fun isType3(f: PDFObject): Boolean = when (nameOf(s.add(f.get("Subtype")))) {
+            "Type3" -> true
+            "Type0", "Type1", "MMType1", "TrueType" -> false
+            else -> !s.add(f.get("CharProcs")).isNull
+        }
+
         private fun annotations(annots: PDFObject) {
             if (!annots.isArray) return
             for (i in 0 until annots.size()) {
@@ -388,12 +400,15 @@ internal object RenderImageGate {
                 if (!g.isDictionary) continue
                 val sm = s.add(g.get("SMask"))
                 if (sm.isDictionary) runAsForm(s.add(sm.get("G")), level)
+                // M2-1: `/Font [font size]` is loaded by `pdf_process_extgstate` like a `Tf` font.
+                val gf = s.add(g.get("Font"))
+                if (gf.isArray) s.add(gf.get(0)).let { if (it.isDictionary && isType3(it)) child(it, null, level + 1) }
             }
             val fonts = s.add(res.get("Font"))
             if (fonts.isDictionary) for (k in keys(fonts)) {
                 tick()
                 val f = s.add(fonts.get(k))
-                if (!f.isDictionary || nameOf(s.add(f.get("Subtype"))) != "Type3") continue
+                if (!f.isDictionary || !isType3(f)) continue
                 // Glyph procedures are not scanned for names: their resources are walked in full.
                 child(f, null, level + 1)
             }

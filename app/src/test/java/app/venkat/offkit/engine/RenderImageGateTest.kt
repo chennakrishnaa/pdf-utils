@@ -593,6 +593,28 @@ class RenderImageGateTest {
         })
     }
 
+    /**
+     * `pdf_load_font` (`pdf-font.c`) loads a font with `/CharProcs` and an unknown or missing
+     * `/Subtype` as Type 3 ("guessing type3"), and `pdf_process_extgstate` loads the font of an
+     * ExtGState `/Font [font size]` entry: both run glyph procedures on the font's `/Resources`.
+     */
+    @Test
+    fun m2_1_type3FontsByGuessAndThroughExtGState() {
+        fun t3(subtype: String) = "<<$subtype/FontBBox[0 0 1 1]/FontMatrix[1 0 0 1 0 0]/FirstChar 97/LastChar 97/Widths[1]" +
+            "/Encoding<</Differences[97/a]>>/CharProcs<</a 13 0 R>>/Resources<</XObject<</C 12 0 R>>>>>>"
+        val glyph = "1 0 0 0 1 1 d1 q 200 0 0 200 0 0 cm /C Do Q"
+        assertEachRefused {
+            for ((name, sub) in listOf("guess-none" to "", "guess-bogus" to "/Subtype/Bogus")) {
+                refused(name, page("<</Font<</T3 11 0 R>>>>", "BT /T3 12 Tf (a) Tj ET") {
+                    add(11, t3(sub)); stream(13, "", glyph.latin1()); stream(12, hugeImage, ByteArray(64))
+                })
+            }
+            refused("extgstate-font", page("<</ExtGState<</G0<</Font[11 0 R 12]>>>>>>", "BT /G0 gs (a) Tj ET") {
+                add(11, t3("/Type/Font/Subtype/Type3")); stream(13, "", glyph.latin1()); stream(12, hugeImage, ByteArray(64))
+            })
+        }
+    }
+
     /** Ordinary soft-mask groups and annotation appearances (stream and state dictionary) still render. */
     @Test
     fun m2_1_ordinarySoftMaskAndAppearancesStillRender() {
