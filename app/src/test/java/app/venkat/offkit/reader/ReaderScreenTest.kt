@@ -2,6 +2,19 @@ package app.venkat.offkit.reader
 
 import android.app.Activity
 import android.app.Application
+import android.content.ClipboardManager
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.swipe
+import app.venkat.offkit.TestPageTexts
+import app.venkat.offkit.feature.reader.TAG_READER_COPY
+import app.venkat.offkit.feature.reader.TAG_READER_HANDLE_ANCHOR
+import app.venkat.offkit.feature.reader.TAG_READER_HANDLE_FOCUS
+import app.venkat.offkit.feature.reader.TAG_READER_SELECTION_BAR
+import app.venkat.offkit.feature.reader.TAG_READER_SELECTION_CLOSE
+import app.venkat.offkit.feature.reader.TAG_READER_SELECT_ALL
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
@@ -456,5 +469,182 @@ class ReaderScreenTest {
         rule.onNode(hasScrollToIndexAction()).performScrollToIndex(1)
         rule.waitForIdle()
         rule.onNodeWithTag(readerPageTag(1)).assertContentDescriptionEquals(str(R.string.reader_page_cd, 2, 3))
+    }
+
+    // ---- Text selection ----
+
+    private fun clip(): String? =
+        app.getSystemService(ClipboardManager::class.java).primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+
+    /** Root position of page point ([xPt], [yPt]) of page [index], drawn at zoom [scale]. */
+    private fun rootOf(index: Int, xPt: Float, yPt: Float, scale: Float): Offset {
+        val node = rule.onNodeWithTag(readerPageTag(index)).fetchSemanticsNode()
+        val pxPerPt = node.size.width / a4.widthPt * scale
+        return node.positionInRoot + Offset(xPt * pxPerPt, yPt * pxPerPt)
+    }
+
+    private fun listOrigin(): Offset = rule.onNodeWithTag(TAG_READER_LIST).fetchSemanticsNode().positionInRoot
+
+    /** A real long-press on the list, over page point ([xPt], [yPt]) of page [index]. */
+    private fun longPressAt(index: Int, xPt: Float, yPt: Float, scale: Float = 1f) {
+        val at = rootOf(index, xPt, yPt, scale) - listOrigin()
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { longClick(at) }
+        rule.waitForIdle()
+    }
+
+    private fun tapAt(index: Int, xPt: Float, yPt: Float) {
+        val at = rootOf(index, xPt, yPt, 1f) - listOrigin()
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { click(at) }
+        rule.waitForIdle()
+    }
+
+    private fun selectionShown() = exists(TAG_READER_SELECTION_BAR)
+
+    private fun openWithText(vararg lines: String) {
+        fake.readerPages = List(3) { a4 }
+        fake.readerTexts[0] = TestPageTexts.grid(*lines)
+        openDocument()
+    }
+
+    private fun customAction(tag: String, label: String) {
+        val node = rule.onNodeWithTag(tag).fetchSemanticsNode()
+        val action = node.config[SemanticsActions.CustomActions].single { it.label == label }
+        rule.runOnUiThread { action.action() }
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun longPressSelectsTheWordAndCopyPutsItOnTheClipboard() {
+        openWithText("Hello world", "Second line")
+        val (x, y) = TestPageTexts.centre(0, 8)
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        rule.onNodeWithTag(TAG_READER_TITLE).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_READER_HANDLE_ANCHOR).assertExists()
+        rule.onNodeWithTag(TAG_READER_HANDLE_FOCUS).assertExists()
+        rule.onNodeWithTag(TAG_READER_COPY).assertContentDescriptionEquals(str(R.string.reader_copy_cd))
+        rule.onNodeWithTag(TAG_READER_SELECT_ALL).assertContentDescriptionEquals(str(R.string.reader_select_all_cd))
+        assertEquals("text fetched once, on the long-press", 1, fake.textCalls.size)
+        // Handles keep a 48 dp touch target.
+        val handle = rule.onNodeWithTag(TAG_READER_HANDLE_FOCUS).fetchSemanticsNode()
+        assertTrue(handle.size.width >= (48 * app.resources.displayMetrics.density).toInt() - 1)
+
+        rule.onNodeWithTag(TAG_READER_COPY).performClick()
+        rule.waitForIdle()
+        assertEquals("world", clip())
+        assertTrue("copy clears the selection", !selectionShown())
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("report.pdf")
+        // Android 13+ shows its own notice: no "Copied" here (SDK 36).
+        assertTrue(rule.onAllNodesWithText(str(R.string.reader_copied)).fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test
+    fun aHandleDragExtendsTheSelectionAndSelectAllTakesThePage() {
+        openWithText("Hello world", "Second line")
+        val (x, y) = TestPageTexts.centre(0, 8)
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        // Drag the end handle from the middle of "d" to the middle of "n" of "line".
+        val handle = rule.onNodeWithTag(TAG_READER_HANDLE_FOCUS).fetchSemanticsNode()
+        val start = handle.positionInRoot + Offset(handle.size.width / 2f, handle.size.height / 2f)
+        val aimFrom = rootOf(0, TestPageTexts.X0 + 11 * TestPageTexts.CHAR_W, TestPageTexts.centre(0, 10).second, 1f)
+        val (tx, ty) = TestPageTexts.centre(1, 9)
+        val delta = rootOf(0, tx, ty, 1f) - aimFrom
+        val origin = listOrigin()
+        rule.onNodeWithTag(TAG_READER_LIST).performTouchInput { swipe(start - origin, start + delta - origin, 400) }
+        rule.waitForIdle()
+        assertTrue("still selected after the drag", selectionShown())
+        rule.onNodeWithTag(TAG_READER_COPY).performClick()
+        rule.waitForIdle()
+        assertEquals("world\nSecond lin", clip())
+
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        rule.onNodeWithTag(TAG_READER_SELECT_ALL).performClick()
+        rule.onNodeWithTag(TAG_READER_COPY).performClick()
+        rule.waitForIdle()
+        assertEquals("Hello world\nSecond line", clip())
+        assertEquals(1, fake.textCalls.size)
+    }
+
+    @Test
+    fun aTapOutsideOrBackOrCloseClearsTheSelectionFirst() {
+        openWithText("Hello world", "Second line")
+        val (x, y) = TestPageTexts.centre(0, 8)
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        // A tap on the selected word keeps it; a tap away from it clears it.
+        tapAt(0, x, y)
+        mainClockPastDoubleTap()
+        assertTrue(selectionShown())
+        tapAt(0, 100f, 100f)
+        assertTrue("tap outside clears", !selectionShown())
+
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+        assertTrue("Back clears the selection", !selectionShown())
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("report.pdf")
+
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        rule.onNodeWithTag(TAG_READER_SELECTION_CLOSE).performClick()
+        rule.waitForIdle()
+        assertTrue(!selectionShown())
+        // Then Back leaves as before.
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo()
+    }
+
+    private fun mainClockPastDoubleTap() {
+        rule.mainClock.advanceTimeBy(500)
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun aLongPressOnAPageWithoutTextSaysSoAndAMissDoesNothing() {
+        openWithText("Hello world")
+        longPressAt(0, 100f, 100f) // far from the text: nothing
+        CoreTestSupport.idleUntil(rule) { fake.textCalls.size == 1 }
+        rule.waitForIdle()
+        assertTrue(!selectionShown())
+        assertTrue(rule.onAllNodesWithText(str(R.string.reader_no_text)).fetchSemanticsNodes().isEmpty())
+
+        fake.readerTexts.clear()
+        // Page 1 has no text.
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(1)
+        rule.waitForIdle()
+        longPressAt(1, 300f, 300f)
+        waitUntil("no-text message") { rule.onAllNodesWithText(str(R.string.reader_no_text)).fetchSemanticsNodes().isNotEmpty() }
+        assertTrue(!selectionShown())
+    }
+
+    @Test
+    fun theCopyPageTextActionCopiesTheWholePage() {
+        openWithText("Hello world", "Second line")
+        customAction(readerPageTag(0), str(R.string.reader_copy_page_action))
+        waitUntil("copied") { clip() == "Hello world\nSecond line" }
+        assertTrue(!selectionShown())
+    }
+
+    @Test
+    fun highlightsStayOnTheTextWhenZoomedIn() {
+        openWithText("Hello world", "Second line")
+        customAction(TAG_READER_LIST, str(R.string.reader_zoom_in))
+        rule.mainClock.advanceTimeBy(1000)
+        rule.waitForIdle()
+        val (x, y) = TestPageTexts.centre(1, 2)
+        longPressAt(0, x, y, scale = 1.5f)
+        waitUntil("selection bar") { selectionShown() }
+        // The handle sits under the word's start at this zoom (left edge of "S", bottom of the line).
+        val handle = rule.onNodeWithTag(TAG_READER_HANDLE_ANCHOR).fetchSemanticsNode()
+        val corner = rootOf(0, TestPageTexts.X0, TestPageTexts.Y0 + TestPageTexts.ROW + TestPageTexts.CHAR_H, 1.5f)
+        assertEquals(corner.x, handle.positionInRoot.x + handle.size.width * 1.5f / 2f, 3f)
+        assertEquals(corner.y, handle.positionInRoot.y, 3f)
+        rule.onNodeWithTag(TAG_READER_COPY).performClick()
+        rule.waitForIdle()
+        assertEquals("Second", clip())
     }
 }
