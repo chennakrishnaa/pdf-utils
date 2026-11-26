@@ -202,6 +202,16 @@ class EncryptedReaderTest {
         assertEquals(PdfPageText.Err(PdfError.OutOfMemory), text(bomb, "user1"))
     }
 
+    /** K7-2: pass 2 reads the filter as `Filter|F` too. */
+    @Test
+    fun objectStreamBombWithAbbreviatedFilterKeyIsRefusedAfterDecryption() {
+        val small = encryptedObjStmPdf("small-f.pdf", padding = 1000, filterKey = "F")
+        assertTrue("benign /F object stream opens", engine.pageInfo(small, "user1") is PdfPageInfo.Ok)
+        val bomb = encryptedObjStmPdf("bomb-f.pdf", padding = 17 shl 20, filterKey = "F")
+        assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb, "user1"))
+        assertEquals(PdfRender.Err(PdfError.OutOfMemory), render(bomb, "user1"))
+    }
+
     // ------------------------------------------------------------------ RC4 (V2 R3) by hand
 
     private fun deflate(b: ByteArray): ByteArray {
@@ -232,7 +242,7 @@ class EncryptedReaderTest {
      * An RC4-128 (V2 R3) PDF whose catalog and page tree live in a Flate object stream (object 1)
      * padded with [padding] spaces after its objects, with an xref stream (object 5).
      */
-    private fun encryptedObjStmPdf(name: String, padding: Int): File {
+    private fun encryptedObjStmPdf(name: String, padding: Int, filterKey: String = "Filter"): File {
         val id = ByteArray(16) { it.toByte() }
         val p = -4
         // Algorithm 3: O
@@ -262,7 +272,7 @@ class EncryptedReaderTest {
             off[num] = out.size()
             out.write("$num 0 obj\n".toByteArray()); out.write(body); out.write("\nendobj\n".toByteArray())
         }
-        obj(1, stream("/Type/ObjStm/N 2/First ${header.length}/Filter/FlateDecode", objStmData))
+        obj(1, stream("/Type/ObjStm/N 2/First ${header.length}/$filterKey/FlateDecode", objStmData))
         obj(4, "<</Type/Page/Parent 3 0 R/MediaBox[0 0 200 200]>>".toByteArray())
         obj(6, "<</Filter/Standard/V 2/R 3/Length 128/P $p/O<${hex(o)}>/U<${hex(u)}>>>".toByteArray())
         off[5] = out.size()
