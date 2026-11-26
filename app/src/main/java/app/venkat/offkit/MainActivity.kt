@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
         intent = launchIntentOnly(intent)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        document?.let { viewRequests.post(it) }
+        document?.let { viewRequests.post(it.uri, it.typeVerified) }
         val onboarding = OnboardingStore(this)
         // Read before the first frame, so neither the introduction nor home flashes.
         val firstRun = !onboarding.seen
@@ -60,25 +60,26 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         val document = documentUri(intent)
         super.onNewIntent(launchIntentOnly(intent))
-        document?.let { viewRequests.post(it) }
+        document?.let { viewRequests.post(it.uri, it.typeVerified) }
     }
 
+    /** A document [documentUri] accepted; [typeVerified] is false when the intent named no type. */
+    private class Received(val uri: Uri, val typeVerified: Boolean)
+
     /**
-     * The PDF to open from [received], or null. Only `ACTION_VIEW` of a `content:` Uri whose type
-     * (the intent's, else the provider's) is `application/pdf` counts; everything else on the
-     * intent (extras, clip data, categories, flags) is ignored. Only a read is ever done with the
-     * Uri, so a write or persistable grant on the intent is never used.
+     * The PDF to open from [received], or null. Only `ACTION_VIEW` of a `content:` Uri whose
+     * intent type is `application/pdf`, or absent, counts; any other type is dropped at once.
+     * With no type the provider is not asked here (a slow or hostile provider would block the
+     * main thread): the reader asks it on the IO dispatcher before copying anything. Everything
+     * else on the intent (extras, clip data, categories, flags) is ignored. Only a read is ever
+     * done with the Uri, so a write or persistable grant on the intent is never used.
      */
-    private fun documentUri(received: Intent?): Uri? {
+    private fun documentUri(received: Intent?): Received? {
         if (received?.action != Intent.ACTION_VIEW) return null
         val uri = received.data ?: return null
         if (uri.scheme != ContentResolver.SCHEME_CONTENT) return null
-        val type = received.type ?: try {
-            contentResolver.getType(uri)
-        } catch (e: Exception) {
-            null
-        }
-        return if (Intent.normalizeMimeType(type) == MIME_PDF) uri else null
+        val type = received.type ?: return Received(uri, typeVerified = false)
+        return if (Intent.normalizeMimeType(type) == MIME_PDF) Received(uri, typeVerified = true) else null
     }
 
     private fun launchIntentOnly(received: Intent?): Intent {
@@ -103,8 +104,8 @@ class ViewRequests : ViewModel() {
 
     val request: StateFlow<ViewRequest?> = _request.asStateFlow()
 
-    fun post(uri: Uri) {
-        _request.value = ViewRequest(uri, ++next)
+    fun post(uri: Uri, typeVerified: Boolean = true) {
+        _request.value = ViewRequest(uri, ++next, typeVerified)
     }
 
     /** The reader took [request]; a newer request posted meanwhile is kept. */

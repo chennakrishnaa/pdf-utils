@@ -234,7 +234,7 @@ fun ReaderScreen(
             // Opened like a picked file; the Uri is not saved (its grant does not outlive the activity).
             launched = true
             openCount++
-            vm.open(viewRequest.uri)
+            vm.open(viewRequest.uri, checkType = !viewRequest.typeVerified)
             handled(viewRequest)
         } else if (!launched) {
             launched = true

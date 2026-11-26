@@ -144,14 +144,15 @@ class ReaderViewModel internal constructor(
 
     /**
      * Opens the PDF at [uri] (a `content:` Uri from the system picker; it is read once, now, and
-     * not kept). Closes any document already open or opening.
+     * not kept). Closes any document already open or opening. [checkType]: the Uri's type is not
+     * known yet and the provider must report `application/pdf` first (see [PdfReader.open]).
      */
-    fun open(uri: Uri) {
+    fun open(uri: Uri, checkType: Boolean = false) {
         closeAll()
         val gen = ++generation
         _document.value = ReaderDocState.Opening
         openJob = viewModelScope.launch {
-            val result = reader.open(uri)
+            val result = reader.open(uri, checkType)
             if (gen != generation) {
                 if (result is ReaderOpenResult.Opened) reader.close(result.document)
                 return@launch
