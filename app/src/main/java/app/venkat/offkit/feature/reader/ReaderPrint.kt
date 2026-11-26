@@ -66,8 +66,8 @@ internal fun startPrint(context: Context, job: ReaderPrintJob): Int? {
  *   (`onWriteCancelled`); any failure, including a document closed before its copy was first
  *   opened, gives `onWriteFailed`.
  * - The source is opened on the first write and kept until [onFinish]: a document closed later
- *   (its folder deleted) still prints from the open descriptor. The destination stream is closed
- *   after each write (it does not own the descriptor; the framework closes that).
+ *   (its folder deleted) still prints from the open descriptor. The destination descriptor is
+ *   the framework's: it is written and flushed but never closed here.
  */
 class ReaderPrintAdapter(
     private val job: ReaderPrintJob,
@@ -111,7 +111,9 @@ class ReaderPrintAdapter(
                 if (finished) throw IllegalStateException("Print finished")
                 source ?: job.openSource().also { source = it }
             }
-            FileOutputStream(destination.fileDescriptor).use { out ->
+            // Not closed: the stream does not own the descriptor (closing it would close the
+            // framework's fd under it on the JVM); the framework closes [destination] itself.
+            FileOutputStream(destination.fileDescriptor).let { out ->
                 val buf = ByteBuffer.allocate(BUFFER_BYTES)
                 var position = 0L
                 while (true) {
