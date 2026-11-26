@@ -211,6 +211,29 @@ class ObjStmScanTest {
         }
     }
 
+    /**
+     * Q1: every ICC profile stream has `/N`, so it is a candidate; the common shape (one
+     * `/FlateDecode`), after binary image data, is measured and opens on the tool path and the reader.
+     */
+    @Test
+    fun q1_ordinaryFlateIccProfile_opensInToolAndReader() {
+        val profile = ByteArray(3000) { (it % 251).toByte() }
+        for ((i, noise) in NOISES.withIndex()) {
+            val pdf = HostilePdf()
+            pdf.add(1, "<</Type/Catalog/Pages 2 0 R>>")
+            pdf.add(2, "<</Type/Pages/Kids[3 0 R]/Count 1>>")
+            pdf.add(3, "<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R/Resources<</ColorSpace<</CS0[/ICCBased 6 0 R]>>>>>>")
+            pdf.stream(4, "", "/CS0 cs 0.5 0.5 0.5 sc 0 0 100 100 re f".latin1())
+            pdf.stream(5, "/Type/XObject/Subtype/Image/Width 4/Height 4/ColorSpace/DeviceGray/BitsPerComponent 8/Filter/DCTDecode", noise, flate = false)
+            pdf.stream(6, "/N 3/Alternate/DeviceRGB", profile) // Flate
+            val f = write("q1-icc.pdf", pdf.bytes())
+            ObjStmScan.check(f)
+            PdfInputs.open(f).destroy()
+            assertTrue("noise $i", engine.compress(f, CompressionLevel.HIGH, out("q1-icc-c.pdf")) is PdfResult.Ok)
+            assertTrue("noise $i", engine.pageInfo(f) is PdfPageInfo.Ok)
+        }
+    }
+
     /** A page whose catalog lives in an object stream (7) holding [extra], after an image (5) whose data is [noise]. */
     private fun afterNoisyImage(extra: ByteArray, noise: ByteArray): ByteArray {
         val pdf = HostilePdf()
