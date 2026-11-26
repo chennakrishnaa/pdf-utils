@@ -3,7 +3,9 @@ package app.venkat.offkit
 import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.core.content.FileProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -18,6 +20,7 @@ import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.engine.RenderRequest
 import app.venkat.offkit.engine.remote.RemoteEngine
 import app.venkat.offkit.feature.reader.ItemRect
@@ -205,6 +208,43 @@ class EncryptedOnDeviceTest {
     fun encrypted_nonBmpPasswordOnAes256() {
         val pdf = EncryptedFixtures.write(engineDir, "aes256-emoji.pdf", EncryptedFixtures.AES256_EMOJI_B64)
         assertPasswordFlow(pdf, EncryptedFixtures.NON_BMP_USER, wrong = "pw")
+    }
+
+    /**
+     * P1: the decrypted copy for printing, written by the `:engine` process for an AES-256 file;
+     * it opens without a password in MuPDF and in the platform's PdfRenderer (what the print
+     * spooler uses). The engine only writes it inside a `reader-*` folder.
+     */
+    @Test
+    fun encrypted_aes256DecryptedCopyForPrintingThroughEngineProcess() {
+        val readerDir = File(jobsRoot, "${PdfReader.READER_DIR_PREFIX}ondevice-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val pdf = EncryptedFixtures.write(readerDir, "document.pdf", EncryptedFixtures.AES256_B64)
+            val out = File(readerDir, "print-ondevice.pdf")
+            assertEquals(PdfResult.Err(PdfError.WrongPassword), remote.decryptCopy(pdf, out, "nope", JobControl.None))
+            assertFalse("no output after a wrong password", out.exists())
+            // Outside the document's own reader folder: refused by the engine's path check.
+            val elsewhere = File(engineDir, "print-elsewhere.pdf")
+            val refused = remote.decryptCopy(pdf, elsewhere, EncryptedFixtures.AES256_USER, JobControl.None)
+            assertTrue("refused: $refused", refused is PdfResult.Err && refused.error is PdfError.Io)
+            assertFalse(elsewhere.exists())
+
+            val r = remote.decryptCopy(pdf, out, EncryptedFixtures.AES256_USER, JobControl.None)
+            assertTrue("decryptCopy: $r", r is PdfResult.Ok)
+            assertEquals(1, (r as PdfResult.Ok).pages)
+            assertEquals(out.length(), r.bytes)
+            assertFalse("no /Encrypt left", String(out.readBytes(), Charsets.ISO_8859_1).contains("/Encrypt"))
+            val info = remote.pageInfo(out, null, JobControl.None)
+            assertTrue("copy opens without a password: $info", info is PdfPageInfo.Ok)
+            assertFalse("copy is not encrypted", (info as PdfPageInfo.Ok).encrypted)
+            assertEquals(onePage, info.pages)
+            assertTrue(remoteText(out, null).contains(EncryptedFixtures.WORD))
+            ParcelFileDescriptor.open(out, ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+                PdfRenderer(fd).use { assertEquals(1, it.pageCount) }
+            }
+        } finally {
+            readerDir.deleteRecursively()
+        }
     }
 
     // ---------------------------------------------------------------- reader view model
