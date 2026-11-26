@@ -320,11 +320,12 @@ class ReaderViewModel internal constructor(
 
         private var viewport: ReaderViewport? = null
         private val wake = Channel<Unit>(Channel.CONFLATED)
-        private val worker: Job = viewModelScope.launch { work() }
-
         /** True while the render worker has a render in flight or one to send (the scan waits). */
         private val renderBusy = MutableStateFlow(false)
         private var rendering = false
+
+        // Declared after the fields work() uses: viewModelScope starts it at once (Main.immediate).
+        private val worker: Job = viewModelScope.launch { work() }
 
         /** The same instance for the life of this document, so collectors are not restarted. */
         fun flow(index: Int): StateFlow<ReaderPageState>? = mutableFlow(index)

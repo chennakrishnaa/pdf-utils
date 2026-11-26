@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -130,10 +131,10 @@ internal fun ReaderSearchBar(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .clearAndSetSemantics {
+                            testTag = TAG_READER_SEARCH_COUNT
                             contentDescription = spoken
                             liveRegion = LiveRegionMode.Polite
-                        }
-                        .testTag(TAG_READER_SEARCH_COUNT),
+                        },
                 )
                 if (state != null && !state.scanning && state.skipped > 0) {
                     Text(
