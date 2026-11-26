@@ -57,6 +57,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -544,6 +546,39 @@ class ReaderViewModelTest {
     }
 
     @Test
+    fun nextOntoAHitWhosePageRectanglesAreInFlightRevealsItsRectangleWhenTheyArrive() {
+        val compute = HoldableDispatcher()
+        try {
+            val vm = newVm(compute = compute)
+            fake.readerPages = List(8) { PageDims(595f, 842f) }
+            for (p in listOf(1, 4)) fake.readerTexts[p] = TestPageTexts.grid("a Cat and", "another cat")
+            openVm(vm)
+            val reveals = CopyOnWriteArrayList<SearchReveal>()
+            val scope = MainScope()
+            vm.searchReveals.onEach { reveals += it }.launchIn(scope)
+            vm.onViewport(WIDTH, 1f, listOf(band(4)))
+            vm.search("cat", 4)
+            searchDone(vm)
+            assertEquals(setOf(4), vm.search.value!!.rects.keys)
+            // Page 1 comes into view: its rectangles are fetched and held in the compute dispatcher.
+            compute.hold()
+            vm.onViewport(WIDTH, 1f, listOf(band(1), band(4)))
+            CoreTestSupport.idleUntil(message = "page 1 rects held") { compute.held.get() == 1 }
+            vm.searchStep(forward = true) // (4, 17) known
+            vm.searchStep(forward = true) // wraps to (1, 2), whose rectangles are in flight
+            assertEquals(SearchHit(1, 2, 5), vm.search.value!!.current)
+            CoreTestSupport.idleUntil(message = "scrolled to the page") { reveals.lastOrNull() == SearchReveal(1, null) }
+            compute.release()
+            CoreTestSupport.idleUntil(message = "revealed with its rectangle") {
+                reveals.last() == SearchReveal(1, TestPageTexts.grid("a Cat and").rects(2 until 5).single())
+            }
+            scope.cancel()
+        } finally {
+            compute.close()
+        }
+    }
+
+    @Test
     fun aNewQueryCancelsTheOldScanAndLeavesNoStaleHits() {
         val vm = newVm()
         fake.readerPages = List(8) { PageDims(595f, 842f) }
@@ -763,5 +798,40 @@ class ReaderViewModelTest {
     private companion object {
         const val WIDTH = 1080
         const val ENGINE_THREAD = "test-engine"
+    }
+}
+
+/** A one-thread dispatcher whose tasks dispatched after [hold] wait until [release]. */
+private class HoldableDispatcher : CoroutineDispatcher() {
+    private val executor = Executors.newSingleThreadExecutor { Thread(it, "held-compute") }
+    @Volatile private var gate: CountDownLatch? = null
+
+    /** Tasks waiting at the gate. */
+    val held = AtomicInteger()
+
+    fun hold() {
+        gate = CountDownLatch(1)
+    }
+
+    fun release() {
+        gate?.countDown()
+        gate = null
+    }
+
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        val g = gate
+        executor.execute {
+            if (g != null) {
+                held.incrementAndGet()
+                g.await(5, TimeUnit.SECONDS)
+                held.decrementAndGet()
+            }
+            block.run()
+        }
+    }
+
+    fun close() {
+        release()
+        executor.shutdownNow()
     }
 }

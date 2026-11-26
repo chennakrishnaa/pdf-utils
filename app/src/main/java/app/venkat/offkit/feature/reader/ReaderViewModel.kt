@@ -558,6 +558,9 @@ class ReaderViewModel internal constructor(
         private var results: SearchResults? = null
         private val rectJobs = HashMap<Int, Job>()
 
+        /** The hit Next / Previous moved to whose rectangles are being fetched: revealed when they arrive. */
+        private var pendingReveal: SearchHit? = null
+
         fun search(raw: String, fromPage: Int) {
             val query = SearchMath.parse(raw)
             if (query != null && results?.query?.text == query.text) return
@@ -590,6 +593,7 @@ class ReaderViewModel internal constructor(
             searchJob?.cancel()
             searchJob = null
             results = null
+            pendingReveal = null
             for (j in rectJobs.values) j.cancel()
             rectJobs.clear()
         }
@@ -603,12 +607,12 @@ class ReaderViewModel internal constructor(
             publish(res)
             val known = res.rects[hit.page]?.rectsOf(hit)
             if (known != null) {
+                pendingReveal = null
                 _searchReveals.trySend(SearchReveal(hit.page, known.firstOrNull()))
             } else {
                 _searchReveals.trySend(SearchReveal(hit.page, null))
-                fetchRects(res, hit.page) { rects ->
-                    if (res.current == hit) rects.rectsOf(hit)?.firstOrNull()?.let { _searchReveals.trySend(SearchReveal(hit.page, it)) }
-                }
+                pendingReveal = hit
+                fetchRects(res, hit.page) // already in flight for this page: its result reveals the hit too
             }
         }
 
@@ -627,13 +631,13 @@ class ReaderViewModel internal constructor(
             val res = results ?: return
             val dropped = res.rects.keys.removeAll { !nearViewport(it) }
             for (page in vp.visible.map { it.index }) {
-                if (page !in res.rects && page !in rectJobs && res.hitsOn(page).isNotEmpty()) fetchRects(res, page) {}
+                if (page !in res.rects && page !in rectJobs && res.hitsOn(page).isNotEmpty()) fetchRects(res, page)
             }
             if (dropped) publish(res)
         }
 
         /** Reads [page]'s text again (not cached) to compute its hits' rectangles. */
-        private fun fetchRects(res: SearchResults, page: Int, then: (PageSearchRects) -> Unit) {
+        private fun fetchRects(res: SearchResults, page: Int) {
             if (page in rectJobs) return
             rectJobs[page] = viewModelScope.launch {
                 val r = reader.text(doc, page)
@@ -652,7 +656,11 @@ class ReaderViewModel internal constructor(
                 rectJobs.remove(page)
                 res.rects[page] = rects
                 publish(res)
-                then(rects)
+                val hit = pendingReveal
+                if (hit != null && hit.page == page && res.current == hit) {
+                    pendingReveal = null
+                    rects.rectsOf(hit)?.firstOrNull()?.let { _searchReveals.trySend(SearchReveal(page, it)) }
+                }
             }
         }
 
