@@ -60,10 +60,15 @@ import java.util.zip.InflaterInputStream
  * checked for each and cycles end; resource dictionaries are listed once by object number; at most [MAX_NESTING] nested resource levels and [MAX_VISITS] budget
  * units in [MAX_WALK_MILLIS], else refused; cancellation is polled throughout and reported as
  * `Cancelled`): the page's `/Resources` (inherited), its `/XObject` entries, form XObjects'
- * `/Resources`, tiling patterns' `/Resources` (`/Pattern`), soft-mask groups (`/ExtGState` →
- * `/SMask` → `/G`), Type 3 fonts' `/Resources` (`/Font`), the ICC profiles of `/ColorSpace`
+ * `/Resources` (`/Subtype /Form`; with `/Subtype2 /Image` also checked as an image, as
+ * `pdf_process_Do` loads it), tiling patterns' `/Resources` (`/Pattern`, every stream entry whatever
+ * its `/PatternType`), soft-mask groups (`/ExtGState` →
+ * `/SMask` → `/G`), Type 3 fonts' `/Resources` (`/Font`, and ExtGState `/Font`; a font with
+ * `/CharProcs` and no known `/Subtype` counts as Type 3, as MuPDF guesses it), the ICC profiles of `/ColorSpace`
  * resources, and every annotation's appearance streams (`/AP` `/N` `/R` `/D`, a stream or a
- * dictionary of states). Each resource dictionary is listed once per check and only entries
+ * dictionary of states). M2-1: soft-mask groups and appearance streams are run by MuPDF as forms
+ * without reading `/Subtype`, so they are walked as forms whatever it says (and also checked as
+ * images when they carry image keys); only `Do` dispatches on `/Subtype`. Each resource dictionary is listed once per check and only entries
  * actually checked are charged. When a dictionary has more than [NARROW_ABOVE] `/XObject` entries
  * (generators that share one resource dictionary across all pages) and every key is a [plainKey],
  * only the entries whose name occurs as a token in SOME content stream walked for the page (page
@@ -349,6 +354,17 @@ internal object RenderImageGate {
             }
         }
 
+        /**
+         * M2-1: a font `pdf_load_font` (`pdf-font.c`) loads as Type 3: `/Subtype /Type3`, or any
+         * `/Subtype` other than Type0, Type1, MMType1 and TrueType (or none) with `/CharProcs`
+         * ("guessing type3").
+         */
+        private fun isType3(f: PDFObject): Boolean = when (nameOf(s.add(f.get("Subtype")))) {
+            "Type3" -> true
+            "Type0", "Type1", "MMType1", "TrueType" -> false
+            else -> !s.add(f.get("CharProcs")).isNull
+        }
+
         private fun annotations(annots: PDFObject) {
             if (!annots.isArray) return
             for (i in 0 until annots.size()) {
@@ -359,8 +375,8 @@ internal object RenderImageGate {
                 if (!ap.isDictionary) continue
                 for (key in APPEARANCE_KEYS) {
                     val v = s.add(ap.get(key))
-                    if (v.isStream) xobject(v, 1)
-                    else if (v.isDictionary && firstVisit(v, Role.AP_STATES)) for (k in keys(v)) xobject(s.add(v.get(k)), 1)
+                    if (v.isStream) runAsForm(v, 1)
+                    else if (v.isDictionary && firstVisit(v, Role.AP_STATES)) for (k in keys(v)) runAsForm(s.add(v.get(k)), 1)
                 }
             }
         }
@@ -383,13 +399,16 @@ internal object RenderImageGate {
                 val g = s.add(gs.get(k))
                 if (!g.isDictionary) continue
                 val sm = s.add(g.get("SMask"))
-                if (sm.isDictionary) xobject(s.add(sm.get("G")), level)
+                if (sm.isDictionary) runAsForm(s.add(sm.get("G")), level)
+                // M2-1: `/Font [font size]` is loaded by `pdf_process_extgstate` like a `Tf` font.
+                val gf = s.add(g.get("Font"))
+                if (gf.isArray) s.add(gf.get(0)).let { if (it.isDictionary && isType3(it)) child(it, null, level + 1) }
             }
             val fonts = s.add(res.get("Font"))
             if (fonts.isDictionary) for (k in keys(fonts)) {
                 tick()
                 val f = s.add(fonts.get(k))
-                if (!f.isDictionary || nameOf(s.add(f.get("Subtype"))) != "Type3") continue
+                if (!f.isDictionary || !isType3(f)) continue
                 // Glyph procedures are not scanned for names: their resources are walked in full.
                 child(f, null, level + 1)
             }
@@ -401,14 +420,40 @@ internal object RenderImageGate {
             }
         }
 
-        /** An XObject reference found in resources [parentId]: an image is checked, a form is queued. */
+        /**
+         * An `/XObject` resource entry, as `pdf_process_Do` (`pdf-interpret.c`) uses it: `/Subtype
+         * /Image` is loaded as an image; `/Subtype /Form` is run as a form unless `/Subtype2` names
+         * another subtype, and M2-1: `/Subtype2 /Image` makes MuPDF load it as an image, so it is then
+         * checked as one too (any other `/Subtype2`, e.g. `/PS`, is ignored by MuPDF; the form is still
+         * walked, a superset). A missing or other `/Subtype` is not drawn (MuPDF throws or ignores it).
+         */
         private fun xobject(v: PDFObject, level: Int) {
             tick()
             if (!v.isStream) return
             when (nameOf(s.add(v.get("Subtype")))) {
                 "Image" -> image(v, mask = false)
-                "Form" -> child(v, listOf(v), level + 1)
+                "Form" -> {
+                    child(v, listOf(v), level + 1)
+                    if (nameOf(s.add(v.get("Subtype2"))) == "Image") image(v, mask = false)
+                }
             }
+        }
+
+        /**
+         * M2-1: a stream MuPDF runs as a content stream WITHOUT reading `/Subtype`: a soft mask's `/G`
+         * (`pdf_run_xobject` from `begin_softmask`, `pdf-op-run.c`) and an annotation's appearance
+         * (`pdf_process_annot` → `op_Do_form`, `pdf-interpret.c`). It is walked as a form whatever its
+         * `/Subtype` (none, `/Image`, `/PS` …); if it also looks like an image (`/Subtype /Image` or a
+         * `Width|W` key) it is checked as one too, so a stream drawn by `Do` elsewhere is covered in
+         * both roles whichever site reaches it first (the per-role visited sets keep both).
+         */
+        private fun runAsForm(v: PDFObject, level: Int) {
+            tick()
+            if (!v.isStream) return
+            child(v, listOf(v), level + 1)
+            val looksLikeImage = nameOf(s.add(v.get("Subtype"))) == "Image" ||
+                Scope().use { t -> !geta(t, v, "Width", "W").isNull }
+            if (looksLikeImage) image(v, mask = false)
         }
 
         /**
