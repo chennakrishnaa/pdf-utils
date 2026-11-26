@@ -2,6 +2,7 @@ package app.venkat.offkit.engine.remote
 
 import android.system.Os
 import android.system.OsConstants
+import app.venkat.offkit.engine.ops.DecryptCopyOp
 import java.io.File
 
 /**
@@ -26,6 +27,10 @@ import java.io.File
  * @param renderTotalMs longest time one reader page render may take (total only, as [infoTotalMs]).
  * @param textTotalMs longest time one reader page-text extraction may take (total only).
  * @param decryptTotalMs longest time the reader's decrypted copy for printing may take (total only).
+ * @param decryptOutputSampleMs how often the decrypted copy's size is checked while it is written
+ *   (the output watch, Z3-1); past its cap the engine is killed and the call gives `OutOfMemory`.
+ * @param decryptOutputMarginBytes margin of that cap beyond twice the input
+ *   (`DecryptCopyOp.maxOutputBytes`); tests pass a small one.
  */
 data class EngineLimits(
     val stallMs: Long = STALL_MS,
@@ -37,8 +42,19 @@ data class EngineLimits(
     val renderTotalMs: Long = RENDER_TOTAL_MS,
     val textTotalMs: Long = TEXT_TOTAL_MS,
     val decryptTotalMs: Long = DECRYPT_TOTAL_MS,
+    val decryptOutputSampleMs: Long = DECRYPT_OUTPUT_SAMPLE_MS,
+    val decryptOutputMarginBytes: Long = DecryptCopyOp.OUTPUT_MARGIN_BYTES,
 ) {
     companion object {
+        /**
+         * 50 ms between two size checks of the decrypted copy. The hostile file of review Z3-1 was
+         * written at about 235 MB/s on the host; at that rate one interval lets about 12 MB past the
+         * cap, plus what is written while the wait loop is late and while the kill lands (each
+         * normally well under 50 ms): about 25-35 MB over the cap in the worst ordinary case. A
+         * `length()` call is one `stat`, cheap enough for 20 per second during one save.
+         */
+        const val DECRYPT_OUTPUT_SAMPLE_MS = 50L
+
         /**
          * 90 s without progress. The operations report progress once per page or image, and one
          * legitimate page or image takes seconds. The phases after the last progress event (the

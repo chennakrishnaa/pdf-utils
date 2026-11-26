@@ -22,8 +22,20 @@ import java.nio.file.LinkOption
  * object counts); then, because a full save loads and keeps every object, the tools' whole-document
  * walks before a save ([ObjectGraph.checkAnnots] with the reader's per-page cap, since the output
  * check loads every page, and [ObjectGraph.checkObjects]); then a free-space check (at least the
- * input's size plus [SPACE_MARGIN_BYTES] free in [out]'s folder; the output can be somewhat larger
- * than the input since object streams are written out as plain objects).
+ * input's size plus [SPACE_MARGIN_BYTES] free in [out]'s folder: a healthy copy is at least about
+ * the input's size, and the margin is left free for the device; more is not required, so a healthy
+ * file still copies on a nearly full phone if it fits).
+ *
+ * Output bound (Z3-1): the copy may not exceed [maxOutputBytes] (twice the input plus
+ * [OUTPUT_MARGIN_BYTES]). MuPDF copies each stream's raw bytes from its offset for `/Length` bytes
+ * and then on to the next `endstream` token or the end of the file, and streams may overlap, so N
+ * stream objects without `endstream` are each written as "the rest of the file" (output about N x
+ * the input). The save cannot be interrupted from inside, so the bound is enforced while it runs by
+ * `RemoteEngine`'s output watch (it polls [out]'s size from the UI process and kills the engine
+ * past the cap, see `EngineLimits.decryptOutputSampleMs`), and here again after the save (an
+ * oversized copy is deleted: `Err(OutOfMemory)`). Not checked before the save: the raw length MuPDF
+ * will copy depends on where the next `endstream` token is, not on `/Length`, and the Java API
+ * exposes no stream offsets, so no cheap sum over the object walk bounds it.
  *
  * Save: [SAVE_OPTIONS] only (`encrypt=none`; MuPDF 1.28.5 `pdf_parse_write_options`; the older
  * `decrypt` option is deprecated). No `decompress`, `compress`, `garbage`, `objstms`,
@@ -42,7 +54,7 @@ import java.nio.file.LinkOption
  * The save is one native call and cannot be cancelled; cancellation is polled before it and in the
  * output check. On any failure [out] is deleted.
  */
-class DecryptCopyOp {
+class DecryptCopyOp(private val outputMarginBytes: Long = OUTPUT_MARGIN_BYTES) {
     fun run(pdf: File, out: File, job: JobControl, password: String? = null): PdfResult {
         outRefusal(pdf, out)?.let { return PdfResult.Err(PdfError.Io(IOException(it))) }
         val result = try {
@@ -78,6 +90,10 @@ class DecryptCopyOp {
                 out.delete() // a partial file; run() maps the failure (OutOfMemory or Io)
                 throw e
             }
+            if (out.length() > maxOutputBytes(pdf.length(), outputMarginBytes)) {
+                out.delete()
+                return PdfResult.Err(PdfError.OutOfMemory)
+            }
             PdfInputs.validateOutput(out, pages, job)?.let { return it }
             return PdfResult.Ok(pages = pages, bytes = out.length())
         } finally {
@@ -108,7 +124,23 @@ class DecryptCopyOp {
         /** MuPDF save options: write without encryption, everything else as stored. */
         const val SAVE_OPTIONS = "encrypt=none"
 
-        /** Free space required beyond the input's size before saving (16 MiB). */
+        /** Free space required beyond the input's size before saving (16 MiB); also left free by the output watch. */
         const val SPACE_MARGIN_BYTES = 16L shl 20
+
+        /**
+         * Margin of the output cap beyond twice the input (160 MiB). A healthy copy is about the
+         * input's size (raw streams are copied as stored; twice the input covers plain objects whose
+         * binary strings are rewritten in hex), plus the objects that were inside object streams,
+         * now written out uncompressed: at most the scan's 64 MiB of inflated object-stream data,
+         * up to twice that if it is mostly binary strings rewritten in hex (128 MiB), plus a classic
+         * xref table of 20 bytes per object (at most `ObjectGraph.MAX_OBJECTS` = 200,000: 4 MB),
+         * plus slack. Measured: a 740 KB AES-256 file with 20,000 objects in object streams copies
+         * to 7.6 MB (`DecryptOutputBoundTest`); the encrypted fixtures copy under 2 x input.
+         */
+        const val OUTPUT_MARGIN_BYTES = 160L shl 20
+
+        /** Largest decrypted copy allowed for an input of [inputBytes]: `2 x input + margin`. */
+        fun maxOutputBytes(inputBytes: Long, marginBytes: Long = OUTPUT_MARGIN_BYTES): Long =
+            2 * inputBytes.coerceAtLeast(0) + marginBytes
     }
 }

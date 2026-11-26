@@ -310,6 +310,82 @@ class RemoteEngineTest {
         assertEquals(listOf(4242, 4242), conn.killed)
     }
 
+    // ------------------------------------------------ decrypted-copy output watch (Z3-1)
+
+    private fun readerDir(): Pair<File, File> {
+        val dir = File(root, "reader-${System.nanoTime()}").apply { mkdirs() }
+        return File(dir, "document.pdf").apply { writeText("%PDF") } to File(dir, "print-1.pdf")
+    }
+
+    /**
+     * Engine stub whose decrypted copy keeps growing ([chunk] bytes every [everyMs] ms) and never
+     * answers, as MuPDF does on review Z3-1's file; it stops writing once [stop] says the engine
+     * was killed. Returns the bytes written when it stopped.
+     */
+    private class GrowingCopy(val chunk: Int, val everyMs: Long, val stop: () -> Boolean) : IEngineService.Stub() {
+        val written = java.util.concurrent.atomic.AtomicLong()
+        val done = CountDownLatch(1)
+        override fun pid() = 4242
+        override fun run(requestId: Long, request: Bundle?, callback: IEngineCallback?) {
+            val out = File((EngineWire.decodeRequest(request!!) as EngineRequest.DecryptCopy).out)
+            Thread {
+                java.io.FileOutputStream(out).use { s ->
+                    val buf = ByteArray(chunk)
+                    while (!stop()) {
+                        s.write(buf)
+                        written.addAndGet(chunk.toLong())
+                        Thread.sleep(everyMs)
+                    }
+                }
+                done.countDown()
+            }.start()
+        }
+        override fun cancel(requestId: Long) {}
+    }
+
+    @Test
+    fun decryptOutputWatchKillsTheEngineSoonAfterTheCapAndLeavesNoFile() {
+        val (pdf, out) = readerDir()
+        val margin = 1L shl 20
+        val cap = 2 * pdf.length() + margin
+        val sampleMs = 20L
+        val connRef = java.util.concurrent.atomic.AtomicReference<FakeConnector>()
+        val chunk = 64 * 1024
+        val everyMs = 5L
+        val stub = GrowingCopy(chunk, everyMs) { connRef.get().killed.isNotEmpty() }
+        val conn = FakeConnector { stub }.also { connRef.set(it) }
+        val engine = RemoteEngine(
+            conn,
+            limits = EngineLimits(decryptOutputSampleMs = sampleMs, decryptOutputMarginBytes = margin),
+        )
+        val r = engine.decryptCopy(pdf, out, null, Job())
+        assertTrue(stub.done.await(5, TimeUnit.SECONDS))
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), r)
+        assertEquals(listOf(4242), conn.killed)
+        assertFalse(out.exists())
+        // Overshoot: at most one sample interval plus a wait-loop wake-up of writing past the cap,
+        // with slack for a busy test machine (writer: 64 KiB per 5 ms, about 13 MB/s).
+        val bytesPerMs = chunk.toDouble() / everyMs
+        val allowed = cap + (bytesPerMs * (sampleMs + 200)).toLong() + chunk
+        assertTrue("wrote ${stub.written.get()}, cap $cap, allowed $allowed", stub.written.get() in (cap + 1)..allowed)
+        assertTrue(pdf.exists())
+    }
+
+    @Test
+    fun decryptOutputWatchLetsAnOrdinaryCopyThroughAndChecksTheReply() {
+        val (pdf, out) = readerDir()
+        val fake = FakePdfEngine()
+        val engine = RemoteEngine(FakeConnector { server(fake) }, limits = EngineLimits(decryptOutputSampleMs = 1))
+        assertTrue(engine.decryptCopy(pdf, out, null, Job()) is PdfResult.Ok)
+        assertTrue(out.isFile)
+        // A finished copy over the cap (here: zero margin and a reply bigger than 2 x input) is refused.
+        val (pdf2, out2) = readerDir()
+        val tight = RemoteEngine(FakeConnector { server(fake) }, limits = EngineLimits(decryptOutputMarginBytes = 0))
+        pdf2.writeText("") // 0-byte input: cap 0, the fake writes a prefix
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), tight.decryptCopy(pdf2, out2, null, Job()))
+        assertFalse(out2.exists())
+    }
+
     @Test
     fun memoryOverLimitKillsEngineAndReturnsOutOfMemory() {
         val conn = firstThenWorking(hangingService())

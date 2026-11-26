@@ -20,6 +20,7 @@ import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.engine.ReaderPassword
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
+import app.venkat.offkit.engine.ops.DecryptCopyOp
 import java.io.IOException
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
@@ -281,24 +282,46 @@ class RemoteEngine(
     /**
      * [PdfPageRenderer.decryptCopy] in the engine process. The reply is untrusted: an `Ok` must
      * report at least one page and [out] must exist with exactly the reported size; else `Err(Io)`.
-     * [out] is deleted on every `Err`.
+     * [out] is deleted on every `Err`. **Output watch** (Z3-1): while the engine writes, [out]'s
+     * size is read about every [EngineLimits.decryptOutputSampleMs]; past [decryptOutputCap] the
+     * engine is killed, [out] deleted and the call returns `Err(OutOfMemory)`.
      */
     override fun decryptCopy(pdf: File, out: File, password: String?, job: JobControl): PdfResult {
         passwordError(password)?.let {
             out.delete()
             return PdfResult.Err(it)
         }
-        val result = when (val r = call(EngineRequest.DecryptCopy(pdf.path, out.path, password), job)) {
+        val watch = OutputWatch(out, decryptOutputCap(pdf, out))
+        val result = when (val r = call(EngineRequest.DecryptCopy(pdf.path, out.path, password), job, watch)) {
             is Reply.Done -> when (val d = EngineWire.decodeResult(r.bundle)) {
                 is PdfResult.Ok ->
-                    if (d.pages > 0 && out.isFile && out.length() == d.bytes) d
-                    else PdfResult.Err(PdfError.Io(IOException("Decrypted copy does not match its reply")))
+                    if (d.pages > 0 && out.isFile && out.length() == d.bytes) {
+                        if (d.bytes > watch.capBytes) PdfResult.Err(PdfError.OutOfMemory) else d
+                    } else {
+                        PdfResult.Err(PdfError.Io(IOException("Decrypted copy does not match its reply")))
+                    }
                 is PdfResult.Err -> d
             }
             is Reply.Failed -> PdfResult.Err(r.error)
         }
         if (result is PdfResult.Err) out.delete()
         return result
+    }
+
+    /**
+     * Output watch cap of a decrypted copy (Z3-1): [DecryptCopyOp.maxOutputBytes] of the input, but
+     * no more than the free space in [out]'s folder minus [DecryptCopyOp.SPACE_MARGIN_BYTES], so the
+     * copy never fills the device (a copy that would not fit fails anyway). Free space unknown (0):
+     * the size cap alone.
+     */
+    private fun decryptOutputCap(pdf: File, out: File): Long {
+        val cap = DecryptCopyOp.maxOutputBytes(pdf.length(), limits.decryptOutputMarginBytes)
+        val free = try {
+            out.absoluteFile.parentFile?.usableSpace ?: 0L
+        } catch (e: SecurityException) {
+            0L
+        }
+        return if (free > 0) minOf(cap, maxOf(0L, free - DecryptCopyOp.SPACE_MARGIN_BYTES)) else cap
     }
 
     private fun result(request: EngineRequest, out: File, job: JobControl): PdfResult =
@@ -342,10 +365,10 @@ class RemoteEngine(
      * notification had not arrived yet), it was never started, so it is sent once more on a
      * freshly bound engine.
      */
-    private fun call(request: EngineRequest, job: JobControl): Reply {
+    private fun call(request: EngineRequest, job: JobControl, watch: OutputWatch? = null): Reply {
         if (!lockOrCancelled(job)) return Reply.Failed(PdfError.Cancelled)
         try {
-            return attempt(request, job) ?: attempt(request, job) ?: unavailable
+            return attempt(request, job, watch) ?: attempt(request, job, watch) ?: unavailable
         } finally {
             lock.unlock()
         }
@@ -382,7 +405,7 @@ class RemoteEngine(
     }
 
     /** One send-and-wait; null if the request never reached the engine. Holds [lock]. */
-    private fun attempt(request: EngineRequest, job: JobControl): Reply? {
+    private fun attempt(request: EngineRequest, job: JobControl, watch: OutputWatch?): Reply? {
         val s = connected() ?: return unavailable
         val service = s.service!!
         val id = nextId++
@@ -408,6 +431,9 @@ class RemoteEngine(
             return null
         }
 
+        // With an output watch the loop wakes at least every decryptOutputSampleMs.
+        val waitMs = if (watch != null) minOf(pollMs, limits.decryptOutputSampleMs).coerceAtLeast(1) else pollMs
+        val outputSampleNs = TimeUnit.MILLISECONDS.toNanos(limits.decryptOutputSampleMs)
         val pollNs = TimeUnit.MILLISECONDS.toNanos(pollMs)
         val gapNs = TimeUnit.MILLISECONDS.toNanos(freezeGapMs)
         val thawWindowNs = TimeUnit.MILLISECONDS.toNanos(THAW_WINDOW_MS)
@@ -433,6 +459,7 @@ class RemoteEngine(
         var sentAt = nanoTime()
         var lastActivity = sentAt
         var nextRssSample = sentAt
+        var nextOutputSample = sentAt
         var cancelDeadline = 0L
         var lastWake = sentAt
         var discountLeftNs = TimeUnit.MILLISECONDS.toNanos(maxFrozenMs)
@@ -478,7 +505,7 @@ class RemoteEngine(
         try {
             while (true) {
                 val event = try {
-                    events.poll(pollMs, TimeUnit.MILLISECONDS)
+                    events.poll(waitMs, TimeUnit.MILLISECONDS)
                 } catch (e: InterruptedException) {
                     interrupted = true
                     null
@@ -502,6 +529,16 @@ class RemoteEngine(
                     null -> Unit
                 }
                 val now = wake()
+                // Output watch first: it also runs during a cancel grace (the save goes on writing).
+                if (watch != null && now - nextOutputSample >= 0) {
+                    nextOutputSample = now + outputSampleNs
+                    if (watch.out.length() > watch.capBytes) {
+                        killAndWait(s)
+                        watch.out.delete()
+                        val cancelled = cancelDeadline != 0L || interrupted || job.isCancelled()
+                        return Reply.Failed(if (cancelled) PdfError.Cancelled else PdfError.OutOfMemory)
+                    }
+                }
                 if (cancelDeadline == 0L && (interrupted || job.isCancelled())) {
                     cancelDeadline = now + TimeUnit.MILLISECONDS.toNanos(cancelGraceMs)
                     try {
@@ -559,6 +596,9 @@ class RemoteEngine(
         }
         return rss > limits.memoryBytes
     }
+
+    /** A file the engine writes during one call, killed past [capBytes] (Z3-1; decrypted copy only). */
+    private class OutputWatch(val out: File, val capBytes: Long)
 
     private fun EngineRequest.isImageRequest() =
         this is EngineRequest.Estimate || this is EngineRequest.NormalizeImage
