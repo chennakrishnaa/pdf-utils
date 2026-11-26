@@ -308,6 +308,7 @@ object PageTextFormat {
             val prevStart = if (l == 0) -1 else starts[l - 1]
             val prevBlock = if (l == 0) -1 else lineBlocks[l - 1]
             if (l == 0 && s != 0) return err("first line does not start at 0")
+            if (l == 0 && b != 0) return err("first line is not in block 0")
             if (l > 0 && s <= prevStart) return err("empty or unordered line $l")
             if (s >= n) return err("line $l starts past the text")
             if (b != prevBlock && b != prevBlock + 1) return err("bad block $b at line $l")

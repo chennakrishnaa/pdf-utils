@@ -95,6 +95,19 @@ class PageTextFormatTest {
     }
 
     @Test
+    fun h5_7_firstLineMustBeInBlockZero() {
+        val ok = floatArrayOf(1f, 2f, 3f, 4f)
+        // One unit, one line in block -1, zero blocks: consistent except that block 0 is required.
+        assertErr(file { o -> header(o, 1, 1, 0); o.writeChar(120); ok.forEach { o.writeFloat(it) }; o.writeInt(0); o.writeInt(-1) })
+        // Two lines in blocks -1, 0 and one block.
+        assertErr(file { o ->
+            header(o, 2, 2, 1); o.writeChar(120); o.writeChar(121); repeat(2) { ok.forEach { o.writeFloat(it) } }
+            o.writeInt(0); o.writeInt(-1); o.writeInt(1); o.writeInt(0)
+        })
+        assertTrue(PageTextFormat.read(file { o -> header(o, 1, 1, 1); o.writeChar(120); ok.forEach { o.writeFloat(it) }; o.writeInt(0); o.writeInt(0) }) is PageTextParse.Ok)
+    }
+
+    @Test
     fun linesOnTheSameRowAreJoinedWithASpace() {
         // "ab" at x 10..30 and "cd" at x 40..60 on the same row, as two lines; then "ef" below.
         val text = "abcdef"
