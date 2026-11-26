@@ -22,7 +22,7 @@ You choose files through the system file picker, or open a PDF in Offkit from an
 
 While a job runs, the app keeps temporary working copies in its private cache. When a job finishes, the result stays there while its result screen is open, so that you can save it, save another copy, open it or share it. The temporary copies are deleted by the time you leave that screen or start another job, and when a job fails or is cancelled. If you share a result, the copy made for sharing is kept until the next job starts, or until a tool is next opened after the app restarts. Any copies left behind, for example if the app was closed mid-job, are deleted the next time a tool is opened after the app starts.
 
-When you open a PDF in the reader, the app reads it once and keeps a copy in its private cache while the reader is open, including while the app is in the background. The PDF is shown as it is: nothing in it is changed and nothing is saved. The copy is deleted when you close the reader or open another PDF in it. If the app was closed while the reader was open, the copy is deleted the next time a tool or the reader is opened after the app starts.
+When you open a PDF in the reader, the app reads it once and keeps a copy in its private cache while the reader is open, including while the app is in the background. The PDF is shown as it is: nothing in it is changed and nothing is saved. The copy is deleted when you close the reader, and when you open another PDF in it, once that PDF has opened or failed to open. If the other PDF needs a password, the one you were reading stays open, with its copy, until the new one opens or you cancel the password prompt; the new PDF's copy is deleted if you cancel. If the app was closed while the reader was open, the copy is deleted the next time a tool or the reader is opened after the app starts.
 
 A PDF you open in Offkit from another app is handled the same way: the app reads it once and copies it to its private cache, does not keep the link to it, and deletes the copy at the same times as a PDF you pick in the reader.
 
@@ -41,6 +41,23 @@ COPYING TEXT
 ------------
 
 In the reader you can select text on a page and copy it. The text is put on the system clipboard only when you tap Copy, or use the "Copy page text" accessibility action. Once text is on the clipboard, other apps and your keyboard may be able to read it, as with anything you copy, and Android may show a preview of it. To find the text, the app reads it from the page into a file in its private cache and deletes that file at once; it keeps the text only in memory while the PDF is open and does not save it.
+
+PASSWORDS
+---------
+
+If a PDF needs a password, the reader asks for it. The password you type is used only to open that file on your device: it is passed to the app's separate PDF engine process, kept in memory while that PDF is open, and forgotten when you close it or open another one. It is never written to storage, never put in the app's saved screen state and never sent anywhere.
+
+SEARCHING
+---------
+
+Search in the reader looks for your words in the text of the PDF's pages, on your device. What you type stays in the app: it is not sent anywhere and not written to storage. It is kept only so that it comes back after the screen rotates or Android restores the app.
+
+SHARING AND PRINTING
+--------------------
+
+Share in the reader copies the PDF, unchanged, to a folder in the app's private cache, and Android hands that copy to the app you choose. A password-protected PDF is shared as it is, still protected. The app you choose receives the file and its own privacy terms apply. The copy in the cache is deleted when the next job starts, or when a tool or the reader is next opened after the app restarts.
+
+Print hands the PDF to Android's print system, which prepares the pages and passes them to the printer or print app you choose, such as "Save as PDF" or a printer maker's app. That printer or app is outside Offkit, and its own privacy terms apply. A PDF that needed a password to open cannot be printed yet.
 
 PHOTO METADATA
 --------------
