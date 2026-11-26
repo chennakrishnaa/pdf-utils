@@ -101,6 +101,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.venkat.offkit.R
 import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.TextRect
 import app.venkat.offkit.ui.components.AppIcons
 import app.venkat.offkit.ui.components.MIME_PDF
 import app.venkat.offkit.ui.components.OffkitJobErrorScreen
@@ -165,6 +166,14 @@ private var SemanticsPropertyReceiver.readerPageRendered by ReaderPageRendered
 /** Semantics flag of a page item: true while a sharp zoomed-in detail is drawn over the page. */
 val ReaderPageDetailShown = SemanticsPropertyKey<Boolean>("ReaderPageDetailShown")
 private var SemanticsPropertyReceiver.readerPageDetailShown by ReaderPageDetailShown
+
+/** Semantics of a page item: the number of search hits highlighted on it. */
+val ReaderPageSearchHits = SemanticsPropertyKey<Int>("ReaderPageSearchHits")
+private var SemanticsPropertyReceiver.readerPageSearchHits by ReaderPageSearchHits
+
+/** Search highlights: every hit, and the selected one (stronger). */
+private val SearchHighlight = Color(0x59F2B600)
+private val SearchCurrentHighlight = Color(0x99FF7A00)
 
 /** Colours of the reader's Home badge (`ic_tool_read_badge`). */
 private val ReadContainer = Color(0xFFD5ECEA)
@@ -332,36 +341,41 @@ private fun ReaderTopBar(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).semantics { heading() }.testTag(TAG_READER_TITLE),
         )
-        if (indicator != null) {
-            val (page, count) = indicator
-            val spoken = stringResource(R.string.reader_page_cd, page, count)
-            val clickLabel = stringResource(R.string.reader_go_to_page)
-            val click = if (onIndicatorClick != null) {
-                Modifier
-                    .clickable(onClickLabel = clickLabel, role = Role.Button, onClick = onIndicatorClick)
-                    .heightIn(min = OffkitDimens.touchTarget)
-                    .padding(horizontal = 8.dp, vertical = 12.dp)
-            } else {
-                Modifier.padding(start = 8.dp)
-            }
-            Text(
-                text = stringResource(R.string.reader_page_indicator, page, count),
-                style = MaterialTheme.typography.labelLarge,
-                color = colors.onSurfaceVariant,
-                maxLines = 1,
-                modifier = Modifier
-                    .padding(start = 4.dp)
-                    .then(click)
-                    .semantics { contentDescription = spoken }
-                    .testTag(TAG_READER_INDICATOR),
-            )
-        }
+        if (indicator != null) PageIndicator(indicator, onIndicatorClick)
         if (menu.isNotEmpty()) {
             ReaderOverflowMenu(menu)
         } else {
             Spacer(Modifier.width(8.dp))
         }
     }
+}
+
+/** The page indicator ("3 / 12"); a tap on it calls [onIndicatorClick] (none if null). */
+@Composable
+private fun PageIndicator(indicator: Pair<Int, Int>, onIndicatorClick: (() -> Unit)?) {
+    val colors = MaterialTheme.colorScheme
+    val (page, count) = indicator
+    val spoken = stringResource(R.string.reader_page_cd, page, count)
+    val clickLabel = stringResource(R.string.reader_go_to_page)
+    val click = if (onIndicatorClick != null) {
+        Modifier
+            .clickable(onClickLabel = clickLabel, role = Role.Button, onClick = onIndicatorClick)
+            .heightIn(min = OffkitDimens.touchTarget)
+            .padding(horizontal = 8.dp, vertical = 12.dp)
+    } else {
+        Modifier.padding(start = 8.dp)
+    }
+    Text(
+        text = stringResource(R.string.reader_page_indicator, page, count),
+        style = MaterialTheme.typography.labelLarge,
+        color = colors.onSurfaceVariant,
+        maxLines = 1,
+        modifier = Modifier
+            .padding(start = 4.dp)
+            .then(click)
+            .semantics { contentDescription = spoken }
+            .testTag(TAG_READER_INDICATOR),
+    )
 }
 
 @Composable
@@ -402,7 +416,23 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val res by rememberUpdatedState(LocalResources.current)
-    // Back clears a selection first, then leaves as before.
+    // Search: the query survives rotation; results are recomputed, never saved.
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
+    var query by rememberSaveable { mutableStateOf("") }
+    val search by vm.search.collectAsState()
+    val closeSearch = {
+        searchOpen = false
+        query = ""
+        vm.closeSearch()
+    }
+    LaunchedEffect(searchOpen, query) {
+        if (!searchOpen) return@LaunchedEffect
+        delay(SearchMath.DEBOUNCE_MS)
+        vm.search(query, current)
+    }
+    // Back clears a selection first, then closes search, then leaves as before (the last
+    // enabled handler composed runs first).
+    BackHandler(enabled = searchOpen) { closeSearch() }
     BackHandler(enabled = selection != null) { vm.clearSelection() }
     LaunchedEffect(vm) {
         vm.textEvents.collect { event ->
@@ -430,12 +460,27 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
         title = doc.name,
         indicator = (current + 1) to pageCount,
         onBack = onBack,
-        menu = readerMenuItems(onGoToPage = { goToOpen = true }, onOpenAnother = onOpenAnother),
+        menu = readerMenuItems(onSearch = { searchOpen = true }, onGoToPage = { goToOpen = true }, onOpenAnother = onOpenAnother),
         onIndicatorClick = { goToOpen = true },
-        bar = if (selection != null) {
-            { SelectionBar(onClose = vm::clearSelection, onSelectAll = vm::selectAll, onCopy = vm::copySelection) }
-        } else {
-            null
+        bar = when {
+            selection != null -> {
+                { SelectionBar(onClose = vm::clearSelection, onSelectAll = vm::selectAll, onCopy = vm::copySelection) }
+            }
+            searchOpen -> {
+                {
+                    ReaderSearchBar(
+                        query = query,
+                        onQueryChange = { query = it },
+                        onSearchNow = { vm.search(query, current) },
+                        state = search,
+                        indicator = { PageIndicator((current + 1) to pageCount, onIndicatorClick = null) },
+                        onPrevious = { vm.searchStep(forward = false) },
+                        onNext = { vm.searchStep(forward = true) },
+                        onClose = closeSearch,
+                    )
+                }
+            }
+            else -> null
         },
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -471,6 +516,28 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
                 }
             }
 
+            // Reveal the selected search hit: scroll its page so the hit sits a third down the
+            // viewport (the zoom is kept), then pan sideways if it is off-screen while zoomed in.
+            LaunchedEffect(vm, geometry, listState, zoomState) {
+                vm.searchReveals.collect { r ->
+                    val dims = doc.pages.getOrNull(r.page) ?: return@collect
+                    val hit = r.rect?.let { SelectionMath.pageRectToItem(it, dims, geometry.pageRects[r.page]) }
+                    val viewHeight = listState.layoutInfo.viewportSize.height
+                    val offset = if (hit == null) 0 else (hit.top - viewHeight / 3f).toInt().coerceAtLeast(0)
+                    listState.scrollToItem(r.page, offset)
+                    val scale = zoomState.scale
+                    val width = zoomState.viewportWidth
+                    if (hit != null && scale > zoomState.minScale && width > 0f) {
+                        val left = (gapPx + hit.left) * scale
+                        val right = (gapPx + hit.right) * scale
+                        if (left < zoomState.offsetX || right > zoomState.offsetX + width) {
+                            val target = (left + right) / 2f - width / 2f
+                            zoomState.panBy(Offset(zoomState.offsetX - target, 0f))
+                        }
+                    }
+                }
+            }
+
             ZoomableList(
                 state = zoomState,
                 listState = listState,
@@ -494,6 +561,8 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
                             dims = dims,
                             zoom = zoomState,
                             selection = selection?.takeIf { it.page == index },
+                            search = search?.rects?.get(index),
+                            currentHit = search?.current?.takeIf { it.page == index },
                             onLongPress = { x, y ->
                                 val (xPt, yPt) = SelectionMath.itemToPage(x, y, dims, pageRect)
                                 val tolerance = SelectionMath.tolerancePt(density.density, zoomState.scale, dims, pageRect)
@@ -590,6 +659,10 @@ private class PageTextUi(
     val dims: PageDims,
     val zoom: ZoomableListState,
     val selection: ReaderSelection?,
+    /** Search hits' rectangles on this page, or null. */
+    val search: PageSearchRects?,
+    /** The selected search hit, if on this page. */
+    val currentHit: SearchHit?,
     /** Item pixels of a long-press. */
     val onLongPress: (Float, Float) -> Unit,
     /** Item pixels of a single tap. */
@@ -755,6 +828,13 @@ private fun ReaderPage(
     val highlights = remember(selection, pageRect, text.dims) {
         SelectionMath.boundedHighlights(selection?.rects()?.map { SelectionMath.pageRectToItem(it, text.dims, pageRect) }.orEmpty())
     }
+    val search = text.search
+    val currentHit = text.currentHit
+    val searchRects = remember(search, currentHit, pageRect, text.dims) {
+        fun item(rs: List<TextRect>) = rs.map { SelectionMath.pageRectToItem(it, text.dims, pageRect) }
+        val others = search?.let { s -> s.hits.indices.filter { s.hits[it] != currentHit }.flatMap { item(s.rects[it]) } }.orEmpty()
+        SelectionMath.boundedHighlights(others) to item(currentHit?.let { search?.rectsOf(it) }.orEmpty())
+    }
     val longPress by rememberUpdatedState(text.onLongPress)
     val tap by rememberUpdatedState(text.onTap)
     val copyPage by rememberUpdatedState(text.onCopyPage)
@@ -777,6 +857,7 @@ private fun ReaderPage(
                 customActions = listOf(CustomAccessibilityAction(copyPageLabel) { copyPage(); true })
                 readerPageRendered = base != null
                 readerPageDetailShown = detail != null
+                readerPageSearchHits = search?.hits?.size ?: 0
             }
             .testTag(readerPageTag(index)),
     ) {
@@ -789,6 +870,8 @@ private fun ReaderPage(
             if (detail != null && detailImage != null) {
                 ReaderPlanner.drawRect(detail.rect, detail.itemWidthPx, size.width)?.let { drawBitmap(detailImage, it) }
             }
+            for (r in searchRects.first) drawRect(SearchHighlight, Offset(r.left, r.top), Size(r.right - r.left, r.bottom - r.top))
+            for (r in searchRects.second) drawRect(SearchCurrentHighlight, Offset(r.left, r.top), Size(r.right - r.left, r.bottom - r.top))
             for (r in highlights) drawRect(highlight, Offset(r.left, r.top), Size(r.right - r.left, r.bottom - r.top))
         }
         if (selection != null) {

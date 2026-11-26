@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Reader: search in the document (overflow menu entry and the search bar). -->
+    <string name="reader_search">Search</string>
+    <string name="reader_search_hint">Search in document</string>
+    <string name="reader_search_close_cd">Close search</string>
+    <string name="reader_search_previous_cd">Previous result</string>
+    <string name="reader_search_next_cd">Next result</string>
+    <!-- "3 of 17": the selected result and the number found; %2$s may read "10,000+". -->
+    <string name="reader_search_position">%1$d of %2$s</string>
+    <!-- A number of results at the cap, e.g. "10,000+". -->
+    <string name="reader_search_capped">%1$s+</string>
+    <string name="reader_search_scanning">Searching…</string>
+    <!-- While the search goes on: "Searching… 12 so far". -->
+    <string name="reader_search_so_far">Searching… %1$s so far</string>
+    <string name="reader_search_none">No results</string>
+    <plurals name="reader_search_skipped">
+        <item quantity="one">%d page could not be searched</item>
+        <item quantity="other">%d pages could not be searched</item>
+    </plurals>
+</resources>

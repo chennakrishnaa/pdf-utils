@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.launch
 
 /** The reader's document. */
@@ -94,6 +96,14 @@ data class ReaderPageState(val base: Bitmap? = null, val detail: PageDetail? = n
  * and when the viewport moves more than [SELECTION_KEEP_PAGES] pages away from it. Copy results
  * and messages arrive on [textEvents].
  *
+ * Search ([search], [searchStep], [closeSearch]): one cancellable scan per query over
+ * [PdfReader.text], page by page from the given page with wrap-around (see [scanPages]). It runs
+ * at lower priority than rendering: before each page it yields and then waits until the render
+ * worker has nothing to send (no render in flight and nothing missing from the plan), so a
+ * render asked for during a scan goes before the next scan page (a text call already sent is
+ * not cancelled, and neither is a render). Scanned text is not put in the selection cache and
+ * not kept: hits are stored as ranges, with rectangles only for pages near the viewport.
+ *
  * All methods must be called on the main thread.
  */
 class ReaderViewModel internal constructor(
@@ -139,6 +149,16 @@ class ReaderViewModel internal constructor(
 
     /** Bumped by every long-press, so only the latest one selects once its text arrives. */
     private var pressCount = 0
+    private val _search = MutableStateFlow<ReaderSearchState?>(null)
+
+    /** The current search's results, or null (search closed or no document). */
+    val search: StateFlow<ReaderSearchState?> = _search.asStateFlow()
+
+    private val _searchReveals = Channel<SearchReveal>(Channel.CONFLATED)
+
+    /** Where to scroll for the selected hit; collect once, from the screen. */
+    val searchReveals: Flow<SearchReveal> = _searchReveals.receiveAsFlow()
+
     private var openJob: Job? = null
     private var generation = 0
 
@@ -251,6 +271,25 @@ class ReaderViewModel internal constructor(
         }
     }
 
+    /**
+     * Searches the open document for [query], starting at page [fromPage]. An empty query
+     * (after trimming) stops any scan and shows nothing; the query already searched is a no-op.
+     */
+    fun search(query: String, fromPage: Int) {
+        session?.search(query, fromPage)
+    }
+
+    /** Selects the next (or previous) hit, wrapping, and asks the screen to reveal it. */
+    fun searchStep(forward: Boolean) {
+        session?.searchStep(forward)
+    }
+
+    /** Stops the scan and drops the results and highlights. */
+    fun closeSearch() {
+        session?.stopSearch()
+        _search.value = null
+    }
+
     override fun onCleared() {
         closeAll()
         generation++
@@ -262,6 +301,7 @@ class ReaderViewModel internal constructor(
         openJob = null
         session?.close()
         session = null
+        _search.value = null
     }
 
     /** One open document: its page states, caches and render worker. Main thread only. */
@@ -281,6 +321,10 @@ class ReaderViewModel internal constructor(
         private var viewport: ReaderViewport? = null
         private val wake = Channel<Unit>(Channel.CONFLATED)
         private val worker: Job = viewModelScope.launch { work() }
+
+        /** True while the render worker has a render in flight or one to send (the scan waits). */
+        private val renderBusy = MutableStateFlow(false)
+        private var rendering = false
 
         /** The same instance for the life of this document, so collectors are not restarted. */
         fun flow(index: Int): StateFlow<ReaderPageState>? = mutableFlow(index)
@@ -308,12 +352,15 @@ class ReaderViewModel internal constructor(
                 if (index !in wanted || plan.itemWidthPx != vp.itemWidthPx) dropDetail(index)
             }
             wake.trySend(Unit)
+            if (nextRender() != null) renderBusy.value = true
+            searchOnViewport(vp)
         }
 
         fun retry(index: Int) {
             if (failed.remove(index) == null) return
             update(index) { it.copy(error = null) }
             wake.trySend(Unit)
+            if (nextRender() != null) renderBusy.value = true
         }
 
         /** Text of each fetched page, least recently used first. */
@@ -360,6 +407,7 @@ class ReaderViewModel internal constructor(
 
         fun close() {
             closed = true
+            stopSearch()
             texts.clear()
             for (f in fetching.values) f.cancel()
             fetching.clear()
@@ -372,11 +420,110 @@ class ReaderViewModel internal constructor(
             while (true) {
                 val next = nextRender()
                 if (next == null) {
+                    renderBusy.value = false
                     wake.receive()
                     continue
                 }
-                val tile = reader.render(doc, next.request)
+                rendering = true
+                renderBusy.value = true
+                val tile = try {
+                    reader.render(doc, next.request)
+                } finally {
+                    rendering = false
+                }
                 apply(next, tile)
+            }
+        }
+
+        private var searchJob: Job? = null
+        private var results: SearchResults? = null
+        private val rectJobs = HashMap<Int, Job>()
+
+        fun search(raw: String, fromPage: Int) {
+            val query = SearchMath.parse(raw)
+            if (query != null && results?.query?.text == query.text) return
+            stopSearch()
+            if (query == null) {
+                _search.value = null
+                return
+            }
+            val res = SearchResults(query)
+            results = res
+            publish(res)
+            searchJob = viewModelScope.launch {
+                scanPages(
+                    pages = SearchMath.scanOrder(fromPage, pageCount),
+                    results = res,
+                    textOf = { reader.text(doc, it) },
+                    awaitTurn = {
+                        yield()
+                        renderBusy.first { !it }
+                    },
+                    near = ::nearViewport,
+                    publish = { publish(res) },
+                    reveal = { hit, rects -> _searchReveals.trySend(SearchReveal(hit.page, rects?.firstOrNull())) },
+                )
+            }
+        }
+
+        fun stopSearch() {
+            searchJob?.cancel()
+            searchJob = null
+            results = null
+            for (j in rectJobs.values) j.cancel()
+            rectJobs.clear()
+        }
+
+        fun searchStep(forward: Boolean) {
+            val res = results ?: return
+            val i = SearchMath.step(res.hits.size, res.current?.let { res.hits.binarySearch(it) } ?: -1, forward)
+            if (i < 0) return
+            val hit = res.hits[i]
+            res.current = hit
+            publish(res)
+            val known = res.rects[hit.page]?.rectsOf(hit)
+            if (known != null) {
+                _searchReveals.trySend(SearchReveal(hit.page, known.firstOrNull()))
+            } else {
+                _searchReveals.trySend(SearchReveal(hit.page, null))
+                fetchRects(res, hit.page) { rects ->
+                    if (res.current == hit) rects.rectsOf(hit)?.firstOrNull()?.let { _searchReveals.trySend(SearchReveal(hit.page, it)) }
+                }
+            }
+        }
+
+        private fun publish(res: SearchResults) {
+            if (results === res) _search.value = res.state()
+        }
+
+        private fun nearViewport(page: Int): Boolean {
+            val shown = viewport?.visible?.map { it.index }.orEmpty()
+            if (shown.isEmpty()) return false
+            return page in shown.min() - SearchMath.RECT_PAGES..shown.max() + SearchMath.RECT_PAGES
+        }
+
+        /** Drops rectangles of pages that left the viewport's neighbourhood; fetches them for visible pages with hits. */
+        private fun searchOnViewport(vp: ReaderViewport) {
+            val res = results ?: return
+            val dropped = res.rects.keys.removeAll { !nearViewport(it) }
+            for (page in vp.visible.map { it.index }) {
+                if (page !in res.rects && page !in rectJobs && res.hitsOn(page).isNotEmpty()) fetchRects(res, page) {}
+            }
+            if (dropped) publish(res)
+        }
+
+        /** Reads [page]'s text again (not cached) to compute its hits' rectangles. */
+        private fun fetchRects(res: SearchResults, page: Int, then: (PageSearchRects) -> Unit) {
+            if (page in rectJobs) return
+            rectJobs[page] = viewModelScope.launch {
+                val r = reader.text(doc, page)
+                if (results !== res) return@launch
+                rectJobs.remove(page)
+                if (r !is ReaderText.Ok) return@launch
+                val rects = SearchMath.rectsOf(r.text, res.hitsOn(page))
+                res.rects[page] = rects
+                publish(res)
+                then(rects)
             }
         }
 
