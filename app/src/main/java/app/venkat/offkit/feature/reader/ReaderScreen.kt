@@ -87,6 +87,7 @@ import app.venkat.offkit.ui.components.OffkitTonalButton
 import app.venkat.offkit.ui.components.TAG_ACTION_BACK
 import app.venkat.offkit.ui.components.launchOrExplain
 import app.venkat.offkit.ui.components.mirrorInRtl
+import app.venkat.offkit.ui.nav.ViewRequest
 import app.venkat.offkit.ui.components.pdfErrorTitle
 import app.venkat.offkit.ui.reader.ZoomableList
 import app.venkat.offkit.ui.reader.ZoomableListState
@@ -149,9 +150,18 @@ private val PageGap = 8.dp
  * called when no document is open and no picker is pending, i.e. the first picker was cancelled
  * (or could not be launched), or the document was lost with the process (its read grant is gone).
  * The view model deletes its copy of the file when the reader leaves the back stack.
+ *
+ * [viewRequest] ("Open with" from another app) is opened instead of launching the picker, and
+ * replaces any document already open, exactly as one picked with "Open another PDF";
+ * [onViewRequestHandled] is called as soon as it is being opened.
  */
 @Composable
-fun ReaderScreen(onBack: () -> Unit, onExit: () -> Unit) {
+fun ReaderScreen(
+    onBack: () -> Unit,
+    onExit: () -> Unit,
+    viewRequest: ViewRequest? = null,
+    onViewRequestHandled: (ViewRequest) -> Unit = {},
+) {
     // Explicit initializer: the default factory caches the first Application process-wide.
     val vm: ReaderViewModel = viewModel {
         ReaderViewModel(checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]))
@@ -178,8 +188,15 @@ fun ReaderScreen(onBack: () -> Unit, onExit: () -> Unit) {
         if (!launchOrExplain(context) { launcher.launch(arrayOf(MIME_PDF)) }) pickerPending = false
     }
     val pickNow by rememberUpdatedState(pick)
-    LaunchedEffect(Unit) {
-        if (!launched) {
+    val handled by rememberUpdatedState(onViewRequestHandled)
+    LaunchedEffect(viewRequest) {
+        if (viewRequest != null) {
+            // Opened like a picked file; the Uri is not saved (its grant does not outlive the activity).
+            launched = true
+            openCount++
+            vm.open(viewRequest.uri)
+            handled(viewRequest)
+        } else if (!launched) {
             launched = true
             pickNow()
         }

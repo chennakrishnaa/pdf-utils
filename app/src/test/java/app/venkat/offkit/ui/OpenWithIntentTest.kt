@@ -1,0 +1,300 @@
+package app.venkat.offkit.ui
+
+import android.app.Application
+import android.content.ComponentName
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.test.core.app.ApplicationProvider
+import app.venkat.offkit.FakePdfEngine
+import app.venkat.offkit.MainActivity
+import app.venkat.offkit.PdfUtilApp
+import app.venkat.offkit.core.CoreTestSupport
+import app.venkat.offkit.core.PdfJobs
+import app.venkat.offkit.core.PdfReader
+import app.venkat.offkit.core.RecentFilesStore
+import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.feature.reader.ReaderPageRendered
+import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
+import app.venkat.offkit.feature.reader.TAG_READER_TITLE
+import app.venkat.offkit.feature.reader.readerPageTag
+import app.venkat.offkit.setOnboardingSeen
+import app.venkat.offkit.ui.components.TAG_ACTION_BACK
+import app.venkat.offkit.ui.home.TAG_HOME_PRIVACY
+import app.venkat.offkit.ui.home.TAG_TOOL_READ
+import app.venkat.offkit.ui.onboarding.TAG_ONBOARDING_ROOT
+import app.venkat.offkit.ui.onboarding.TAG_ONBOARDING_SKIP
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.controller.ActivityController
+import org.robolectric.annotation.Config
+import java.io.File
+
+/**
+ * "Open with Offkit": `ACTION_VIEW` of a `content:` PDF opens the reader on it, with no picker.
+ * Anything else that reaches the exported activity lands on home (or the reader's error screen
+ * for a PDF Uri that cannot be read) and the navigation host never sees the intent's data.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class OpenWithIntentTest {
+    @get:Rule
+    val rule = createEmptyComposeRule()
+
+    private val app: Application = ApplicationProvider.getApplicationContext()
+    private lateinit var fake: FakePdfEngine
+    private var controller: ActivityController<MainActivity>? = null
+
+    @Before
+    fun setUp() {
+        fake = FakePdfEngine()
+        (app as PdfUtilApp).engine = fake
+        RecentFilesStore.resetForTesting()
+        PdfJobs.get(app)
+        setOnboardingSeen(true)
+    }
+
+    @After
+    fun tearDown() {
+        controller?.let { runCatching { it.pause().stop().destroy() } }
+        setOnboardingSeen(true)
+        RecentFilesStore.resetForTesting()
+    }
+
+    private fun pdf(name: String): Uri = CoreTestSupport.contentUri(app, name, "%PDF-1.7\n%fake\n".toByteArray())
+
+    private fun view(uri: Uri?, type: String? = "application/pdf"): Intent =
+        Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, type)
+            .setComponent(ComponentName(app, MainActivity::class.java))
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+    private fun start(intent: Intent, saved: Bundle? = null): MainActivity {
+        val c = Robolectric.buildActivity(MainActivity::class.java, intent)
+        controller = c
+        if (saved == null) c.setup() else c.setup(saved)
+        rule.waitForIdle()
+        return c.get()
+    }
+
+    private fun exists(tag: String) = rule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+
+    private fun waitUntil(message: String, condition: () -> Boolean) =
+        CoreTestSupport.idleUntil(rule, message = message, condition = condition)
+
+    private fun waitForTitle(name: String) = waitUntil("reader shows $name") {
+        rule.onAllNodesWithTag(TAG_READER_TITLE).fetchSemanticsNodes()
+            .any { it.config[SemanticsProperties.Text].joinToString() == name }
+    }
+
+    private fun waitUntilPage1() = waitUntil("page 1 rendered") {
+        rule.onAllNodesWithTag(readerPageTag(0)).fetchSemanticsNodes()
+            .any { it.config.getOrElseNullable(ReaderPageRendered) { null } == true }
+    }
+
+    private fun readerDirs(): List<File> =
+        File(app.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith(PdfReader.READER_DIR_PREFIX) }
+
+    private fun assertNoPicker(activity: MainActivity) =
+        assertNull("a picker was launched", shadowOf(activity).nextStartedActivityForResult)
+
+    private fun assertScrubbed(activity: MainActivity) {
+        assertEquals(Intent.ACTION_MAIN, activity.intent.action)
+        assertNull(activity.intent.data)
+        assertNull(activity.intent.type)
+        assertNull(activity.intent.extras)
+        assertNull(activity.intent.clipData)
+        assertEquals(0, activity.intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+
+    private fun assertHome() {
+        rule.onNodeWithTag(TAG_HOME_PRIVACY).performScrollTo()
+        rule.onNodeWithTag(TAG_ACTION_BACK).assertDoesNotExist()
+        assertTrue("nothing was opened", fake.readerCalls.isEmpty())
+        assertTrue(readerDirs().isEmpty())
+    }
+
+    @Test
+    fun coldViewOpensTheReaderOnTheDocumentAndBackGoesHome() {
+        val activity = start(view(pdf("invoice.pdf")))
+        waitForTitle("invoice.pdf")
+        waitUntilPage1()
+        assertNoPicker(activity)
+        assertScrubbed(activity)
+        assertEquals(1, readerDirs().size)
+        // "Open another PDF" still asks the system picker.
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
+        rule.waitForIdle()
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, shadowOf(activity).nextStartedActivityForResult?.intent?.action)
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo()
+        waitUntil("reader copy deleted") { readerDirs().isEmpty() }
+        assertTrue(RecentFilesStore.get(app).recents.value.isEmpty())
+    }
+
+    @Test
+    fun typeFromTheProviderWhenTheIntentHasNone() {
+        // No type on the intent and the provider reports none either: not taken as a PDF.
+        start(view(pdf("untyped.pdf"), type = null))
+        assertHome()
+    }
+
+    @Test
+    fun firstRunShowsTheIntroductionThenTheDocument() {
+        setOnboardingSeen(false)
+        val activity = start(view(pdf("first.pdf")))
+        rule.onNodeWithTag(TAG_ONBOARDING_ROOT).assertExists()
+        assertTrue(fake.readerCalls.isEmpty())
+        rule.onNodeWithTag(TAG_ONBOARDING_SKIP).performClick()
+        rule.waitForIdle()
+        waitForTitle("first.pdf")
+        waitUntilPage1()
+        assertNoPicker(activity)
+    }
+
+    @Test
+    fun viewWhileOnAToolScreenPushesTheReaderAndBackReturnsToTheTool() {
+        val activity = start(Intent(Intent.ACTION_MAIN).setComponent(ComponentName(app, MainActivity::class.java)))
+        // A tool's finished, unsaved output: opening a document must not touch it.
+        val jobOutput = File(app.cacheDir, "jobs/0000-job/output.pdf").apply { parentFile!!.mkdirs(); writeText("%PDF") }
+        rule.onNodeWithTag("tool_compress").performScrollTo().performClick()
+        rule.waitForIdle()
+        assertTrue(exists(TAG_ACTION_BACK))
+        controller!!.newIntent(view(pdf("from-files.pdf")))
+        rule.waitForIdle()
+        waitForTitle("from-files.pdf")
+        waitUntilPage1()
+        assertNoPicker(activity)
+        assertScrubbed(activity)
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+        waitUntil("back on the tool") { !exists(TAG_READER_TITLE) && exists(TAG_ACTION_BACK) }
+        waitUntil("reader copy deleted") { readerDirs().isEmpty() }
+        assertTrue("job output kept", jobOutput.isFile)
+    }
+
+    @Test
+    fun viewWhileTheReaderShowsADocumentReplacesIt() {
+        start(view(pdf("a.pdf")))
+        waitForTitle("a.pdf")
+        waitUntilPage1()
+        val first = readerDirs().single()
+        controller!!.newIntent(view(pdf("b.pdf")))
+        rule.waitForIdle()
+        waitForTitle("b.pdf")
+        waitUntilPage1()
+        waitUntil("only B's copy is kept") { readerDirs().size == 1 && readerDirs().single() != first }
+        // Back leaves the reader (one entry), not to A.
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo()
+    }
+
+    @Test
+    fun recreationDoesNotOpenTheDocumentAgain() {
+        start(view(pdf("kept.pdf")))
+        waitForTitle("kept.pdf")
+        waitUntilPage1()
+        val opens = fake.readerCalls.count { it.request == null }
+        controller = controller!!.recreate()
+        rule.waitForIdle()
+        waitForTitle("kept.pdf")
+        assertEquals(opens, fake.readerCalls.count { it.request == null })
+        assertEquals(1, readerDirs().size)
+    }
+
+    @Test
+    fun afterProcessDeathTheRedeliveredViewIsNotReused() {
+        val intent = view(pdf("gone.pdf"))
+        start(intent)
+        waitForTitle("gone.pdf")
+        val saved = Bundle()
+        controller!!.saveInstanceState(saved).pause().stop().destroy()
+        controller = null
+        waitUntil("copy deleted") { readerDirs().isEmpty() }
+        val opens = fake.readerCalls.size
+        // The system re-delivers the original VIEW intent with the saved state; the grant is gone.
+        start(intent, saved)
+        rule.waitForIdle()
+        // The Uri is not reused: nothing is copied or opened again (the restored reader is empty;
+        // under Robolectric it offers the picker again rather than going home).
+        assertTrue(!exists(readerPageTag(0)))
+        assertEquals(opens, fake.readerCalls.size)
+        assertTrue(readerDirs().isEmpty())
+    }
+
+    @Test
+    fun unreadableDocumentShowsTheReadersErrorScreen() {
+        // A content: Uri with no data behind it (as one without a grant): the reader's Io error.
+        val activity = start(view(Uri.parse("content://other.provider/doc/secret.pdf")))
+        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(TAG_HOME_PRIVACY) && !exists(readerPageTag(0)) }
+        assertNoPicker(activity)
+        assertTrue(readerDirs().isEmpty())
+        assertTrue(fake.readerCalls.isEmpty())
+    }
+
+    @Test
+    fun notAPdfBehindAPdfTypeShowsTheReadersErrorScreen() {
+        fake.readerError = PdfError.Corrupt
+        start(view(pdf("not-really.pdf")))
+        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(readerPageTag(0)) && fake.readerCalls.isNotEmpty() }
+        waitUntil("copy deleted") { readerDirs().isEmpty() }
+    }
+
+    @Test
+    fun otherIntentsLandOnHome() {
+        val component = ComponentName(app, MainActivity::class.java)
+        val readable = pdf("readable.pdf")
+        val cases = listOf(
+            "wrong type" to view(readable, "image/png"),
+            "wildcard type" to view(readable, "*/*"),
+            "file scheme" to view(Uri.fromFile(File(app.filesDir, "x.pdf"))),
+            "no data" to Intent(Intent.ACTION_VIEW).setType("application/pdf").setComponent(component),
+            "nav deep link" to view(Uri.parse("android-app://androidx.navigation/reader")),
+            "send" to Intent(Intent.ACTION_SEND).setType("application/pdf").setComponent(component)
+                .putExtra(Intent.EXTRA_STREAM, readable),
+            "edit" to Intent(Intent.ACTION_EDIT).setDataAndType(readable, "application/pdf").setComponent(component),
+            "deep-link extras" to Intent(Intent.ACTION_MAIN).setComponent(component)
+                .putExtra("android-support-nav:controller:deepLinkIds", intArrayOf(1, 2, 3))
+                .putExtra(Intent.EXTRA_STREAM, readable),
+        )
+        for ((name, intent) in cases) {
+            val activity = start(intent)
+            assertScrubbed(activity)
+            assertNoPicker(activity)
+            try {
+                assertHome()
+            } catch (e: AssertionError) {
+                throw AssertionError("$name: ${e.message}", e)
+            }
+            controller!!.pause().stop().destroy()
+            controller = null
+        }
+    }
+
+    @Test
+    fun onNewIntentIgnoresANonPdfView() {
+        val activity = start(Intent(Intent.ACTION_MAIN).setComponent(ComponentName(app, MainActivity::class.java)))
+        controller!!.newIntent(view(pdf("pic.png"), "image/png"))
+        controller!!.newIntent(view(Uri.parse("android-app://androidx.navigation/support")))
+        rule.waitForIdle()
+        assertScrubbed(activity)
+        assertHome()
+    }
+}

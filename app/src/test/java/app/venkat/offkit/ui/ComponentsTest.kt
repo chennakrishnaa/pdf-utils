@@ -159,6 +159,13 @@ class ComponentsTest {
     @Test
     fun openWithoutPdfViewerSaysSoNotFilePicker() {
         shadowOf(rule.activity.application).checkActivities(true)
+        // Offkit itself now handles VIEW of a PDF ("Open with"); take it out to model a device
+        // with no PDF viewer at all.
+        rule.activity.packageManager.setComponentEnabledSetting(
+            android.content.ComponentName(rule.activity, app.venkat.offkit.MainActivity::class.java),
+            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            android.content.pm.PackageManager.DONT_KILL_APP,
+        )
         val uri = Uri.parse("content://app.venkat.offkit.test/doc.pdf")
         var launched = true
         rule.runOnUiThread { launched = openSavedPdf(rule.activity, uri) }
