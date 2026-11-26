@@ -28,6 +28,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import app.venkat.offkit.engine.ReaderPassword
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -43,13 +44,26 @@ import kotlin.coroutines.cancellation.CancellationException
  *
  * @property name display name of the picked file (sanitised, from [UriIo.describe]).
  * @property pages size of every page, in page order (at least one).
+ * @property isEncrypted the PDF uses encryption (it needed a password, or has an owner password only).
+ * @property canPrint / [canCopy] the PDF's permission bits as the engine reported them (true for an
+ *   unencrypted PDF and for one opened with its owner password). Advisory: nothing enforces them.
+ *
+ * The password the document was opened with, if any, is kept in memory here for the document's
+ * lifetime (MuPDF reopens the file on every engine call, so every info, render and text call sends
+ * it); it is never written to disk, logged, saved in a `SavedStateHandle` or part of [toString].
  */
 class ReaderDocument internal constructor(
     val name: String,
     val pages: List<PageDims>,
     internal val dir: File,
     internal val file: File,
+    internal val password: String? = null,
+    val isEncrypted: Boolean = false,
+    val canPrint: Boolean = true,
+    val canCopy: Boolean = true,
 ) {
+    override fun toString() = "ReaderDocument(name=$name, pages=${pages.size}, encrypted=$isEncrypted)"
+
     /** Set once by [PdfReader.close]; read by the engine (as `job.isCancelled()`) on its own thread. */
     @Volatile
     internal var closed: Boolean = false
@@ -66,12 +80,30 @@ class ReaderDocument internal constructor(
     internal fun newTextFile(): File = File(dir, "text-${tileCounter.incrementAndGet()}.bin")
 }
 
-/** Result of [PdfReader.open]. */
+/**
+ * The private copy of a password-protected PDF, kept between password attempts so a retry does not
+ * read the Uri again (the transient grant may be gone). From [ReaderOpenResult.Failed.locked]; give
+ * it to [PdfReader.unlock] with a password, or to [PdfReader.discard] when the user gives up (cancels
+ * the password prompt, leaves the reader or picks another PDF). Holds no password.
+ */
+class LockedPdf internal constructor(val name: String, internal val dir: File, internal val file: File) {
+    /** Set once by [PdfReader.discard] or when [PdfReader.unlock] hands the copy to a document or deletes it. */
+    @Volatile
+    internal var consumed: Boolean = false
+
+    override fun toString() = "LockedPdf(name=$name)"
+}
+
+/** Result of [PdfReader.open] and [PdfReader.unlock]. */
 sealed interface ReaderOpenResult {
     data class Opened(val document: ReaderDocument) : ReaderOpenResult
 
-    /** Nothing is left on disk. */
-    data class Failed(val error: PdfError) : ReaderOpenResult
+    /**
+     * Nothing is left on disk, except when [locked] is not null: [error] is [PdfError.Encrypted]
+     * (needs a password) or [PdfError.WrongPassword], the caller asked to keep the copy
+     * (`keepLockedCopy`, or [PdfReader.unlock]), and the copy waits in [locked] for the next attempt.
+     */
+    data class Failed(val error: PdfError, val locked: LockedPdf? = null) : ReaderOpenResult
 }
 
 /** Result of [PdfReader.render]. */
@@ -132,9 +164,21 @@ class PdfReader internal constructor(
      * for the Uri's type on the IO dispatcher, with a [typeTimeoutMillis] limit; anything but
      * `application/pdf` (another type, none, an exception, no answer in time) is `Io`, before
      * any copy is made.
+     *
+     * Passwords: [password] (null or empty: none) is sent with the page-info call; a PDF with only
+     * an owner password opens without one. With [keepLockedCopy], a PDF that needs a password
+     * (`Failed(Encrypted)`) or got a wrong one (`Failed(WrongPassword)`) keeps its copy in
+     * [ReaderOpenResult.Failed.locked] for [unlock]; the caller must then [unlock] or [discard] it.
+     * Without it the copy is deleted as for any failure.
      */
-    suspend fun open(uri: Uri, checkType: Boolean = false): ReaderOpenResult {
+    suspend fun open(
+        uri: Uri,
+        checkType: Boolean = false,
+        password: String? = null,
+        keepLockedCopy: Boolean = false,
+    ): ReaderOpenResult {
         if (!UriIo.isContentUri(uri)) return ReaderOpenResult.Failed(PdfError.Io(IOException("Not a content Uri")))
+        password?.let { p -> ReaderPassword.check(p)?.let { return ReaderOpenResult.Failed(PdfError.Io(IllegalArgumentException(it))) } }
         val dir = File(jobs.jobsRoot, READER_DIR_PREFIX + UUID.randomUUID())
         val file = File(dir, DOCUMENT_NAME)
         var keep = false
@@ -149,24 +193,9 @@ class PdfReader internal constructor(
                 UriIo.copyToFile(appContext, uri, file, isCancelled = { !ctx.isActive }, maxBytes = maxInputBytes)
                 picked.name
             }
-            val engine = renderer() ?: return ReaderOpenResult.Failed(PdfError.Io(IOException("Engine cannot render pages")))
-            val info = withContext(jobs.engineDispatcher) {
-                val job = coroutineContext.job
-                engine.pageInfo(file, cancelWhen { !job.isActive })
-            }
-            currentCoroutineContext().ensureActive()
-            return when (info) {
-                is PdfPageInfo.Err -> ReaderOpenResult.Failed(info.error)
-                is PdfPageInfo.Ok -> {
-                    val pages = info.pages.map { sanePageDims(it) }
-                    if (pages.isEmpty() || pages.size > RenderLimits.MAX_PAGES || pages.any { it == null }) {
-                        ReaderOpenResult.Failed(PdfError.Corrupt)
-                    } else {
-                        keep = true
-                        ReaderOpenResult.Opened(ReaderDocument(name, pages.filterNotNull(), dir, file))
-                    }
-                }
-            }
+            val result = readInfo(name, dir, file, password, if (keepLockedCopy) LockedPdf(name, dir, file) else null)
+            keep = result is ReaderOpenResult.Opened || (result is ReaderOpenResult.Failed && result.locked != null)
+            return result
         } catch (e: CancellationException) {
             if (!currentCoroutineContext().isActive) throw e
             return ReaderOpenResult.Failed(PdfError.Cancelled)
@@ -178,6 +207,87 @@ class PdfReader internal constructor(
             return ReaderOpenResult.Failed(PdfError.Io(e))
         } finally {
             if (!keep) withContext(NonCancellable + jobs.ioDispatcher) { dir.deleteRecursively() }
+        }
+    }
+
+    /**
+     * Tries [password] on [locked] (from a `Failed` of [open] with `keepLockedCopy`, or of an earlier
+     * [unlock]) without copying the file again. `Opened`: the copy now belongs to the document
+     * (close it with [close]); `Failed(WrongPassword or Encrypted, locked)`: the same copy waits for
+     * another attempt; any other `Failed`: the copy is deleted (`locked` null). A [locked] already
+     * discarded or used gives `Failed(Cancelled)`. A [password] that fails [ReaderPassword.check]
+     * gives `Failed(Io(IllegalArgumentException), locked)` without calling the engine.
+     * Cancelling the caller deletes the copy and rethrows.
+     */
+    suspend fun unlock(locked: LockedPdf, password: String): ReaderOpenResult {
+        if (locked.consumed) return ReaderOpenResult.Failed(PdfError.Cancelled)
+        ReaderPassword.check(password)?.let { return ReaderOpenResult.Failed(PdfError.Io(IllegalArgumentException(it)), locked) }
+        var keep = false
+        try {
+            val result = readInfo(locked.name, locked.dir, locked.file, password, locked)
+            keep = result is ReaderOpenResult.Opened || (result is ReaderOpenResult.Failed && result.locked != null)
+            if (result is ReaderOpenResult.Opened) locked.consumed = true
+            return result
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            return ReaderOpenResult.Failed(PdfError.Cancelled)
+        } catch (e: OutOfMemoryError) {
+            return ReaderOpenResult.Failed(PdfError.OutOfMemory)
+        } catch (e: Exception) {
+            return ReaderOpenResult.Failed(PdfError.Io(e))
+        } finally {
+            if (!keep) discard(locked)
+        }
+    }
+
+    /**
+     * The user gave up on [locked] (cancelled the password prompt, left the reader, opened another
+     * PDF): its copy is deleted on the engine thread. Safe to call more than once; never blocks.
+     */
+    fun discard(locked: LockedPdf) {
+        locked.consumed = true
+        jobs.processScope.launch(jobs.engineDispatcher) {
+            try {
+                locked.dir.deleteRecursively()
+            } catch (e: Exception) {
+                // Best effort; PdfJobs.get wipes cacheDir/jobs in the next process.
+            }
+        }
+    }
+
+    /**
+     * Page info of the copy [file] with [password]; `Failed(.., lockedOut)` for a password error
+     * when [lockedOut] is not null. Throws what [open] catches.
+     */
+    private suspend fun readInfo(name: String, dir: File, file: File, password: String?, lockedOut: LockedPdf?): ReaderOpenResult {
+        val engine = renderer() ?: return ReaderOpenResult.Failed(PdfError.Io(IOException("Engine cannot render pages")))
+        val pw = password?.takeIf { it.isNotEmpty() }
+        val info = withContext(jobs.engineDispatcher) {
+            val job = coroutineContext.job
+            engine.pageInfo(file, pw, cancelWhen { !job.isActive })
+        }
+        currentCoroutineContext().ensureActive()
+        return when (info) {
+            is PdfPageInfo.Err -> {
+                val passwordError = info.error == PdfError.Encrypted || info.error == PdfError.WrongPassword
+                ReaderOpenResult.Failed(info.error, if (passwordError) lockedOut else null)
+            }
+            is PdfPageInfo.Ok -> {
+                val pages = info.pages.map { sanePageDims(it) }
+                if (pages.isEmpty() || pages.size > RenderLimits.MAX_PAGES || pages.any { it == null }) {
+                    ReaderOpenResult.Failed(PdfError.Corrupt)
+                } else {
+                    ReaderOpenResult.Opened(
+                        ReaderDocument(
+                            name, pages.filterNotNull(), dir, file,
+                            password = if (info.encrypted) pw else null,
+                            isEncrypted = info.encrypted,
+                            canPrint = info.canPrint,
+                            canCopy = info.canCopy,
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -203,7 +313,7 @@ class PdfReader internal constructor(
                 if (document.closed) {
                     PdfRender.Err(PdfError.Cancelled)
                 } else {
-                    engine.renderPage(document.file, request, out, cancelWhen { document.closed })
+                    engine.renderPage(document.file, request, out, document.password, cancelWhen { document.closed })
                 }
             }
             return when (result) {
@@ -253,7 +363,7 @@ class PdfReader internal constructor(
                 if (document.closed) {
                     PdfPageText.Err(PdfError.Cancelled)
                 } else {
-                    engine.pageText(document.file, page, out, cancelWhen { document.closed })
+                    engine.pageText(document.file, page, out, document.password, cancelWhen { document.closed })
                 }
             }
             return when (result) {
