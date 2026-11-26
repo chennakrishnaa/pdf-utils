@@ -314,6 +314,64 @@ class RenderImageGateTest {
         })
     }
 
+    // ------------------------------------------------------------------ H5-1 (resource-stack fallback)
+
+    /** 33 benign entries (> NARROW_ABOVE) plus [extra]; image 13 benign, 10 the declared 65000² Flate image. */
+    private fun bigDict(extra: String) = (0 until 33).joinToString("") { "/I$it 13 0 R" } + extra
+
+    private fun HostilePdf.benignAndBig() {
+        stream(13, "/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(4))
+        // Declared size only (a few bytes of data): never the DCT bombs, which must not render ungated.
+        stream(10, "/Subtype/Image/Width 65000/Height 65000/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(64))
+    }
+
+    @Test
+    fun h5_1_formWithOwnResourcesFallsBackToThePageDictionary() {
+        // MuPDF's pdf_lookup_resource walks the whole resource stack: /Big, missing from Fm1's own
+        // (empty) /Resources, is found in the page's dictionary, which never names it.
+        assertRefused("h5-1", page("<</XObject<<${bigDict("/Fm1 11 0 R/Big 10 0 R")}>>>>", "/Fm1 Do") {
+            form(11, "<<>>", "/Big Do"); benignAndBig()
+        })
+    }
+
+    @Test
+    fun h5_1_twoFormsDeep() {
+        assertRefused("h5-1-own-own", page("<</XObject<<${bigDict("/Fm1 11 0 R/Big 10 0 R")}>>>>", "/Fm1 Do") {
+            form(11, "<</XObject<</Fm2 12 0 R>>>>", "/Fm2 Do"); form(12, "<<>>", "/Big Do"); benignAndBig()
+        })
+        assertRefused("h5-1-own-resourceless", page("<</XObject<<${bigDict("/Fm1 11 0 R/Big 10 0 R")}>>>>", "/Fm1 Do") {
+            form(11, "<</XObject<</Fm2 12 0 R>>>>", "/Fm2 Do")
+            stream(12, "/Subtype/Form/BBox[0 0 200 200]", "/Big Do".latin1()) // no /Resources: runs on Fm1's stack
+            benignAndBig()
+        })
+    }
+
+    @Test
+    fun h5_1_patternPaintedInsideAFormSeesTheFormsDictionary() {
+        // The pattern is defined on the page but painted inside Fm1, so its content runs on the stack
+        // P0 → Fm1 → page and /Big resolves in Fm1's (narrowable) dictionary.
+        assertRefused("h5-1-pattern", page(
+            "<</XObject<</Fm1 11 0 R>>/Pattern<</P0 12 0 R>>>>", "/Fm1 Do",
+        ) {
+            form(11, "<</XObject<<${bigDict("/Big 10 0 R")}>>>>", "/Pattern cs /P0 scn 0 0 200 200 re f")
+            stream(12, "/Type/Pattern/PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]/XStep 10/YStep 10/Resources<<>>", "/Big Do".latin1())
+            benignAndBig()
+        })
+    }
+
+    @Test
+    fun h5_1_sharedDictionaryWithNestedFormsThatHaveOwnResourcesStillRenders() {
+        // 40 page XObjects (narrowed) with an unused bomb, two levels of forms with their own resources.
+        val dict = (0 until 40).joinToString("") { "/I$it 13 0 R" } + "/Fm1 11 0 R/Unused 14 0 R"
+        val bytes = page("<</XObject<<$dict>>>>", "q 20 0 0 20 0 0 cm /I1 Do Q /Fm1 Do") {
+            form(11, "<</XObject<</Fm2 12 0 R/J0 13 0 R>>>>", "q 20 0 0 20 0 0 cm /J0 Do Q /Fm2 Do")
+            form(12, "<</XObject<</K0 13 0 R>>>>", "q 20 0 0 20 0 0 cm /K0 Do /I2 Do Q")
+            stream(13, "/Subtype/Image/Width 2/Height 2/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(4))
+            dctImage(14, bomb)
+        }
+        assertRenders("h5-1-benign", file("h5-1-benign.pdf", bytes))
+    }
+
     // ------------------------------------------------------------------ legitimate documents
 
     private fun flatJpeg(cs: ColorSpace, w: Int, h: Int): ByteArray {
