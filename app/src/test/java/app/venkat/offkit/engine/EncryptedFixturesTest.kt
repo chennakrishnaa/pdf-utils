@@ -70,6 +70,37 @@ class EncryptedFixturesTest {
         assertOpens(fixture("owner.pdf", EncryptedFixtures.OWNER_ONLY_B64), null)
     }
 
+    /** U1: AES-128 (V4 R4, /AESV2), written by pypdf rather than MuPDF. */
+    @Test
+    fun aes128UserPassword() {
+        val pdf = fixture("aes128.pdf", EncryptedFixtures.AES128_B64)
+        assertEquals(PdfPageInfo.Err(PdfError.Encrypted), engine.pageInfo(pdf, null))
+        assertEquals(PdfPageInfo.Err(PdfError.WrongPassword), engine.pageInfo(pdf, "aes128-secreT"))
+        val out = File(tmp.root, "tile.rgba")
+        val req = RenderRequest(0, 1f, 0, 0, 200, 200)
+        assertEquals(PdfRender.Err(PdfError.WrongPassword), engine.renderPage(pdf, req, out, "nope"))
+        assertOpens(pdf, EncryptedFixtures.AES128_USER)
+        assertEquals(PdfRender.Ok(200, 200), engine.renderPage(pdf, req, out, EncryptedFixtures.AES128_USER))
+        // The owner password opens it too.
+        assertTrue(engine.pageInfo(pdf, "owner-aes128") is PdfPageInfo.Ok)
+    }
+
+    @Test
+    fun aes128OwnerOnlyOpensWithoutPassword() {
+        assertOpens(fixture("aes128-owner.pdf", EncryptedFixtures.AES128_OWNER_ONLY_B64), null)
+    }
+
+    @Test
+    fun aes128ToolsStillRefuse() {
+        val out = File(tmp.root, "out.pdf")
+        for (b64 in listOf(EncryptedFixtures.AES128_B64, EncryptedFixtures.AES128_OWNER_ONLY_B64)) {
+            val pdf = fixture("tool.pdf", b64)
+            assertEquals(PdfResult.Err(PdfError.Encrypted), engine.compress(pdf, CompressionLevel.MEDIUM, out))
+            assertEquals(PdfResult.Err(PdfError.Encrypted), engine.merge(listOf(pdf, pdf), out))
+            assertTrue(!out.exists())
+        }
+    }
+
     // ------------------------------------------------------------------ regeneration
 
     /** The plaintext one-page PDF: [EncryptedFixtures.WORD] in Helvetica, and a black square. */

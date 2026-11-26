@@ -175,6 +175,17 @@ class EncryptedOnDeviceTest {
         assertTrue(text, text.contains(EncryptedFixtures.WORD))
     }
 
+    /** U1: AES-128 (V4 R4, /AESV2), written by pypdf, through the engine process. */
+    @Test
+    fun encrypted_aes128PasswordThroughEngineProcess() {
+        val pdf = EncryptedFixtures.write(engineDir, "aes128.pdf", EncryptedFixtures.AES128_B64)
+        assertPasswordFlow(pdf, EncryptedFixtures.AES128_USER, wrong = "aes128-secreT")
+        val owner = EncryptedFixtures.write(engineDir, "aes128-owner.pdf", EncryptedFixtures.AES128_OWNER_ONLY_B64)
+        val ok = remote.pageInfo(owner, null, JobControl.None)
+        assertTrue("owner-only pageInfo: $ok", ok is PdfPageInfo.Ok)
+        assertTrue(remoteText(owner, null).contains(EncryptedFixtures.WORD))
+    }
+
     // ---------------------------------------------------------------- reader view model
 
     @Test
