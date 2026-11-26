@@ -266,6 +266,31 @@ class ObjStmAsciiTest {
         }
     }
 
+    /**
+     * The object number in front of `obj` as MuPDF lexes it, vs. the scan's `refBefore`: the ref
+     * recorded for pass 2 is MuPDF's own `5 0` or none (`-1`, refused in pass 2: fails closed),
+     * never another object's; and the bomb is refused by pass 1 whatever the number looks like.
+     */
+    @Test
+    fun headerNumberSpellings_refIsMuPdfsOrNone() {
+        val nums = listOf("7 /5 0", "7(5 0", "7<5 0", "+5 0", "05 0", "5 00", "5 +0", "5-3 0", "5 0%c\n", "-5 0", "5\n0", "00000000005 0")
+        val sb = StringBuilder()
+        for (num in nums) for (kw in listOf("obj", "o#62j")) for (xref in xrefKinds) {
+            val what = "${num.replace("\n", "\\n")} $kw $xref"
+            val bomb = write("w5-num-bomb.pdf", escapedHeaderPdf(kw, xref, repeated("null ", 3_500_000), num = num))
+            assertTooLarge("$what: scan") { ObjStmScan.check(bomb) }
+            val ok = write("w5-num.pdf", escapedHeaderPdf(kw, xref, repeated("1 0 R ", 50_000), num = num))
+            val refs = ObjStmScan.check(ok).flate
+            val n = mupdfDecoded(ok, 5)
+            val other = listOf(0, 3, 7).associateWith { mupdfDecoded(ok, it) }.filterValues { it == 300_006 }
+            sb.append("W5num $what\tmupdf(5 0)=$n\tother=$other\tref=$refs\n")
+            assertEquals(what, 1, refs.size)
+            assertTrue("$what: $refs", refs[0] == ObjStmScan.Ref(-1, -1) || refs[0] == ObjStmScan.Ref(5, 0))
+            assertTrue("$what: MuPDF loads it as $other", other.isEmpty())
+        }
+        println(sb)
+    }
+
     /** Lookalikes MuPDF does not take for `obj`: it cannot load the object, from any xref kind. */
     @Test
     fun objLookalikes_mupdfDoesNotLoadTheObject() {
@@ -280,13 +305,13 @@ class ObjStmAsciiTest {
      * whose header is `5 0 [kw]`; [xref] is `classic` (table), `stream` (xref stream 7) or
      * `repair` (no xref at all: MuPDF rebuilds it by lexing the file).
      */
-    private fun escapedHeaderPdf(kw: String, xref: String, payload: ByteArray, endstream: String = "endstream"): ByteArray {
+    private fun escapedHeaderPdf(kw: String, xref: String, payload: ByteArray, endstream: String = "endstream", num: String = "5 0"): ByteArray {
         val out = ByteArrayOutputStream()
         out.write("%PDF-1.7\n%\u00e2\u00e3\u00cf\u00d3\n".latin1())
         val offs = IntArray(8)
         fun obj(n: Int, body: ByteArray, k: String = "obj") {
             offs[n] = out.size()
-            out.write("$n 0 $k\n".latin1()); out.write(body); out.write("\nendobj\n".latin1())
+            out.write((if (n == 5) "$num $k\n" else "$n 0 $k\n").latin1()); out.write(body); out.write("\nendobj\n".latin1())
         }
         obj(1, "<</Type/Catalog/Pages 2 0 R>>".latin1())
         obj(2, "<</Type/Pages/Kids[3 0 R]/Count 1>>".latin1())
