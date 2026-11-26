@@ -399,3 +399,18 @@ Written by a docs worker from the code at `561c0e6` (H1 "Open with", H3 copy tex
 - No build, no APK and no test was run for this addendum. The emulator result for the read grant is the conductor's report.
 - Not tried on a real phone, or with a real file manager, mail or browser app as the caller.
 - Background-start rules, task placement with `singleTask` and `taskAffinity=""` across Android versions, and who can read the clipboard on each version are platform behaviour (NV).
+
+## Reader share, print and password prompt (K3, K5; branch `pdf-reader`, 2026-11-26)
+
+Written from the K3 and K5 merges (`142461b`, `f016e77`) and a read of `feature/reader/ReaderShare.kt`, `ReaderPrint.kt`, `PasswordPrompt.kt` and `ReaderViewModel.kt`. No build or test was run for this addendum.
+
+- **`cache/shared/` now also holds reader shares.** Share in the reader copies the original bytes of the open PDF (a password-protected PDF stays protected; nothing is decrypted) to `cache/shared/<uuid>/<name>` and hands it out through the existing non-exported `FileProvider` (`${applicationId}.share`, limited to `cache/shared/`) with the same `sharePdfIntent` the tools use. The copy is wiped with the rest of the folder at the next tool job start and at the first `PdfJobs.get` of a new process, as for tool results (RD-6). A share cancelled mid-copy deletes its partial copy; one whose document changed mid-copy leaves the copy for that wipe.
+- **Print hands the bytes to the system spooler.** `ReaderPrint.kt` gives the private copy's bytes to Android's print system through a `PrintDocumentAdapter` (`onWrite` copies the file to the descriptor the framework gives it, on a background thread). The UI process renders nothing; the print spooler renders the PDF in its own process, and whatever printer or print app the user picks receives the output. A document opened with a password is refused before printing (the spooler would need the password); a PDF with only an owner password is printed. Tested on the JVM only.
+- **Clipboard unchanged.** Search and the password prompt put nothing on the clipboard; Copy is as in the H3 addendum.
+- **Password never in saved state.** The prompt's field is plain `remember`, never `rememberSaveable`; `ReaderDocState.Locked` and the view model's `SavedStateHandle` (only the two picker flags) hold no password. The password is kept in memory in the open `ReaderDocument` only (`PdfReader`) and travels to `:engine` in the request Bundle (`security/engine-audit.md`, "Reader password addendum"). `FLAG_SECURE` is not set (owner decision pending), so the prompt and protected pages can appear in screenshots and the Recents thumbnail.
+- **Search query.** The query stays in the UI process (it never crosses to `:engine`) and is kept in `rememberSaveable`, so it is in the activity's saved instance state; it is not written to storage by the app.
+- **No new component or permission.** The manifest is unchanged by K1 to K5.
+
+### Not verified
+
+- Not tried on a real phone: the share sheet with a real receiving app, the real print dialog and spooler (including "Save as PDF" with a page range and a cancelled print), and owner-password-only printing.
