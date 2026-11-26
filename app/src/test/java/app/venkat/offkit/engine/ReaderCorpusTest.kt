@@ -258,7 +258,7 @@ class ReaderCorpusTest {
         outDir.mkdirs()
         val pws = passwords()
         val readerRows = File(outDir, "reader.tsv").readLines().drop(1).map { it.split("\t") }
-        val bad = readerRows.filter { it.size > 2 && it[2] != "OK" }.map { File(it[0]) }.filter { it.isFile }
+        val bad = readerRows.filter { it.size > 2 && (it[2] != "OK" || (it.getOrNull(9)?.toIntOrNull() ?: 0) > 0) }.map { File(it[0]) }.filter { it.isFile }
         val out = File(outDir, "stock.tsv")
         runAll(bad, out) { f ->
             val t0 = System.currentTimeMillis()
@@ -315,7 +315,7 @@ class ReaderCorpusTest {
                     if (!ok || tu < 0) fails++
                     if (tu > 0) { units += tu; if (isBlank) blankText++ }
                 }
-                val outcome = when { fails == 0 -> "STOCK_OK"; fails >= checked -> "STOCK_ALL_PAGES_FAIL"; else -> "STOCK_SOME_PAGES_FAIL" }
+                val outcome = when { n <= 0 -> "STOCK_NO_PAGES"; fails == 0 -> "STOCK_OK"; fails >= checked -> "STOCK_ALL_PAGES_FAIL"; else -> "STOCK_SOME_PAGES_FAIL" }
                 row(out, f.path, f.length(), outcome, "", "", firstErr, n, checked, fails, blank, blankText, units, "", maxR, maxRp, maxT, System.currentTimeMillis() - t0, peakRss shr 20, notes.joinToString(";"))
             } finally { doc.destroy() }
         }
