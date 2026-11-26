@@ -215,7 +215,7 @@ class EncryptedReaderTest {
     /** M2-2: a nested dictionary's `/Filter` does not hide the outer one from pass 1 (so pass 2 measures it). */
     @Test
     fun objectStreamBombWithNestedFilterKeyIsRefusedAfterDecryption() {
-        val small = encryptedObjStmPdf("small-nested.pdf", padding = 1000, dictTail = "/DecodeParms<</Columns 4>>/X<</Filter[]>>")
+        val small = encryptedObjStmPdf("small-nested.pdf", padding = 1000, dictTail = "/DecodeParms<</Columns 4>>")
         assertTrue("benign nested object stream opens", engine.pageInfo(small, "user1") is PdfPageInfo.Ok)
         val bomb = encryptedObjStmPdf("bomb-nested.pdf", padding = 17 shl 20, dictTail = "/X<</Filter[]>>")
         assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb, "user1"))

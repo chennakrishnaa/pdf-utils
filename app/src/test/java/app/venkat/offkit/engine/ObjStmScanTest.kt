@@ -134,6 +134,8 @@ class ObjStmScanTest {
             "nested in array" to "/X[<</Filter[]>>]",
             "array of names" to "/X[/Filter]",
             "string and comment" to "/X(<<)/Y<</Z(>>)%>>\n/Filter[]>>",
+            // MuPDF takes `>>` right after a key as that key's (null) value, so this `/Filter[]` is nested for it.
+            "swallowed >>" to "/X<</Y>>/Filter[]>>",
         )) {
             val bomb = write("nested.pdf", nestedAfterFilter(bombData, nested))
             val refused = runCatching { ObjStmScan.check(bomb) }.exceptionOrNull().let { it is PdfInputException && it.error == PdfError.OutOfMemory }
@@ -147,19 +149,31 @@ class ObjStmScanTest {
     /** M2-2: a candidate whose dictionary nesting cannot be trusted (a string cut at 64 KiB, unbalanced `<<`) is refused. */
     @Test
     fun m2_2_untrustworthyNestingIsRefused() {
-        for ((name, extra) in listOf("cut string" to "/X(${"a".repeat(70_000)}<<)", "unbalanced" to "/X<</Y 1")) {
+        val missed = ArrayList<String>()
+        for ((name, extra) in listOf(
+            "cut string" to "/X(${"a".repeat(70_000)}<<)",
+            "unbalanced" to "/X<</Y 1",
+            // MuPDF reads `/Y 1<<` as Y = null and the `<<` is consumed: its /Filter is top-level for MuPDF.
+            "swallowed <<" to "/Y 1<</Filter/FlateDecode/Z>>",
+            "filter in an array" to "/X[/F]",
+            "second /Filter" to "/Filter[]/Filter[]",
+        )) {
             val pdf = HostilePdf()
             basicPage(pdf)
             pdf.add(20, "<</Type/ObjStm/N 1/First 4$extra/Length 8>>stream\n1 0 null\nendstream")
-            assertTooLarge(name) { ObjStmScan.check(write("nest-$name.pdf", pdf.bytes())) }
+            val e = runCatching { ObjStmScan.check(write("nest.pdf", pdf.bytes())) }.exceptionOrNull()
+            if (!(e is PdfInputException && e.error == PdfError.OutOfMemory)) missed.add(name)
         }
+        assertTrue("not refused: $missed", missed.isEmpty())
     }
 
     /** M2-2: ordinary nested dictionaries in an object stream's dictionary still open. */
     @Test
     fun m2_2_benignNestedDictionariesStillOpen() {
         val small = inCatalogStream(repeated("null ", 1000), dictExtra = PAD)
-        for (nested in listOf("/DecodeParms<</Columns 4>>", "/X<</F(file.txt)/Filter/LZWDecode>>", "/X[<</F 1>>]")) {
+        // The common predictor spelling passes the scan (the data here is not PNG-predicted, so it is not opened).
+        ObjStmScan.check(write("benign-predictor.pdf", nestedAfterFilter(small, "/DecodeParms<</Columns 4/Predictor 12>>")))
+        for (nested in listOf("/DecodeParms<</Columns 4>>", "/DecodeParms<</Columns 4/Colors 1>>/X[1 2]")) {
             val ok = write("benign-nested.pdf", nestedAfterFilter(small, nested))
             ObjStmScan.check(ok)
             PdfInputs.open(ok).destroy()

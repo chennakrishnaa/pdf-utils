@@ -29,7 +29,11 @@ import java.util.zip.Inflater
  * pass (`/N` anywhere, also in a nested dictionary, makes a candidate: a superset). The filter is
  * read as MuPDF reads it (`pdf_open_filter`: `Filter|F`, `/F` used only when `/Filter` is absent;
  * K7-2), from the top level of the stream dictionary only (M2-2: `<<`/`>>` and `[`/`]` nesting is
- * tracked, so a nested `/DecodeParms<</F …>>` or `/X<</Filter[]>>` does not replace the outer key). `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
+ * tracked, so a nested `/DecodeParms<</Predictor 12>>` is not misread). Because MuPDF's dictionary
+ * parser can swallow a `<<` or `>>` after a key (`/K >>`, `/K 1 <<`), a candidate is refused when a
+ * `/Filter` or `/F` name appears nested or in an array, appears twice at the top level, when a `>>`
+ * closes nothing, when the nesting is unbalanced at `stream`, or when its dictionary held a string or
+ * comment cut at 64 KiB. `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
  * has no external-file streams, no `/FFilter`, and would read the data raw) is refused like any
  * other non-name filter. Per candidate:
  * - no filter: its raw extent (to the next `endstream`) counts as decoded bytes;
@@ -236,6 +240,15 @@ internal object ObjStmScan {
 
         /** A string or comment was cut at [MAX_SPAN] since the last reset (its tail was tokenised). */
         private var cut = false
+
+        /**
+         * M2-2: the dictionary has a shape where the scanner's nesting may differ from MuPDF's.
+         * `pdf_parse_dict` takes ONE token as a (null) value after a key in `/K >>`, `/K 1 2 >>`
+         * and `/K 1 <<`, so a `<<` or `>>` the scanner counts may be swallowed. Set on a `>>` at
+         * depth 0, a `/Filter` or `/F` name nested or in an array, and a second top-level
+         * `/Filter` or `/F`; a candidate with it set is refused.
+         */
+        private var odd = false
         private var rawStart = -1L
         private var totalOut = 0L
         private var totalIn = 0L
@@ -270,7 +283,7 @@ internal object ObjStmScan {
                     c == '%'.code -> skipUntil(p + 1) { it == '\n'.code || it == '\r'.code }
                     c == '('.code -> skipString(p + 1).also { otherValue() }
                     c == '<'.code -> if (at(p + 1) == '<'.code) (p + 2).also { otherValue(); dictDepth++ } else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
-                    c == '>'.code && at(p + 1) == '>'.code -> (p + 2).also { otherValue(); if (dictDepth > 0) dictDepth-- }
+                    c == '>'.code && at(p + 1) == '>'.code -> (p + 2).also { otherValue(); if (dictDepth > 0) dictDepth-- else odd = true }
                     c == '['.code -> {
                         if (filterState == 1) { filterState = 2; filterArrayDepth = arrayDepth } else otherValue()
                         arrayDepth++
@@ -384,7 +397,11 @@ internal object ObjStmScan {
                 1 -> { cur.names.add(n); filterState = 0; return }
                 2 -> { cur.names.add(n); return }
             }
-            if (dictDepth > 1 || arrayDepth > 0) return // M2-2: not a key of the stream dictionary
+            if (dictDepth > 1 || arrayDepth > 0) {
+                // M2-2: not a key of the stream dictionary for the scanner, but MuPDF may see it as one.
+                if (n == "Filter" || n == "F") odd = true
+                return
+            }
             when (n) {
                 "Filter" -> startFilter(filterSlot)
                 "F" -> startFilter(fSlot)
@@ -392,6 +409,7 @@ internal object ObjStmScan {
         }
 
         private fun startFilter(slot: FilterSlot) {
+            if (slot.seen) odd = true // M2-2: a second one (MuPDF keeps the last; one may be nested for it)
             slot.clear()
             slot.seen = true
             cur = slot
@@ -406,6 +424,7 @@ internal object ObjStmScan {
             dictDepth = 0
             arrayDepth = 0
             cut = false
+            odd = false
         }
 
         /** `stream` keyword ending at [after]: checks the stream if its dictionary made it a candidate. */
@@ -414,7 +433,7 @@ internal object ObjStmScan {
             if (!candidate) return
             // M2-2: the nesting is not where MuPDF's would be (unbalanced, or a cut string or comment
             // whose tail was tokenised could fake a `<<`): which keys are top-level is not known.
-            if (dictDepth != 0 || arrayDepth != 0 || cut) tooLarge()
+            if (dictDepth != 0 || arrayDepth != 0 || cut || odd) tooLarge()
             var d = after
             if (at(d) == '\r'.code) d++
             if (at(d) == '\n'.code) d++
