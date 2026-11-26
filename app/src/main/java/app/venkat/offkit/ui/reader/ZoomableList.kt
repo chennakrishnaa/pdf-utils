@@ -71,6 +71,13 @@ class ZoomableListState(val minScale: Float = 1f, val maxScale: Float = 5f) {
     var offsetX: Float by mutableFloatStateOf(0f)
         private set
 
+    /**
+     * Set by a child that owns the current one-finger drag (a text selection handle), from its
+     * own down event: while true, the list does not turn that drag into a pan. The child must
+     * reset it when its pointer goes up, is cancelled or the child leaves the composition.
+     */
+    var childDragging: Boolean = false
+
     private var pinchActive by mutableStateOf(false)
     private var animations by mutableIntStateOf(0)
 
@@ -349,7 +356,7 @@ private class ZoomController(
                         val delta = change.positionChange()
                         if (!panning) {
                             moved += delta
-                            if (moved.getDistance() > slop && state.scale > state.minScale) panning = true
+                            if (moved.getDistance() > slop && state.scale > state.minScale && !state.childDragging) panning = true
                         }
                         if (panning) {
                             scrollList(state.panBy(delta))

@@ -7,6 +7,14 @@ import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import app.venkat.offkit.FakePdfEngine
 import app.venkat.offkit.PdfUtilApp
+import app.venkat.offkit.TestPageTexts
+import app.venkat.offkit.engine.PdfPageText
+import app.venkat.offkit.feature.reader.ReaderTextEvent
+import app.venkat.offkit.feature.reader.ReaderTextLimits
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
 import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.core.PdfJobs
 import app.venkat.offkit.core.PdfReader
@@ -68,6 +76,12 @@ class ReaderViewModelTest {
                 return fake.pageInfo(pdf, job)
             }
 
+            override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
+                engineThreads += Thread.currentThread().name.substringBefore(" @")
+                textError?.let { return PdfPageText.Err(it) }
+                return fake.pageText(pdf, page, out, job)
+            }
+
             override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
                 engineThreads += Thread.currentThread().name.substringBefore(" @")
                 val r = fake.renderPage(pdf, request, out, job)
@@ -86,12 +100,15 @@ class ReaderViewModelTest {
         engineDispatcher.close()
     }
 
-    private fun newVm(limits: ReaderLimits = ReaderLimits()): ReaderViewModel =
+    /** Fails every page-text call when set. */
+    @Volatile private var textError: PdfError? = null
+
+    private fun newVm(limits: ReaderLimits = ReaderLimits(), textLimits: ReaderTextLimits = ReaderTextLimits()): ReaderViewModel =
         ViewModelProvider(
             store,
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T = ReaderViewModel(app, reader, limits) as T
+                override fun <T : ViewModel> create(modelClass: Class<T>): T = ReaderViewModel(app, reader, limits, textLimits) as T
             },
         )["reader-${System.nanoTime()}", ReaderViewModel::class.java]
 
@@ -289,6 +306,149 @@ class ReaderViewModelTest {
         release.countDown()
         CoreTestSupport.idleUntil(message = "no reader dir") { readerDirs().isEmpty() }
         assertEquals(ReaderDocState.Idle, vm.document.value)
+    }
+
+    private fun events(vm: ReaderViewModel): Pair<MutableList<ReaderTextEvent>, () -> Unit> {
+        val list = CopyOnWriteArrayList<ReaderTextEvent>()
+        val scope = MainScope()
+        vm.textEvents.onEach { list += it }.launchIn(scope)
+        return list to { scope.cancel() }
+    }
+
+    private fun textCallsFor(page: Int) = fake.textCalls.count { it.second == page }
+
+    @Test
+    fun textIsFetchedOnTheFirstLongPressThenCachedPerPage() {
+        val vm = newVm()
+        fake.readerPages = List(3) { PageDims(595f, 842f) }
+        fake.readerTexts[1] = TestPageTexts.grid("Hello world", "Second line")
+        openVm(vm)
+        vm.onViewport(WIDTH, 1f, listOf(band(0), band(1)))
+        CoreTestSupport.idleUntil(message = "rendered") { vm.page(1).value.base != null }
+        assertTrue("no text fetched before a long-press", fake.textCalls.isEmpty())
+
+        val (x, y) = TestPageTexts.centre(0, 8)
+        vm.longPress(1, x, y, 5f)
+        CoreTestSupport.idleUntil(message = "selected") { vm.selection.value != null }
+        assertEquals("world", vm.selection.value!!.string())
+        assertEquals(1, vm.selection.value!!.page)
+        val (x2, y2) = TestPageTexts.centre(1, 0)
+        vm.longPress(1, x2, y2, 5f)
+        CoreTestSupport.idleUntil(message = "second word") { vm.selection.value?.string() == "Second" }
+        assertEquals("one text call per page", 1, textCallsFor(1))
+
+        vm.selectAll()
+        assertEquals("Hello world\nSecond line", vm.selection.value!!.string())
+        val (events, stop) = events(vm)
+        vm.copySelection()
+        CoreTestSupport.idleUntil(message = "copy event") { events.isNotEmpty() }
+        assertEquals(ReaderTextEvent.Copy("Hello world\nSecond line", cut = false), events.single())
+        assertNull("copy clears", vm.selection.value)
+        stop()
+        assertTrue(engineThreads.all { it == ENGINE_THREAD })
+    }
+
+    @Test
+    fun aMissAndAnEmptyPageAndAFailedReadDoNotSelect() {
+        val vm = newVm()
+        fake.readerPages = List(3) { PageDims(595f, 842f) }
+        fake.readerTexts[0] = TestPageTexts.grid("Hello")
+        openVm(vm)
+        val (events, stop) = events(vm)
+        vm.longPress(0, 10f, 10f, 5f) // far from the text
+        CoreTestSupport.idleUntil(message = "fetched") { fake.textCalls.size == 1 }
+        CoreTestSupport.idleUntil { true }
+        assertNull(vm.selection.value)
+        assertTrue("a miss on a page with text says nothing", events.isEmpty())
+
+        vm.longPress(1, 10f, 10f, 5f) // a page with no text at all
+        CoreTestSupport.idleUntil(message = "no text") { events.isNotEmpty() }
+        assertEquals(ReaderTextEvent.NoText, events.single())
+
+        textError = PdfError.EngineCrashed
+        vm.longPress(2, 10f, 10f, 5f)
+        CoreTestSupport.idleUntil(message = "failed") { events.size == 2 }
+        assertEquals(ReaderTextEvent.Failed(PdfError.EngineCrashed), events[1])
+        assertNull(vm.selection.value)
+        assertTrue("the document stays open", vm.document.value is ReaderDocState.Open)
+
+        // A failure is not cached: the next try reads again.
+        textError = null
+        vm.copyPageText(2)
+        CoreTestSupport.idleUntil(message = "retried") { events.size == 3 }
+        assertEquals("read again (the failed call was answered before the fake)", 1, textCallsFor(2))
+        assertEquals(ReaderTextEvent.NoText, events[2])
+        stop()
+    }
+
+    @Test
+    fun theTextCacheIsAnLruBoundedByPagesAndCharacters() {
+        val vm = newVm(textLimits = ReaderTextLimits(pages = 2, chars = 1000))
+        fake.readerPages = List(4) { PageDims(595f, 842f) }
+        for (p in 0 until 4) fake.readerTexts[p] = TestPageTexts.grid("Page $p")
+        openVm(vm)
+        val (events, stop) = events(vm)
+        for (p in listOf(0, 1, 0, 2)) {
+            val before = events.size
+            vm.copyPageText(p)
+            CoreTestSupport.idleUntil(message = "copy $p") { events.size == before + 1 }
+        }
+        assertEquals(2, vm.cachedTextPagesForTest())
+        assertEquals(listOf(1, 1, 1), listOf(0, 1, 2).map { textCallsFor(it) })
+        // Page 1 was the least recently used: it went; page 0 stayed.
+        vm.copyPageText(0)
+        vm.copyPageText(1)
+        CoreTestSupport.idleUntil(message = "copies") { events.size == 6 }
+        assertEquals(1, textCallsFor(0))
+        assertEquals(2, textCallsFor(1))
+        assertEquals(ReaderTextEvent.Copy("Page 1", cut = false), events.last())
+
+        // Bounded by characters too (a page being selected is kept even if it alone is over).
+        val small = newVm(textLimits = ReaderTextLimits(pages = 8, chars = 7))
+        openVm(small)
+        val (ev2, stop2) = events(small)
+        small.copyPageText(0)
+        small.copyPageText(1)
+        CoreTestSupport.idleUntil(message = "small copies") { ev2.size == 2 }
+        assertEquals(1, small.cachedTextPagesForTest())
+        stop()
+        stop2()
+    }
+
+    @Test
+    fun aTextCallDoesNotCancelARenderAndTheSelectionEndsWithTheDocument() {
+        val vm = newVm()
+        fake.readerPages = List(10) { PageDims(595f, 842f) }
+        fake.readerTexts[0] = TestPageTexts.grid("Hello world")
+        openVm(vm)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        fake.beforeRender = { req -> if (req.page == 0) { entered.countDown(); release.await(5, TimeUnit.SECONDS) } }
+        vm.onViewport(WIDTH, 1f, listOf(band(0)))
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        val (x, y) = TestPageTexts.centre(0, 1)
+        vm.longPress(0, x, y, 5f)
+        CoreTestSupport.idleUntil { true }
+        assertNull("text waits behind the render on the engine thread", vm.selection.value)
+        release.countDown()
+        CoreTestSupport.idleUntil(message = "selected") { vm.selection.value != null }
+        CoreTestSupport.idleUntil(message = "rendered") { vm.page(0).value.base != null }
+        assertTrue("no render was cancelled", renderJobs.none { it.second })
+        assertEquals("Hello", vm.selection.value!!.string())
+
+        // Scrolling far away clears it; a near scroll keeps it.
+        vm.onViewport(WIDTH, 1f, listOf(band(2)))
+        assertNotNull(vm.selection.value)
+        vm.onViewport(WIDTH, 1f, listOf(band(3)))
+        assertNull(vm.selection.value)
+
+        vm.onViewport(WIDTH, 1f, listOf(band(0)))
+        vm.longPress(0, x, y, 5f)
+        CoreTestSupport.idleUntil(message = "cached select") { vm.selection.value != null }
+        assertEquals(1, fake.textCalls.size)
+        openVm(vm, "other.pdf")
+        assertNull("another document clears the selection", vm.selection.value)
+        assertEquals(0, vm.cachedTextPagesForTest())
     }
 
     private companion object {

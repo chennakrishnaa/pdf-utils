@@ -1,6 +1,11 @@
 package app.venkat.offkit.feature.reader
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -30,7 +35,13 @@ import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -58,13 +69,17 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.SemanticsPropertyReceiver
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -94,6 +109,8 @@ import app.venkat.offkit.ui.reader.ZoomableListState
 import app.venkat.offkit.ui.reader.rememberZoomableListState
 import app.venkat.offkit.ui.theme.OffkitDimens
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
@@ -112,6 +129,19 @@ const val TAG_READER_TITLE = "reader_title"
 
 /** Test tag of the "Open another PDF" top-bar action. */
 const val TAG_READER_OPEN_ANOTHER = "reader_open_another"
+
+/** Test tags of the selection bar (the top bar while text is selected) and its actions. */
+const val TAG_READER_SELECTION_BAR = "reader_selection_bar"
+const val TAG_READER_COPY = "reader_copy"
+const val TAG_READER_SELECT_ALL = "reader_select_all"
+const val TAG_READER_SELECTION_CLOSE = "reader_selection_close"
+
+/** Test tags of the two selection handles (the anchor's and the focus's, see [ReaderSelection]). */
+const val TAG_READER_HANDLE_ANCHOR = "reader_handle_anchor"
+const val TAG_READER_HANDLE_FOCUS = "reader_handle_focus"
+
+/** Test tag of the reader's transient messages. */
+const val TAG_READER_SNACKBAR = "reader_snackbar"
 
 /** Test tag of page [index] (0-based) of the open document. */
 fun readerPageTag(index: Int): String = "reader_page_$index"
@@ -238,6 +268,7 @@ private fun ReaderFrame(
     indicator: Pair<Int, Int>?,
     onBack: () -> Unit,
     onOpenAnother: (() -> Unit)?,
+    bar: (@Composable () -> Unit)? = null,
     body: @Composable () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -248,7 +279,7 @@ private fun ReaderFrame(
                 .background(colors.surfaceDim)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
         ) {
-            ReaderTopBar(title, indicator, onBack, onOpenAnother)
+            if (bar != null) bar() else ReaderTopBar(title, indicator, onBack, onOpenAnother)
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) { body() }
         }
     }
@@ -334,11 +365,42 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     val zoomState = rememberZoomableListState(minScale = 1f, maxScale = 5f)
     val pageCount = doc.pages.size
     var current by remember { mutableIntStateOf(0) }
+    val selection by vm.selection.collectAsState()
+    val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    // Back clears a selection first, then leaves as before.
+    BackHandler(enabled = selection != null) { vm.clearSelection() }
+    LaunchedEffect(vm) {
+        vm.textEvents.collect { event ->
+            val message = when (event) {
+                is ReaderTextEvent.Copy -> {
+                    copyToClipboard(context, event.text)
+                    when (SelectionMath.copyNotice(Build.VERSION.SDK_INT, event.cut)) {
+                        CopyNotice.NONE -> null
+                        CopyNotice.COPIED -> context.getString(R.string.reader_copied)
+                        CopyNotice.COPIED_CUT -> context.getString(R.string.reader_copied_cut)
+                        CopyNotice.CUT -> context.getString(R.string.reader_text_cut)
+                    }
+                }
+                ReaderTextEvent.NoText -> context.getString(R.string.reader_no_text)
+                is ReaderTextEvent.Failed -> context.getString(R.string.reader_text_error, context.getString(pdfErrorTitle(event.error)))
+            }
+            if (message != null) {
+                snackbar.currentSnackbarData?.dismiss()
+                launch { snackbar.showSnackbar(message) }
+            }
+        }
+    }
     ReaderFrame(
         title = doc.name,
         indicator = (current + 1) to pageCount,
         onBack = onBack,
         onOpenAnother = onOpenAnother,
+        bar = if (selection != null) {
+            { SelectionBar(onClose = vm::clearSelection, onSelectAll = vm::selectAll, onCopy = vm::copySelection) }
+        } else {
+            null
+        },
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val density = LocalDensity.current
@@ -381,21 +443,218 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
             ) {
                 items(pageCount, key = { it }) { index ->
                     val flow = remember(doc, index) { vm.page(index) }
+                    val dims = doc.pages[index]
+                    val pageRect = geometry.pageRects[index]
                     ReaderPage(
                         index = index,
                         pageCount = pageCount,
                         state = flow.collectAsState().value,
                         widthPx = itemWidthPx,
                         heightPx = geometry.pageHeights[index],
-                        pageRect = geometry.pageRects[index],
+                        pageRect = pageRect,
                         gapPx = gapPx,
                         onRetry = { vm.retry(index) },
+                        text = PageTextUi(
+                            dims = dims,
+                            zoom = zoomState,
+                            selection = selection?.takeIf { it.page == index },
+                            onLongPress = { x, y ->
+                                val (xPt, yPt) = SelectionMath.itemToPage(x, y, dims, pageRect)
+                                val tolerance = SelectionMath.tolerancePt(density.density, zoomState.scale, dims, pageRect)
+                                vm.longPress(index, xPt, yPt, tolerance)
+                            },
+                            onTap = { x, y ->
+                                val s = selection
+                                if (s != null) {
+                                    val inside = s.page == index && s.rects().any {
+                                        val r = SelectionMath.pageRectToItem(it, dims, pageRect)
+                                        x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+                                    }
+                                    if (!inside) vm.clearSelection()
+                                }
+                            },
+                            onDrag = { anchor, x, y ->
+                                val (xPt, yPt) = SelectionMath.itemToPage(x, y, dims, pageRect, clamp = true)
+                                vm.dragHandle(anchor, xPt, yPt)
+                            },
+                            onCopyPage = { vm.copyPageText(index) },
+                        ),
                     )
                 }
             }
+            SnackbarHost(
+                snackbar,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset).testTag(TAG_READER_SNACKBAR),
+            )
         }
     }
 }
+
+private fun copyToClipboard(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.app_name), text))
+}
+
+/** The top bar while text is selected: Close, then Select all and Copy (a contextual action bar). */
+@Composable
+private fun SelectionBar(onClose: () -> Unit, onSelectAll: () -> Unit, onCopy: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val selectAllCd = stringResource(R.string.reader_select_all_cd)
+    val copyCd = stringResource(R.string.reader_copy_cd)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.secondaryContainer)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .heightIn(min = 64.dp)
+            .padding(start = 4.dp, end = 8.dp)
+            .testTag(TAG_READER_SELECTION_BAR),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onClose, modifier = Modifier.testTag(TAG_READER_SELECTION_CLOSE)) {
+            Icon(AppIcons.close, stringResource(R.string.reader_selection_close_cd), tint = colors.onSecondaryContainer)
+        }
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = stringResource(R.string.reader_selection_title),
+            style = MaterialTheme.typography.titleMedium,
+            color = colors.onSecondaryContainer,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(
+            onClick = onSelectAll,
+            modifier = Modifier.semantics { contentDescription = selectAllCd }.testTag(TAG_READER_SELECT_ALL),
+        ) { Text(stringResource(R.string.reader_select_all)) }
+        TextButton(
+            onClick = onCopy,
+            modifier = Modifier.semantics { contentDescription = copyCd }.testTag(TAG_READER_COPY),
+        ) { Text(stringResource(R.string.reader_copy)) }
+    }
+}
+
+/** Everything a page item needs for text selection. [selection] is set only on the selected page. */
+private class PageTextUi(
+    val dims: PageDims,
+    val zoom: ZoomableListState,
+    val selection: ReaderSelection?,
+    /** Item pixels of a long-press. */
+    val onLongPress: (Float, Float) -> Unit,
+    /** Item pixels of a single tap. */
+    val onTap: (Float, Float) -> Unit,
+    /** A handle (the anchor's if true) aims at these item pixels. */
+    val onDrag: (Boolean, Float, Float) -> Unit,
+    val onCopyPage: () -> Unit,
+)
+
+/**
+ * Long-press and single tap in item pixels, without delaying anything: no double-tap detection
+ * here (the list's own handler zooms on a double tap), and nothing is consumed. A press is
+ * dropped when a second finger comes down, when it moves past the touch slop, or when another
+ * handler consumed its events (a pan or pinch of the list, a handle drag).
+ */
+private suspend fun PointerInputScope.detectPressAndTap(onTap: (Offset) -> Unit, onLongPress: (Offset) -> Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        if (down.isConsumed) return@awaitEachGesture
+        val slop = viewConfiguration.touchSlop
+        var tapAt: Offset? = null
+        var dropped = false
+        val finished = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+            while (true) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id }
+                if (change == null || event.changes.count { it.pressed } > 1 || event.changes.any { it.isConsumed } ||
+                    (change.position - down.position).getDistance() > slop
+                ) {
+                    dropped = true
+                    break
+                }
+                if (!change.pressed) {
+                    tapAt = change.position
+                    break
+                }
+            }
+            true
+        }
+        when {
+            dropped -> Unit
+            finished == null -> onLongPress(down.position)
+            else -> tapAt?.let(onTap)
+        }
+    }
+}
+
+/**
+ * The two drag handles of [selection], drawn in item pixels but sized for the screen (divided by
+ * the zoom), so they keep a 48 dp touch target and stay on the text at every zoom and scroll.
+ * Each handle is keyed by its role (anchor or focus), so a drag that crosses the other handle goes
+ * on with the same handle, now shown at the other end.
+ */
+@Composable
+private fun SelectionHandles(selection: ReaderSelection, text: PageTextUi, pageRect: ItemRect) {
+    val anchorIsStart = selection.anchor <= selection.focus
+    key("anchor") { SelectionHandle(selection, text, pageRect, anchor = true, start = anchorIsStart, tag = TAG_READER_HANDLE_ANCHOR) }
+    key("focus") { SelectionHandle(selection, text, pageRect, anchor = false, start = !anchorIsStart, tag = TAG_READER_HANDLE_FOCUS) }
+}
+
+@Composable
+private fun SelectionHandle(selection: ReaderSelection, text: PageTextUi, pageRect: ItemRect, anchor: Boolean, start: Boolean, tag: String) {
+    val density = LocalDensity.current.density
+    val scale = text.zoom.scale
+    val touch = SelectionMath.screenDpToItemPx(SelectionMath.HANDLE_TOUCH_DP, density, scale)
+    val knob = SelectionMath.screenDpToItemPx(SelectionMath.HANDLE_KNOB_DP, density, scale)
+    val (xPt, yPt) = SelectionMath.handlePoint(selection, start)
+    val (cx, cy) = SelectionMath.pageToItem(xPt, yPt, text.dims, pageRect)
+    // Half the character's height, in item pixels: a drag aims at the middle of the line, not below it.
+    val index = if (anchor) selection.anchor else selection.focus
+    val aim = SelectionMath.handleAim(selection, index) / SelectionMath.pointsPerItemPx(text.dims, pageRect)
+    val left = cx - touch / 2f
+    val origin by rememberUpdatedState(Offset(left, cy))
+    val corner by rememberUpdatedState(Offset(cx, cy - aim))
+    val onDrag by rememberUpdatedState(text.onDrag)
+    val zoom = text.zoom
+    DisposableEffect(zoom) { onDispose { zoom.childDragging = false } }
+    val color = MaterialTheme.colorScheme.primary
+    Canvas(
+        modifier = Modifier
+            .layout { measurable, _ ->
+                val size = touch.toInt().coerceAtLeast(1)
+                val placeable = measurable.measure(Constraints.fixed(size, size))
+                layout(0, 0) { placeable.place(left.toInt(), cy.toInt()) }
+            }
+            .pointerInput(zoom) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    zoom.childDragging = true
+                    down.consume()
+                    // Keep the finger's offset from the aim point, so touching the handle moves nothing.
+                    val grab = corner - (origin + down.position)
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.count { it.pressed } > 1) break
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            change.consume()
+                            val target = origin + change.position + grab
+                            onDrag(anchor, target.x, target.y)
+                        }
+                    } finally {
+                        zoom.childDragging = false
+                    }
+                }
+            }
+            .testTag(tag),
+    ) {
+        val r = knob / 2f
+        val centre = Offset(size.width / 2f, r + knob * 0.1f)
+        drawRect(color, Offset(centre.x - knob * 0.06f, 0f), Size(knob * 0.12f, centre.y))
+        drawCircle(color, r, centre)
+    }
+}
+
 
 /**
  * Item geometry of a document laid out [itemWidthPx] wide, with [gapPx] below each page and at each
@@ -437,7 +696,17 @@ private fun ReaderPage(
     pageRect: ItemRect,
     gapPx: Int,
     onRetry: () -> Unit,
+    text: PageTextUi,
 ) {
+    val copyPageLabel = stringResource(R.string.reader_copy_page_action)
+    val highlight = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+    val selection = text.selection
+    val highlights = remember(selection, pageRect, text.dims) {
+        selection?.rects()?.map { SelectionMath.pageRectToItem(it, text.dims, pageRect) }.orEmpty()
+    }
+    val longPress by rememberUpdatedState(text.onLongPress)
+    val tap by rememberUpdatedState(text.onTap)
+    val copyPage by rememberUpdatedState(text.onCopyPage)
     val description = stringResource(R.string.reader_page_cd, index + 1, pageCount)
     val base = state.base
     val detail = state.detail
@@ -449,8 +718,12 @@ private fun ReaderPage(
                 val placeable = measurable.measure(Constraints.fixed(widthPx, heightPx))
                 layout(widthPx, heightPx + gapPx) { placeable.place(0, 0) }
             }
+            .pointerInput(Unit) {
+                detectPressAndTap(onTap = { tap(it.x, it.y) }, onLongPress = { longPress(it.x, it.y) })
+            }
             .semantics {
                 contentDescription = description
+                customActions = listOf(CustomAccessibilityAction(copyPageLabel) { copyPage(); true })
                 readerPageRendered = base != null
                 readerPageDetailShown = detail != null
             }
@@ -465,6 +738,10 @@ private fun ReaderPage(
             if (detail != null && detailImage != null) {
                 ReaderPlanner.drawRect(detail.rect, detail.itemWidthPx, size.width)?.let { drawBitmap(detailImage, it) }
             }
+            for (r in highlights) drawRect(highlight, Offset(r.left, r.top), Size(r.right - r.left, r.bottom - r.top))
+        }
+        if (selection != null) {
+            SelectionHandles(selection, text, pageRect)
         }
         when {
             state.error != null && base == null -> PageError(index, state.error, onRetry, Modifier.align(Alignment.Center))
