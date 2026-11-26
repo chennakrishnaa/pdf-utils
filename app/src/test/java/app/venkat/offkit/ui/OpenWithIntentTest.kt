@@ -41,6 +41,7 @@ import app.venkat.offkit.feature.reader.TAG_READER_TITLE
 import app.venkat.offkit.feature.reader.readerPageTag
 import app.venkat.offkit.setOnboardingSeen
 import app.venkat.offkit.ui.components.TAG_ACTION_BACK
+import app.venkat.offkit.ui.components.TAG_JOB_ERROR
 import app.venkat.offkit.ui.home.TAG_HOME_PRIVACY
 import app.venkat.offkit.ui.home.TAG_TOOL_READ
 import app.venkat.offkit.ui.onboarding.TAG_ONBOARDING_ROOT
@@ -128,6 +129,15 @@ class OpenWithIntentTest {
             .any { it.config.getOrElseNullable(ReaderPageRendered) { null } == true }
     }
 
+    /**
+     * The reader's error screen itself (its error text, [TAG_JOB_ERROR]). Back alone is not enough:
+     * the reader's Idle and Opening frames have Back too, and while opening the copy's folder exists.
+     */
+    private fun waitForErrorScreen() = waitUntil("error screen") {
+        exists(TAG_JOB_ERROR) && exists(TAG_ACTION_BACK) && !exists(TAG_HOME_PRIVACY) &&
+            !exists(TAG_READER_OPENING) && !exists(readerPageTag(0))
+    }
+
     private fun readerDirs(): List<File> =
         File(app.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith(PdfReader.READER_DIR_PREFIX) }
 
@@ -179,7 +189,7 @@ class OpenWithIntentTest {
 
     /** The reader's error screen, with nothing copied or given to the engine. */
     private fun assertErrorScreenAndNothingCopied() {
-        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(TAG_HOME_PRIVACY) && !exists(TAG_READER_OPENING) && !exists(readerPageTag(0)) }
+        waitForErrorScreen()
         assertTrue("nothing given to the engine", fake.readerCalls.isEmpty())
         assertTrue("nothing copied", readerDirs().isEmpty())
         assertEquals("nothing read from the provider", 0, TypeProvider.opened.get())
@@ -243,7 +253,7 @@ class OpenWithIntentTest {
     fun noIntentTypeAndNoProviderShowsTheErrorScreen() {
         // No type on the intent and the provider reports none either: not taken as a PDF.
         start(view(pdf("untyped.pdf"), type = null))
-        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(TAG_HOME_PRIVACY) && !exists(readerPageTag(0)) }
+        waitForErrorScreen()
         assertTrue(fake.readerCalls.isEmpty())
         assertTrue(readerDirs().isEmpty())
     }
@@ -363,9 +373,10 @@ class OpenWithIntentTest {
     fun unreadableDocumentShowsTheReadersErrorScreen() {
         // A content: Uri with no data behind it (as one without a grant): the reader's Io error.
         val activity = start(view(Uri.parse("content://other.provider/doc/secret.pdf")))
-        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(TAG_HOME_PRIVACY) && !exists(readerPageTag(0)) }
+        waitForErrorScreen()
         assertNoPicker(activity)
-        assertTrue(readerDirs().isEmpty())
+        // The copy may be deleted after the error shows; it must go without any further event.
+        waitUntil("copy deleted") { readerDirs().isEmpty() }
         assertTrue(fake.readerCalls.isEmpty())
     }
 
@@ -373,7 +384,8 @@ class OpenWithIntentTest {
     fun notAPdfBehindAPdfTypeShowsTheReadersErrorScreen() {
         fake.readerError = PdfError.Corrupt
         start(view(pdf("not-really.pdf")))
-        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(readerPageTag(0)) && fake.readerCalls.isNotEmpty() }
+        waitForErrorScreen()
+        assertTrue(fake.readerCalls.isNotEmpty())
         waitUntil("copy deleted") { readerDirs().isEmpty() }
     }
 
