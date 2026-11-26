@@ -182,6 +182,76 @@ class ObjStmScanTest {
     }
 
     /**
+     * Q1: binary image data in front of an object stream must not leak scanner state into it. The
+     * M2-2 nesting rules used to tokenise stream data too: here a `[` and a `<` (hex string swallowing
+     * `endstream endobj 7 0 obj <<...>`) in the image data left the depth wrong at the object
+     * stream's `stream` keyword, and a benign object stream was refused (as a real 33 MB PDF was).
+     */
+    @Test
+    fun q1_binaryStreamDataBeforeABenignObjectStream_opens() {
+        for ((i, noise) in NOISES.withIndex()) {
+            val ok = write("q1-ok.pdf", afterNoisyImage(repeated("null ", 1000), noise))
+            ObjStmScan.check(ok)
+            PdfInputs.open(ok).destroy()
+            assertTrue("noise $i", engine.pageInfo(ok) is PdfPageInfo.Ok)
+            assertTrue("noise $i", engine.compress(ok, CompressionLevel.HIGH, out("q1-c.pdf")) is PdfResult.Ok)
+        }
+    }
+
+    /** Q1: the same binary data in front of an object-stream bomb does not hide it; it is refused for its size. */
+    @Test
+    fun q1_binaryStreamDataBeforeAnObjectStreamBomb_isRefused() {
+        for ((i, noise) in NOISES.withIndex()) {
+            val f = write("q1-big.pdf", afterNoisyImage(repeated("1 0 R ", 50_000), noise)) // 300 KB decoded
+            assertTooLarge("noise $i") { ObjStmScan.check(f, maxStream = 200_000, maxTotal = 1_000_000) }
+            ObjStmScan.check(f, maxStream = 400_000, maxTotal = 1_000_000) // under the bound: accepted
+            val bomb = write("q1-bomb.pdf", afterNoisyImage(repeated("null ", 3_500_000), noise))
+            assertTooLarge("noise $i: tool path") { PdfInputs.open(bomb).destroy() }
+            assertEquals("noise $i", PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb))
+        }
+    }
+
+    /**
+     * Q1: every ICC profile stream has `/N`, so it is a candidate; the common shape (one
+     * `/FlateDecode`), after binary image data, is measured and opens on the tool path and the reader.
+     */
+    @Test
+    fun q1_ordinaryFlateIccProfile_opensInToolAndReader() {
+        val profile = ByteArray(3000) { (it % 251).toByte() }
+        for ((i, noise) in NOISES.withIndex()) {
+            val pdf = HostilePdf()
+            pdf.add(1, "<</Type/Catalog/Pages 2 0 R>>")
+            pdf.add(2, "<</Type/Pages/Kids[3 0 R]/Count 1>>")
+            pdf.add(3, "<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R/Resources<</ColorSpace<</CS0[/ICCBased 6 0 R]>>>>>>")
+            pdf.stream(4, "", "/CS0 cs 0.5 0.5 0.5 sc 0 0 100 100 re f".latin1())
+            pdf.stream(5, "/Type/XObject/Subtype/Image/Width 4/Height 4/ColorSpace/DeviceGray/BitsPerComponent 8/Filter/DCTDecode", noise, flate = false)
+            pdf.stream(6, "/N 3/Alternate/DeviceRGB", profile) // Flate
+            val f = write("q1-icc.pdf", pdf.bytes())
+            ObjStmScan.check(f)
+            PdfInputs.open(f).destroy()
+            assertTrue("noise $i", engine.compress(f, CompressionLevel.HIGH, out("q1-icc-c.pdf")) is PdfResult.Ok)
+            assertTrue("noise $i", engine.pageInfo(f) is PdfPageInfo.Ok)
+        }
+    }
+
+    /** A page whose catalog lives in an object stream (7) holding [extra], after an image (5) whose data is [noise]. */
+    private fun afterNoisyImage(extra: ByteArray, noise: ByteArray): ByteArray {
+        val pdf = HostilePdf()
+        pdf.stream(4, "", "BT ET".latin1())
+        pdf.stream(5, "/Type/XObject/Subtype/Image/Width 4/Height 4/ColorSpace/DeviceGray/BitsPerComponent 8/Filter/DCTDecode", noise, flate = false)
+        pdf.objStm(
+            7,
+            listOf(
+                1 to "<</Type/Catalog/Pages 2 0 R>>".latin1(),
+                2 to "<</Type/Pages/Kids[3 0 R]/Count 1>>".latin1(),
+                3 to "<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R>>".latin1(),
+                6 to extra,
+            ),
+        )
+        return pdf.bytes()
+    }
+
+    /**
      * Moves [nested] to just after the object stream's `/Filter/FlateDecode` (which [HostilePdf]
      * writes after the dictionary's other keys), taking the room from [PAD]: offsets are unchanged.
      */
@@ -232,6 +302,19 @@ class ObjStmScanTest {
     companion object {
         private const val PAD = "/Type/ObjStm/Pad(                                        )"
         private lateinit var dir: File
+
+        private const val NOISE_HEAD = "ÿØÿà\u0000\u0010JFIF <<( endstream) % (\n/N [[ << ( (x) ) streamy\u0001 /ObjStm endstreamx "
+
+        /**
+         * Q1: JPEG-like stream data with unbalanced `<<`, `[`, `(`, `%`, `/N`, `/ObjStm` and
+         * `stream`/`endstream` lookalikes. The first ends in a `<` that opens a hex string for a
+         * tokeniser (it used to swallow the next object's header and leave the depth wrong: a false
+         * refusal); the second in an unclosed `(` (it used to swallow the next object: a miss).
+         */
+        internal val NOISES: List<ByteArray> = listOf(
+            "$NOISE_HEAD\u0080þ stream\u0002 [ <\u0089PÿÙ",
+            "$NOISE_HEAD( \u0080þ stream\u0002 [ <\u0089PÿÙ",
+        ).map { it.toByteArray(Charsets.ISO_8859_1) }
 
         @BeforeClass
         @JvmStatic

@@ -19,11 +19,19 @@ import java.util.zip.Inflater
  * `1 0 R` costs ~900 MB; if the catalog lives in that stream, `Document.openDocument` /
  * `countPages` pays it. Parsed size grows with decoded size, so the decoded size is bounded here.
  *
- * What: one forward pass over the file (fixed 64 KiB buffer, positional reads; no whole-file array),
- * tokenising it roughly as MuPDF's lexer does (names with `#xx` escapes decoded, literal strings with
- * nesting and escapes, comments, hex strings; strings/comments longer than 64 KiB are cut there).
- * Every stream whose preceding dictionary (tokens since the last `obj`, `endobj`, `stream` or
- * `endstream` keyword) contains the name `/ObjStm` OR `/N` is a candidate: MuPDF loads any type-2
+ * What: one forward byte search for EVERY `obj` keyword in the file (fixed 64 KiB buffers,
+ * positional reads; no whole-file array), wherever it is, also inside strings and stream data (Q1).
+ * Each one starts a fresh parse of that object alone: nothing before its `obj` (another object, the
+ * binary data of an earlier stream) can change its state. The parse ends at once unless the first
+ * token is `<<` (MuPDF gives only the object right after `obj` a stream, and only a dictionary has
+ * `/N`); otherwise it tokenises roughly as MuPDF's lexer does (names with `#xx` escapes decoded,
+ * literal strings with nesting and escapes, comments, hex strings, all skipped to their real end) up
+ * to the first `stream`, `endstream`, `obj` or `endobj` keyword. Stream data is never tokenised. As
+ * MuPDF reaches an object through an xref offset at its `N G obj` header (or, on repair, by lexing
+ * `obj` tokens), every object MuPDF can load is parsed here; parses started at `obj` lookalikes in
+ * binary data only cost work (all parses together are bounded by twice the file size plus 64 MiB,
+ * past which the file is refused). A stream whose dictionary (the tokens from its `obj` to its
+ * `stream` keyword) contains the name `/ObjStm` OR `/N` is a candidate: MuPDF loads any type-2
  * xref target as an object stream reading only `/N` and `/First` (no `/Type` check), so the `/N`
  * test catches a dictionary without `/Type`. ICC profile streams also carry `/N`; they are small and
  * pass (`/N` anywhere, also in a nested dictionary, makes a candidate: a superset). The filter is
@@ -33,10 +41,10 @@ import java.util.zip.Inflater
  * parser can swallow a `<<` or `>>` after a key (`/K >>`, `/K 1 <<`), a candidate is refused when a
  * `/Filter` or `/F` name appears nested or in an array, appears twice at the top level, when a `>>`
  * closes nothing, when the nesting is unbalanced at `stream`, or when its dictionary held a string or
- * comment cut at 64 KiB. `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
+ * comment longer than 64 KiB. `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
  * has no external-file streams, no `/FFilter`, and would read the data raw) is refused like any
  * other non-name filter. Per candidate:
- * - no filter: its raw extent (to the next `endstream`) counts as decoded bytes;
+ * - no filter: its raw extent (to the next `endstream` bytes) counts as decoded bytes;
  * - `/Filter` exactly `/FlateDecode` or `/Fl` (a name or a one-element array): inflated with a
  *   bounded [Inflater] into a scratch buffer, stopping at the bound. A stream that is not valid
  *   zlib (e.g. encrypted) counts what it yielded and is otherwise ignored, so encrypted files still
@@ -46,9 +54,8 @@ import java.util.zip.Inflater
  *   reimplementing them; legitimate writers use Flate alone for object streams.
  * Refused (`OutOfMemory`, "too large") when one candidate decodes to more than [maxStream] bytes
  * (16 MiB) or all candidates together to more than [maxTotal] bytes (64 MiB). Compressed bytes
- * consumed by the inflater are charged against the same bounds, so overlapping candidates (a stream
- * keyword inside another stream's data; scanning resumes right after each `stream` keyword, the
- * data is tokenised too) keep the total work linear in the file size plus the bounds.
+ * consumed by the inflater are charged against the same bounds, so overlapping candidates (an
+ * object inside another stream's data) keep the total work linear in the file size plus the bounds.
  *
  * Encrypted files (reader only; the tools refuse every encrypted PDF): the data of an encrypted
  * object stream is ciphertext here, so pass 1 cannot measure it (not valid zlib: ignored above;
@@ -66,10 +73,10 @@ import java.util.zip.Inflater
  * [MAX_RECORDED] Flate candidates, a recorded object that MuPDF does not resolve to a stream, or a
  * raw stream over [maxStream].
  *
- * This is a MITIGATION, not a guarantee. MuPDF reaches objects through xref offsets, not by scanning,
- * and xref repair can find streams anywhere; an object stream can evade the scan if, for example,
- * its dictionary hides a reset keyword inside a string or comment longer than 64 KiB, or the scan's
- * tokenisation of preceding binary data diverges from MuPDF's view at that offset. The `:engine`
+ * This is a MITIGATION, not a guarantee. The remaining mismatch with MuPDF's own object discovery:
+ * the scan's lexer is an approximation of MuPDF's (shapes known to differ are refused, M2-2); an
+ * unfiltered candidate is measured to the next `endstream` bytes, while MuPDF reads `/Length`; and
+ * the scan only measures what it finds as `obj` headers (MuPDF needs one too). The `:engine`
  * process (killed on cancel, its death reported as an error) remains the backstop.
  */
 internal object ObjStmScan {
@@ -208,9 +215,39 @@ internal object ObjStmScan {
 
     private class Scanner(private val ch: FileChannel, private val maxStream: Long, private val maxTotal: Long) {
         private val size = ch.size()
-        private val buf = ByteBuffer.allocate(CHUNK)
-        private var bufStart = 0L
-        private var bufLen = 0
+
+        /** A positional read window over the file (fixed buffer, no whole-file array). */
+        private inner class Window {
+            private val buf = ByteBuffer.allocate(CHUNK)
+            private var start = 0L
+            private var len = 0
+
+            /** Byte at [p] (0..255), or -1 outside the file. */
+            fun at(p: Long): Int {
+                if (p < 0 || p >= size) return -1
+                if (p < start || p >= start + len) {
+                    buf.clear()
+                    val r = ch.read(buf, p)
+                    if (r <= 0) return -1
+                    start = p
+                    len = r
+                }
+                return buf.get((p - start).toInt()).toInt() and 0xFF
+            }
+        }
+
+        private val search = Window() // finds `obj` keywords
+        private val tok = Window() // tokenises one object
+        private fun at(p: Long) = tok.at(p)
+        private val back = ByteBuffer.allocate(BACK)
+
+        /**
+         * Q1: bytes all per-object parses together may still tokenise. Real files spend about the
+         * size of their dictionaries; only parses started at many overlapping `obj` tokens (inside
+         * strings or stream data) can exceed it, and such a file is refused.
+         */
+        private var budget = 2 * size + MAX_TOTAL_BYTES
+        private var done = false // the current object's parse reached a keyword that ends it
 
         private var candidate = false
 
@@ -228,17 +265,17 @@ internal object ObjStmScan {
         private var filterState = 0 // 0 none, 1 after /Filter or /F, 2 inside its array
 
         /*
-         * M2-2: nesting since the last reset keyword. Only a `/Filter` or `/F` at the top level of the
-         * stream dictionary (dictDepth <= 1, outside any array) names the stream's filter; one in a
-         * nested dictionary (`/DecodeParms<</F …>>`, `/X<</Filter[]>>`) or an array does not, as in
+         * M2-2: nesting since the object's `obj` keyword. Only a `/Filter` or `/F` at the top level of
+         * the stream dictionary (dictDepth <= 1, outside any array) names the stream's filter; one in
+         * a nested dictionary (`/DecodeParms<</F …>>`, `/X<</Filter[]>>`) or an array does not, as in
          * MuPDF's `pdf_parse_dict`. Strings and comments are skipped by the tokeniser, so `(<<)` or
-         * `%>>` do not count. Depth 0 (no `<<` seen) keeps the old reading: any such name counts.
+         * `%>>` do not count.
          */
         private var dictDepth = 0
         private var arrayDepth = 0
         private var filterArrayDepth = 0 // arrayDepth outside the filter's own array
 
-        /** A string or comment was cut at [MAX_SPAN] since the last reset (its tail was tokenised). */
+        /** A string or comment of this object was longer than [MAX_SPAN]. */
         private var cut = false
 
         /**
@@ -249,59 +286,124 @@ internal object ObjStmScan {
          * `/Filter` or `/F`; a candidate with it set is refused.
          */
         private var odd = false
-        private var rawStart = -1L
         private var totalOut = 0L
         private var totalIn = 0L
         private val word = StringBuilder()
         private val flate = ArrayList<Ref>()
         private var overflow = false
         private var rawTotal = 0L
-        private var numA = -1L // the last two unsigned integer tokens (numA the earlier), else -1
-        private var numB = -1L
         private var objRef: Ref? = null // `num gen obj` header of the object being scanned
-
-        /** Byte at [p] (0..255), or -1 at end of file. */
-        private fun at(p: Long): Int {
-            if (p >= size) return -1
-            if (p < bufStart || p >= bufStart + bufLen) {
-                buf.clear()
-                val r = ch.read(buf, p)
-                if (r <= 0) return -1
-                bufStart = p
-                bufLen = r
-            }
-            return buf.get((p - bufStart).toInt()).toInt() and 0xFF
-        }
 
         fun run(): Result {
             var p = 0L
             while (true) {
-                val c = at(p)
-                if (c < 0) break
-                p = when {
-                    isWhite(c) -> p + 1
-                    c == '%'.code -> skipUntil(p + 1) { it == '\n'.code || it == '\r'.code }
-                    c == '('.code -> skipString(p + 1).also { otherValue() }
-                    c == '<'.code -> if (at(p + 1) == '<'.code) (p + 2).also { otherValue(); dictDepth++ } else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
-                    c == '>'.code && at(p + 1) == '>'.code -> (p + 2).also { otherValue(); if (dictDepth > 0) dictDepth-- else odd = true }
-                    c == '['.code -> {
-                        if (filterState == 1) { filterState = 2; filterArrayDepth = arrayDepth } else otherValue()
-                        arrayDepth++
-                        p + 1
-                    }
-                    c == ']'.code -> {
-                        if (arrayDepth > 0) arrayDepth--
-                        if (filterState == 2 && arrayDepth <= filterArrayDepth) filterState = 0
-                        p + 1
-                    }
-                    c == '/'.code -> readName(p + 1)
-                    isDelim(c) -> p + 1
-                    else -> readWord(p)
-                }
+                val o = nextObj(p)
+                if (o < 0) break
+                parseObject(o)
+                p = o + 3
             }
-            finishRaw(size)
             return Result(flate, overflow, rawTotal)
         }
+
+        /**
+         * Q1: start of the next `obj` keyword at or after [from], wherever it is (also inside a
+         * string or stream data), as MuPDF's lexer could read it after a generation number: followed
+         * by white space, a delimiter or the end, preceded by white space, a delimiter or a number
+         * character. -1 when there is none.
+         */
+        private fun nextObj(from: Long): Long {
+            var p = from
+            while (true) {
+                val c = search.at(p)
+                if (c < 0) return -1
+                if (c == 'o'.code && search.at(p + 1) == 'b'.code && search.at(p + 2) == 'j'.code) {
+                    val after = search.at(p + 3)
+                    val before = search.at(p - 1)
+                    if ((after < 0 || isWhite(after) || isDelim(after)) &&
+                        (before < 0 || isWhite(before) || isDelim(before) || before in '0'.code..'9'.code || before == '.'.code || before == '+'.code || before == '-'.code)
+                    ) return p
+                }
+                p++
+            }
+        }
+
+        /**
+         * Q1: one object, from its `obj` keyword at [o] to the first `stream`, `endstream`, `obj` or
+         * `endobj` keyword, with all state fresh: nothing before [o] (another object, stream data) can
+         * reach it. MuPDF (`pdf_parse_ind_obj`) gives an object a stream only when `stream` follows
+         * the object right after `obj`, and only a dictionary has `/N`, so a parse that does not start
+         * with `<<` ends at once.
+         */
+        private fun parseObject(o: Long) {
+            reset()
+            objRef = refBefore(o)
+            var p = o + 3
+            while (true) {
+                val c = at(p)
+                p = when {
+                    c >= 0 && isWhite(c) -> p + 1
+                    c == '%'.code -> skipUntil(p + 1) { it == '\n'.code || it == '\r'.code }
+                    else -> break
+                }
+            }
+            if (at(p) == '<'.code && at(p + 1) == '<'.code) {
+                while (!done) {
+                    val c = at(p)
+                    if (c < 0) break
+                    if (p - o > budget) tooLarge()
+                    p = when {
+                        isWhite(c) -> p + 1
+                        c == '%'.code -> skipUntil(p + 1) { it == '\n'.code || it == '\r'.code }
+                        c == '('.code -> skipString(p + 1).also { otherValue() }
+                        c == '<'.code -> if (at(p + 1) == '<'.code) (p + 2).also { otherValue(); dictDepth++ } else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
+                        c == '>'.code && at(p + 1) == '>'.code -> (p + 2).also { otherValue(); if (dictDepth > 0) dictDepth-- else odd = true }
+                        c == '['.code -> {
+                            if (filterState == 1) { filterState = 2; filterArrayDepth = arrayDepth } else otherValue()
+                            arrayDepth++
+                            p + 1
+                        }
+                        c == ']'.code -> {
+                            if (arrayDepth > 0) arrayDepth--
+                            if (filterState == 2 && arrayDepth <= filterArrayDepth) filterState = 0
+                            p + 1
+                        }
+                        c == '/'.code -> readName(p + 1)
+                        isDelim(c) -> p + 1
+                        else -> readWord(p)
+                    }
+                }
+            }
+            budget -= p - o
+            if (budget < 0) tooLarge()
+        }
+
+        /** The `num gen` in front of the `obj` keyword at [o] (white space only between), or null. */
+        private fun refBefore(o: Long): Ref? {
+            val from = maxOf(0L, o - BACK)
+            back.clear()
+            val n = maxOf(0, ch.read(back, from))
+            val b = back.array()
+            var i = minOf(n.toLong(), o - from).toInt() - 1
+            fun c(k: Int) = if (k >= 0) b[k].toInt() and 0xFF else -1
+            fun digits(): Long {
+                var v = 0L
+                var count = 0
+                while (c(i) in '0'.code..'9'.code && count < 10) { v += (c(i) - '0'.code) * pow10(count); count++; i-- }
+                return if (count == 0 || c(i) in '0'.code..'9'.code) -1 else v
+            }
+            while (isWhite(c(i))) i--
+            val gen = digits()
+            if (gen !in 0..65535L || !isWhite(c(i))) return null
+            while (isWhite(c(i))) i--
+            val num = digits()
+            if (num !in 1..Int.MAX_VALUE.toLong()) return null
+            val before = c(i)
+            if (i < 0 && from > 0) return null
+            if (before >= 0 && !isWhite(before) && !isDelim(before)) return null
+            return Ref(num.toInt(), gen.toInt())
+        }
+
+        private fun pow10(k: Int): Long { var r = 1L; repeat(k) { r *= 10 }; return r }
 
         private fun otherValue() {
             if (filterState != 0) {
@@ -310,33 +412,33 @@ internal object ObjStmScan {
             }
         }
 
-        private inline fun skipUntil(from: Long, stop: (Int) -> Boolean): Long {
+        /** Skips to just after the first byte matching [stopAt] (or the end); marks [cut] past [MAX_SPAN]. */
+        private inline fun skipUntil(from: Long, stopAt: (Int) -> Boolean): Long {
             var p = from
-            val end = from + MAX_SPAN
-            while (p < end) {
+            while (true) {
                 val c = at(p)
-                if (c < 0) return p
+                if (c < 0) break
                 p++
-                if (stop(c)) return p
+                if (stopAt(c)) break
             }
-            cut = true
+            if (p - from > MAX_SPAN) cut = true
             return p
         }
 
+        /** Skips a literal string (nesting, escapes) to its end, as MuPDF does; marks [cut] past [MAX_SPAN]. */
         private fun skipString(from: Long): Long {
             var p = from
             var depth = 1
-            val end = from + MAX_SPAN
-            while (p < end) {
+            while (true) {
                 val c = at(p++)
                 when (c) {
-                    -1 -> return p - 1
+                    -1 -> { p--; break }
                     '\\'.code -> p++
                     '('.code -> depth++
-                    ')'.code -> if (--depth == 0) return p
+                    ')'.code -> if (--depth == 0) break
                 }
             }
-            cut = true
+            if (p - from > MAX_SPAN) cut = true
             return p
         }
 
@@ -359,8 +461,6 @@ internal object ObjStmScan {
                 if (word.length < MAX_KEPT) word.append(ch.toChar())
             }
             onName(word.toString())
-            numA = -1L
-            numB = -1L
             return p
         }
 
@@ -373,20 +473,11 @@ internal object ObjStmScan {
                 p++
                 if (word.length < MAX_KEPT) word.append(c.toChar())
             }
-            val w = word.toString()
-            when (w) {
-                "stream" -> { onStream(p); reset() }
-                "endstream" -> { finishRaw(from); reset() }
-                "obj" -> {
-                    reset()
-                    objRef = if (numA in 1..Int.MAX_VALUE.toLong() && numB in 0..65535L) Ref(numA.toInt(), numB.toInt()) else null
-                }
-                "endobj" -> { reset(); objRef = null }
+            when (word.toString()) {
+                "stream" -> { onStream(p); done = true }
+                "endstream", "obj", "endobj" -> done = true // an `obj` here starts its own parse
                 else -> otherValue()
             }
-            val n = if (w.isNotEmpty() && w.length <= 10 && w.all { it in '0'..'9' }) w.toLong() else -1L
-            numA = if (n >= 0) numB else -1L
-            numB = n
             return p
         }
 
@@ -425,14 +516,15 @@ internal object ObjStmScan {
             arrayDepth = 0
             cut = false
             odd = false
+            done = false
+            objRef = null
         }
 
         /** `stream` keyword ending at [after]: checks the stream if its dictionary made it a candidate. */
         private fun onStream(after: Long) {
-            finishRaw(after)
             if (!candidate) return
-            // M2-2: the nesting is not where MuPDF's would be (unbalanced, or a cut string or comment
-            // whose tail was tokenised could fake a `<<`): which keys are top-level is not known.
+            // M2-2: the nesting is not where MuPDF's would be (unbalanced, swallowed by MuPDF, or a
+            // string or comment over 64 KiB): which keys are top-level is not known.
             if (dictDepth != 0 || arrayDepth != 0 || cut || odd) tooLarge()
             var d = after
             if (at(d) == '\r'.code) d++
@@ -441,19 +533,26 @@ internal object ObjStmScan {
             val filters = slot.names
             when {
                 slot.unknown || filters.size > 1 -> tooLarge()
-                filters.isEmpty() -> rawStart = d
+                filters.isEmpty() -> countRaw(d)
                 filters[0] == "FlateDecode" || filters[0] == "Fl" -> { record(); inflate(d) }
                 else -> tooLarge()
             }
         }
 
-        private fun finishRaw(end: Long) {
-            if (rawStart < 0) return
-            val n = maxOf(0L, end - rawStart)
-            rawStart = -1
+        /** An unfiltered candidate's data from [d] to the next `endstream` (or the end) counts as decoded bytes. */
+        private fun countRaw(d: Long) {
+            val limit = minOf(size, d + maxStream + 1)
+            var p = d
+            while (p < limit && !endstreamAt(p)) p++
+            val n = p - d
             if (n > maxStream || totalOut + n > maxTotal) tooLarge()
             totalOut += n
             rawTotal += n
+        }
+
+        private fun endstreamAt(p: Long): Boolean {
+            for (k in ENDSTREAM.indices) if (at(p + k) != ENDSTREAM[k].code) return false
+            return true
         }
 
         private fun inflate(from: Long) {
@@ -509,4 +608,7 @@ internal object ObjStmScan {
             else -> -1
         }
     }
+
+    private const val BACK = 48
+    private const val ENDSTREAM = "endstream"
 }

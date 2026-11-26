@@ -60,7 +60,6 @@ class CompressColorSpaceGateTest {
                 "[/ICCBased 6 0 R]",
                 listOf("<< /N 3 /Alternate [/ICCBased 7 0 R] >>" to ByteArray(16), "<< /N 3 /Filter /FlateDecode >>" to smallProfile),
             ),
-            "icc-double-flate" to image("[/ICCBased 6 0 R]", listOf("<< /N 3 /Filter [/FlateDecode /FlateDecode] >>" to deflate(smallProfile))),
             "icc-flate-abbrev-array-ok-but-decodeparms" to image(
                 "[/ICCBased 6 0 R]",
                 listOf("<< /N 3 /Filter /Fl /DecodeParms << /Predictor 1 >> >>" to smallProfile),
@@ -86,6 +85,12 @@ class CompressColorSpaceGateTest {
             // The save may Flate an unfiltered stream; the decoded samples must be unchanged.
             assertArrayEquals("$name: image untouched", pixels, withImage(o) { it.readStream() })
         }
+        // icc-double-flate: a stream with `/N` and a filter chain is refused at open by the
+        // object-stream pre-scan (ObjStmScan): MuPDF would load it as an object stream if an xref
+        // entry pointed at it, and the scan cannot bound a filter chain. It used to pass only because
+        // the scan's state leaked out of the random pixel data in front of it (Q1).
+        val chained = write("icc-double-flate.pdf", image("[/ICCBased 6 0 R]", listOf("<< /N 3 /Filter [/FlateDecode /FlateDecode] >>" to deflate(smallProfile))))
+        assertEquals("icc-double-flate", PdfResult.Err(PdfError.OutOfMemory), engine.compress(chained, CompressionLevel.HIGH, out("icc-double-flate-out.pdf")))
     }
 
     @Test
