@@ -5,6 +5,7 @@ import app.venkat.offkit.TestPageTexts
 import app.venkat.offkit.TestPageTexts.centre
 import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.feature.reader.CopyNotice
+import app.venkat.offkit.feature.reader.ItemRect
 import app.venkat.offkit.feature.reader.ReaderPlanner
 import app.venkat.offkit.feature.reader.SelectionMath
 import app.venkat.offkit.ui.reader.ZoomMath
@@ -130,5 +131,44 @@ class ReaderSelectionTest {
         assertEquals(CopyNotice.COPIED_CUT, SelectionMath.copyNotice(32, cut = true))
         assertEquals(CopyNotice.NONE, SelectionMath.copyNotice(33, cut = false))
         assertEquals(CopyNotice.CUT, SelectionMath.copyNotice(36, cut = true))
+    }
+
+    @Test
+    fun copyCapsTheTextWithoutSplittingASurrogatePair() {
+        val max = SelectionMath.MAX_COPY_CHARS
+        var copied: String? = null
+        val huge = "a".repeat(600_000)
+        assertEquals(CopyNotice.CUT, SelectionMath.copy(huge, cut = false, sdkInt = 36) { copied = it })
+        assertEquals(max, copied!!.length)
+        assertEquals(CopyNotice.COPIED_CUT, SelectionMath.copy(huge, cut = false, sdkInt = 30) { copied = it })
+        // An emoji straddling the limit is left out whole, not cut in half.
+        val straddling = "a".repeat(max - 1) + "\uD83D\uDE00" + "tail"
+        SelectionMath.copy(straddling, cut = false, sdkInt = 36) { copied = it }
+        assertEquals("a".repeat(max - 1), copied)
+        // Short text is copied as is.
+        assertEquals(CopyNotice.NONE, SelectionMath.copy("short", cut = false, sdkInt = 36) { copied = it })
+        assertEquals("short", copied)
+        assertEquals(CopyNotice.CUT, SelectionMath.copy("short", cut = true, sdkInt = 36) { copied = it })
+    }
+
+    @Test
+    fun aClipboardThatThrowsIsReportedNotThrown() {
+        // What setPrimaryClip throws for a clip over the binder limit (TransactionTooLargeException inside).
+        val tooLarge = RuntimeException("Failure from system", Exception("TransactionTooLargeException"))
+        assertEquals(CopyNotice.FAILED, SelectionMath.copy("text", cut = false, sdkInt = 36) { throw tooLarge })
+        assertEquals(CopyNotice.FAILED, SelectionMath.copy("text", cut = true, sdkInt = 30) { throw SecurityException() })
+    }
+
+    @Test
+    fun highlightsAreBoundedByMergingConsecutiveLines() {
+        val lines = List(10_000) { ItemRect(0f, it * 2f, 100f + it % 7, it * 2f + 1f) }
+        val bounded = SelectionMath.boundedHighlights(lines)
+        assertTrue(bounded.size <= SelectionMath.MAX_HIGHLIGHT_RECTS)
+        assertEquals(0f, bounded.first().top)
+        assertEquals(lines.last().bottom, bounded.last().bottom)
+        // Every line stays covered.
+        for (r in lines) assertTrue(bounded.any { it.left <= r.left && it.top <= r.top && it.right >= r.right && it.bottom >= r.bottom })
+        val few = lines.take(3)
+        assertEquals(few, SelectionMath.boundedHighlights(few))
     }
 }

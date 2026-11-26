@@ -27,6 +27,8 @@
     <string name="reader_copied">Copied</string>
     <string name="reader_copied_cut">Copied. This page\'s text was too long, so only the first part was copied.</string>
     <string name="reader_text_cut">This page\'s text was too long, so only the first part was copied.</string>
+    <!-- The clipboard refused the copied text -->
+    <string name="reader_copy_failed">Could not copy the text.</string>
     <string name="reader_no_text">This page has no text to select</string>
     <!-- The page's text could not be read; %1$s is the short reason -->
     <string name="reader_text_error">Could not read the text on this page. %1$s</string>
