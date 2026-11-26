@@ -10,6 +10,8 @@ import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.TestPageTexts
 import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.feature.reader.ReaderTextEvent
+import app.venkat.offkit.feature.reader.SearchHit
+import app.venkat.offkit.feature.reader.SearchReveal
 import app.venkat.offkit.feature.reader.ReaderTextLimits
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -79,12 +81,16 @@ class ReaderViewModelTest {
 
             override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
                 engineThreads += Thread.currentThread().name.substringBefore(" @")
+                engineLog += "text:$page"
+                textGate?.invoke(page)
+                if (page in failTextPages) return PdfPageText.Err(PdfError.TimedOut)
                 textError?.let { return PdfPageText.Err(it) }
                 return fake.pageText(pdf, page, out, job)
             }
 
             override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender {
                 engineThreads += Thread.currentThread().name.substringBefore(" @")
+                engineLog += "render:${request.page}"
                 val r = fake.renderPage(pdf, request, out, job)
                 renderJobs += job to job.isCancelled()
                 return r
@@ -97,9 +103,19 @@ class ReaderViewModelTest {
     @After
     fun tearDown() {
         fake.beforeRender = null
+        textGate = null
         store.clear()
         engineDispatcher.close()
     }
+
+    /** Every engine text and render call, in order ("text:3", "render:0"). */
+    private val engineLog = CopyOnWriteArrayList<String>()
+
+    /** Runs on the engine thread at the start of each page-text call (may block). */
+    @Volatile private var textGate: ((Int) -> Unit)? = null
+
+    /** Page-text calls of these pages fail (timed out). */
+    @Volatile private var failTextPages: Set<Int> = emptySet()
 
     /** Fails every page-text call when set. */
     @Volatile private var textError: PdfError? = null
@@ -451,6 +467,135 @@ class ReaderViewModelTest {
         openVm(vm, "other.pdf")
         assertNull("another document clears the selection", vm.selection.value)
         assertEquals(0, vm.cachedTextPagesForTest())
+    }
+
+    // ---- Search ----
+
+    private fun searchDone(vm: ReaderViewModel) =
+        CoreTestSupport.idleUntil(message = "search done") { vm.search.value?.scanning == false }
+
+    @Test
+    fun searchResultsArriveIncrementallyInDocumentOrderAndTheFirstHitFromTheStartPageIsSelected() {
+        val vm = newVm()
+        fake.readerPages = List(6) { PageDims(595f, 842f) }
+        for (p in listOf(1, 3, 4)) fake.readerTexts[p] = TestPageTexts.grid("a Cat and", "another cat")
+        openVm(vm)
+        val seen = CopyOnWriteArrayList<Int>()
+        val scope = MainScope()
+        vm.search.onEach { s -> if (s != null && s.scanning) seen += s.hits.size }.launchIn(scope)
+        val reveals = CopyOnWriteArrayList<SearchReveal>()
+        vm.searchReveals.onEach { reveals += it }.launchIn(scope)
+        vm.onViewport(WIDTH, 1f, listOf(band(3)))
+        vm.search("cat", 2)
+        searchDone(vm)
+        scope.cancel()
+        val s = vm.search.value!!
+        assertEquals(listOf(1, 1, 3, 3, 4, 4), s.hits.map { it.page })
+        assertEquals(SearchHit(3, 2, 5), s.current)
+        assertEquals(2, s.currentIndex)
+        assertTrue("partial counts were published: $seen", seen.any { it in 1 until 6 })
+        assertEquals(SearchReveal(3, TestPageTexts.grid("a Cat and").rects(2 until 5).single()), reveals.first())
+        assertEquals("rectangles only near the viewport (pages 1 to 5)", setOf(1, 3, 4), s.rects.keys)
+        // Next / previous wrap around.
+        vm.searchStep(forward = true)
+        vm.searchStep(forward = true)
+        vm.searchStep(forward = true)
+        vm.searchStep(forward = true)
+        assertEquals(SearchHit(1, 2, 5), vm.search.value!!.current)
+        vm.searchStep(forward = false)
+        assertEquals(SearchHit(4, 17, 20), vm.search.value!!.current)
+        vm.closeSearch()
+        assertNull(vm.search.value)
+    }
+
+    @Test
+    fun aNewQueryCancelsTheOldScanAndLeavesNoStaleHits() {
+        val vm = newVm()
+        fake.readerPages = List(8) { PageDims(595f, 842f) }
+        for (p in 0 until 8) fake.readerTexts[p] = TestPageTexts.grid("cat dog")
+        openVm(vm)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        textGate = { page -> if (page == 1) { entered.countDown(); release.await(5, TimeUnit.SECONDS) } }
+        vm.search("cat", 0)
+        CoreTestSupport.idleUntil(message = "scan entered") { entered.count == 0L }
+        textGate = null
+        vm.search("dog", 0)
+        release.countDown()
+        searchDone(vm)
+        val s = vm.search.value!!
+        assertEquals("dog", s.query)
+        assertEquals(8, s.hits.size)
+        assertTrue(s.hits.all { it.start == 4 })
+        assertEquals("the old scan read no page after the one in flight", 2 + 8, fake.textCalls.size)
+    }
+
+    @Test
+    fun anotherDocumentCancelsTheScan() {
+        val vm = newVm()
+        fake.readerPages = List(5) { PageDims(595f, 842f) }
+        fake.readerTexts[0] = TestPageTexts.grid("cat")
+        openVm(vm)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        textGate = { page -> if (page == 0) { entered.countDown(); release.await(5, TimeUnit.SECONDS) } }
+        vm.search("cat", 0)
+        CoreTestSupport.idleUntil(message = "scan entered") { entered.count == 0L }
+        textGate = null
+        release.countDown()
+        openVm(vm, "other.pdf")
+        CoreTestSupport.idleUntil { true }
+        assertNull(vm.search.value)
+        assertEquals("no page read after the document changed", 1, fake.textCalls.size)
+    }
+
+    @Test
+    fun unreadablePagesAreSkippedAndCounted() {
+        val vm = newVm()
+        fake.readerPages = List(5) { PageDims(595f, 842f) }
+        fake.readerTexts[4] = TestPageTexts.grid("cat")
+        failTextPages = setOf(1, 3)
+        openVm(vm)
+        vm.search("cat", 0)
+        searchDone(vm)
+        val s = vm.search.value!!
+        assertEquals(2, s.skipped)
+        assertEquals(listOf(SearchHit(4, 0, 3)), s.hits)
+    }
+
+    @Test
+    fun aRenderAskedForDuringAScanGoesBeforeTheNextScanPage() {
+        val vm = newVm()
+        fake.readerPages = List(6) { PageDims(595f, 842f) }
+        openVm(vm)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        textGate = { page -> if (page == 0) { entered.countDown(); release.await(5, TimeUnit.SECONDS) } }
+        vm.search("cat", 0)
+        CoreTestSupport.idleUntil(message = "scan entered") { entered.count == 0L }
+        vm.onViewport(WIDTH, 1f, listOf(band(4)))
+        release.countDown()
+        searchDone(vm)
+        val log = engineLog.toList()
+        val afterFirst = log.subList(log.indexOf("text:0") + 1, log.indexOf("text:1"))
+        assertTrue("renders between text:0 and text:1: $log", afterFirst.isNotEmpty() && afterFirst.all { it.startsWith("render:") })
+        assertTrue("no render was cancelled", renderJobs.none { it.second })
+    }
+
+    @Test
+    fun aScanDoesNotTouchTheSelectionTextCache() {
+        val vm = newVm()
+        fake.readerPages = List(12) { PageDims(595f, 842f) }
+        for (p in 0 until 12) fake.readerTexts[p] = TestPageTexts.grid("Hello world")
+        openVm(vm)
+        val (x, y) = TestPageTexts.centre(0, 1)
+        vm.longPress(0, x, y, 5f)
+        CoreTestSupport.idleUntil(message = "selected") { vm.selection.value != null }
+        vm.search("world", 0)
+        searchDone(vm)
+        assertEquals(12, vm.search.value!!.hits.size)
+        assertEquals(1, vm.cachedTextPagesForTest())
+        assertEquals("Hello", vm.selection.value!!.string())
     }
 
     private fun awaitLocked(vm: ReaderViewModel, name: String): ReaderDocState.Locked {

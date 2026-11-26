@@ -44,10 +44,12 @@ data class ReaderMenuItem(
  */
 @Composable
 internal fun readerMenuItems(
+    onSearch: () -> Unit,
     onGoToPage: () -> Unit,
     onOpenAnother: () -> Unit,
     actions: ReaderActions? = null,
 ): List<ReaderMenuItem> = listOfNotNull(
+    ReaderMenuItem(TAG_READER_SEARCH, stringResource(R.string.reader_search), onClick = onSearch),
     ReaderMenuItem(TAG_READER_GO_TO_PAGE, stringResource(R.string.reader_go_to_page), onClick = onGoToPage),
     ReaderMenuItem(TAG_READER_OPEN_ANOTHER, stringResource(R.string.reader_open_another), onClick = onOpenAnother),
     actions?.let { ReaderMenuItem(TAG_READER_SHARE, stringResource(R.string.reader_share), onClick = it::share) },

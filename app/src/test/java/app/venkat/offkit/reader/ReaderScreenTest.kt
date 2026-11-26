@@ -81,6 +81,19 @@ import app.venkat.offkit.feature.reader.ReaderPageDetailShown
 import app.venkat.offkit.feature.reader.ReaderPageRendered
 import app.venkat.offkit.feature.reader.ReaderPlanner
 import app.venkat.offkit.feature.reader.TAG_READER_INDICATOR
+import app.venkat.offkit.feature.reader.ReaderPageSearchHits
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_BAR
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_CLOSE
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_COUNT
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_FIELD
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_NEXT
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_PREVIOUS
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_SKIPPED
+import app.venkat.offkit.engine.JobControl
+import app.venkat.offkit.engine.PdfEngine
+import app.venkat.offkit.engine.PdfPageRenderer
+import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.feature.reader.TAG_READER_LIST
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
 import app.venkat.offkit.feature.reader.TAG_READER_PRINT
@@ -733,7 +746,7 @@ class ReaderScreenTest {
         openMenu()
         val items = rule.onAllNodes(hasClickAction() and hasAnyAncestor(isPopup())).fetchSemanticsNodes()
         assertEquals(
-            listOf(TAG_READER_GO_TO_PAGE, TAG_READER_OPEN_ANOTHER, TAG_READER_SHARE, TAG_READER_PRINT),
+            listOf(TAG_READER_SEARCH, TAG_READER_GO_TO_PAGE, TAG_READER_OPEN_ANOTHER, TAG_READER_SHARE, TAG_READER_PRINT),
             items.map { it.config[SemanticsProperties.TestTag] },
         )
         rule.onNodeWithTag(TAG_READER_SHARE).assertContentDescriptionEquals(str(R.string.reader_share))
@@ -904,6 +917,115 @@ class ReaderScreenTest {
         rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assert(hasText("9"))
         pressGo()
         waitUntil("page 9") { indicatorText() == indicator(9, 12) }
+    }
+
+    // ---- Search ----
+
+    private fun openSearch() {
+        openMenu()
+        rule.onNodeWithTag(TAG_READER_SEARCH).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_READER_SEARCH_BAR).assertExists()
+    }
+
+    private fun searchFor(query: String) {
+        rule.onNodeWithTag(TAG_READER_SEARCH_FIELD).performTextReplacement(query)
+        rule.onNodeWithTag(TAG_READER_SEARCH_FIELD).performImeAction()
+        rule.waitForIdle()
+    }
+
+    private fun countText(): String =
+        rule.onNodeWithTag(TAG_READER_SEARCH_COUNT).fetchSemanticsNode().let { n ->
+            n.config.getOrElseNullable(SemanticsProperties.ContentDescription) { null }?.joinToString().orEmpty()
+        }
+
+    private fun searchHitsOn(index: Int): Int =
+        rule.onAllNodesWithTag(readerPageTag(index)).fetchSemanticsNodes()
+            .maxOfOrNull { it.config.getOrElseNullable(ReaderPageSearchHits) { null } ?: 0 } ?: 0
+
+    private fun back() {
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun searchFromTheMenuCountsHitsStepsThroughThemAndBackClosesItThenLeaves() {
+        fake.readerPages = List(12) { a4 }
+        fake.readerTexts[0] = TestPageTexts.grid("the cat sat", "on the mat")
+        fake.readerTexts[6] = TestPageTexts.grid("a cat")
+        fake.readerTexts[9] = TestPageTexts.grid("cat")
+        openDocument()
+        openSearch()
+        rule.onNodeWithTag(TAG_READER_SEARCH_NEXT).assertContentDescriptionEquals(str(R.string.reader_search_next_cd))
+        rule.onNodeWithTag(TAG_READER_SEARCH_PREVIOUS).assertContentDescriptionEquals(str(R.string.reader_search_previous_cd))
+        searchFor("CAT")
+        waitUntil("count") { countText() == str(R.string.reader_search_position, 1, "3") }
+        assertEquals(indicator(1, 12), indicatorText())
+        waitUntil("highlight on page 1") { searchHitsOn(0) == 1 }
+
+        rule.onNodeWithTag(TAG_READER_SEARCH_NEXT).performClick()
+        rule.waitForIdle()
+        waitUntil("page 7") { indicatorText() == indicator(7, 12) }
+        assertEquals(str(R.string.reader_search_position, 2, "3"), countText())
+        waitUntil("highlight on page 7") { searchHitsOn(6) == 1 }
+        rule.onNodeWithTag(TAG_READER_SEARCH_PREVIOUS).performClick()
+        rule.onNodeWithTag(TAG_READER_SEARCH_PREVIOUS).performClick()
+        rule.waitForIdle()
+        waitUntil("wrapped to page 10") { indicatorText() == indicator(10, 12) }
+
+        back()
+        assertTrue("Back closes search", !exists(TAG_READER_SEARCH_BAR))
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("report.pdf")
+        waitUntil("highlights removed") { searchHitsOn(9) == 0 }
+        back()
+        rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo()
+    }
+
+    @Test
+    fun noResultsAndTheCloseButton() {
+        fake.readerPages = List(3) { a4 }
+        fake.readerTexts[0] = TestPageTexts.grid("Hello world")
+        openDocument()
+        openSearch()
+        searchFor("zebra")
+        waitUntil("no results") { countText() == str(R.string.reader_search_none) }
+        assertTrue(!exists(TAG_READER_SEARCH_SKIPPED))
+        rule.onNodeWithTag(TAG_READER_SEARCH_CLOSE).performClick()
+        rule.waitForIdle()
+        assertTrue(!exists(TAG_READER_SEARCH_BAR))
+        rule.onNodeWithTag(TAG_READER_INDICATOR).assertExists()
+    }
+
+    @Test
+    fun pagesThatCannotBeReadAreNotedAfterTheScan() {
+        (app as PdfUtilApp).engine = object : PdfEngine by fake, PdfPageRenderer by fake {
+            override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText =
+                if (page == 1 || page == 2) PdfPageText.Err(PdfError.TimedOut) else fake.pageText(pdf, page, out, job)
+        }
+        fake.readerPages = List(4) { a4 }
+        fake.readerTexts[3] = TestPageTexts.grid("cat")
+        openDocument()
+        openSearch()
+        searchFor("cat")
+        waitUntil("skipped note") { exists(TAG_READER_SEARCH_SKIPPED) }
+        rule.onNodeWithTag(TAG_READER_SEARCH_SKIPPED)
+            .assertTextEquals(app.resources.getQuantityString(R.plurals.reader_search_skipped, 2, 2))
+        assertEquals(str(R.string.reader_search_position, 1, "1"), countText())
+    }
+
+    @Test
+    fun aLongPressStillSelectsWhileSearchIsOpenAndBackClearsTheSelectionFirst() {
+        openWithText("Hello world", "Second line")
+        openSearch()
+        searchFor("world")
+        waitUntil("count") { countText() == str(R.string.reader_search_position, 1, "1") }
+        val (x, y) = TestPageTexts.centre(0, 1)
+        longPressAt(0, x, y)
+        waitUntil("selection bar") { selectionShown() }
+        back()
+        assertTrue(!selectionShown())
+        assertTrue("search still open", exists(TAG_READER_SEARCH_BAR))
+        assertEquals(1, searchHitsOn(0))
     }
 
     private fun waitForPasswordDialog(name: String) {
