@@ -95,6 +95,23 @@ class PageTextFormatTest {
     }
 
     @Test
+    fun h5_6_selectionNeverSplitsASupplementaryCharacter() {
+        // "a😀b😀": the emoji is two UTF-16 units (high, low surrogate); each unit has its own box.
+        val text = "a😀b😀"
+        val boxes = FloatArray(text.length * 4)
+        for (i in text.indices) { boxes[4 * i] = 10f * i; boxes[4 * i + 1] = 0f; boxes[4 * i + 2] = 10f * i + 10f; boxes[4 * i + 3] = 12f }
+        val t = PageTextFormat.build(text, boxes, intArrayOf(0), intArrayOf(0), false)
+        assertEquals("a😀", t.string(0..1)) // ends on the high surrogate
+        assertEquals("😀b", t.string(2..3)) // starts on the low surrogate
+        assertEquals("😀", t.string(4..4)) // last character of the text
+        assertEquals("😀", t.string(5..5))
+        assertEquals("b", t.string(3..3))
+        assertEquals(listOf(TextRect(0f, 0f, 30f, 12f)), t.rects(0..1))
+        assertEquals(listOf(TextRect(10f, 0f, 40f, 12f)), t.rects(2..3))
+        assertEquals(listOf(TextRect(40f, 0f, 60f, 12f)), t.rects(4..4))
+    }
+
+    @Test
     fun h5_7_firstLineMustBeInBlockZero() {
         val ok = floatArrayOf(1f, 2f, 3f, 4f)
         // One unit, one line in block -1, zero blocks: consistent except that block 0 is required.
