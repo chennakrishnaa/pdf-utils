@@ -61,7 +61,7 @@ Run on `main` after every merge, in this order:
 | Script | Passes when it prints |
 |---|---|
 | `./scripts/verify.sh` | `VERIFY OK` |
-| `sg kvm -c './scripts/emulator-smoke.sh'` | `tests=31 failures=0 errors=0` and `SMOKE OK` on `main`; `tests=NN` on `pdf-reader` (the count rises if tests are added) |
+| `sg kvm -c './scripts/emulator-smoke.sh'` | `tests=31 failures=0 errors=0` and `SMOKE OK` on `main`; `tests=39` on `pdf-reader` (the count rises if tests are added) |
 | `sg kvm -c './scripts/isolation-smoke.sh'` | `ISOLATION SMOKE OK` |
 | `./scripts/release.sh` | `RELEASE OK` (conductor only; needs `keystore.properties`) |
 | `sg kvm -c './scripts/release-smoke.sh'` | `RELEASE SMOKE OK` |
@@ -113,7 +113,7 @@ Set `export ANDROID_HOME=$HOME/Android/Sdk` first.
 
 ## PDF reader
 
-Built on branch `pdf-reader` after the 1.0.0 build; not merged. Reviewed twice; the fixes F1 to F4 are merged on the branch, and the last of them (F4) has had no independent review. At `6adc734` `VERIFY OK`, the emulator smoke (`tests=32`) and `ISOLATION SMOKE OK` pass; two on-device reader tests against the real engine were added afterwards (`tests=34`). H1 (Open with), H2 (engine page text) and H3 (selection and copy) are merged at `561c0e6`; emulator smoke there: `tests=NN`. **It has never been tried on a real phone.**
+Built on branch `pdf-reader` after the 1.0.0 build; not merged. Reviewed twice; the fixes F1 to F4 are merged on the branch, and the last of them (F4) has had no independent review. At `6adc734` `VERIFY OK`, the emulator smoke (`tests=32`) and `ISOLATION SMOKE OK` pass; two on-device reader tests against the real engine were added afterwards (`tests=34`). H1 (Open with), H2 (engine page text) and H3 (selection and copy) are merged at `561c0e6`; emulator smoke there: `tests=39`. **It has never been tried on a real phone.**
 
 - **What it does:** a fifth Home card, "Read a PDF", below the tool grid. It opens the system file picker for one PDF and shows its pages in a continuous vertical list with pinch-to-zoom (1x to 5x), double-tap zoom, a page indicator and "Open another PDF". Read-only: nothing is changed or saved, and the file is not added to Recents. A PDF can also be opened from another app ("Open with", H1). Long-press selects a word, handles extend the selection, and a contextual top bar offers Close, Select all and Copy; plain text goes to the system clipboard, one page at a time, and a page with no text shows a message. An accessibility action "Copy page text" copies a whole page (H3).
 - **How:** MuPDF renders pages in the `:engine` process (`engine/PdfPageRenderer.kt`, `engine/ops/RenderPageOp.kt`, new calls in `engine/remote/`) and sends raw pixels to the UI. `core/PdfReader.kt` holds the private copy and runs reader calls on `PdfJobs`' engine thread. `feature/reader/` has the screen, `ReaderViewModel` and the render planner; `ui/reader/` has the zoomable list and its maths. Page text comes from `PdfPageRenderer.pageText` (`engine/ops/PageTextOp.kt`, file format "OKTX" in `engine/PageText.kt`, `EngineRequest.PageText`, `PdfReader.text`), after the same pre-checks as a render including the image gate, capped at 200,000 UTF-16 units per page (marked truncated), 30 s per request; the view model keeps at most 8 pages / 400,000 characters of text (`ReaderSelection.kt`). A reader restored after process death without its document goes Home instead of opening the picker (`SavedStateHandle`). No new permission, component or network access. PDFs over 1 GiB are refused before or during the copy, as in the tools.
