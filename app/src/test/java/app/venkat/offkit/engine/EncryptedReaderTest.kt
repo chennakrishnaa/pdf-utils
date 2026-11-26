@@ -212,6 +212,13 @@ class EncryptedReaderTest {
         assertEquals(PdfRender.Err(PdfError.OutOfMemory), render(bomb, "user1"))
     }
 
+    /** K7-3: a repair triggered while pass 2 resolves the object streams refuses the document. */
+    @Test
+    fun repairDuringObjectStreamPass2IsRefused() {
+        val broken = encryptedObjStmPdf("broken-xref.pdf", padding = 1000, objStmOffsetSkew = 3)
+        assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(broken, "user1"))
+    }
+
     // ------------------------------------------------------------------ RC4 (V2 R3) by hand
 
     private fun deflate(b: ByteArray): ByteArray {
@@ -242,7 +249,7 @@ class EncryptedReaderTest {
      * An RC4-128 (V2 R3) PDF whose catalog and page tree live in a Flate object stream (object 1)
      * padded with [padding] spaces after its objects, with an xref stream (object 5).
      */
-    private fun encryptedObjStmPdf(name: String, padding: Int, filterKey: String = "Filter"): File {
+    private fun encryptedObjStmPdf(name: String, padding: Int, filterKey: String = "Filter", objStmOffsetSkew: Int = 0): File {
         val id = ByteArray(16) { it.toByte() }
         val p = -4
         // Algorithm 3: O
@@ -280,7 +287,7 @@ class EncryptedReaderTest {
         fun row(t: Int, a: Int, b: Int) {
             rows.write(t); rows.write(byteArrayOf((a shr 24).toByte(), (a shr 16).toByte(), (a shr 8).toByte(), a.toByte())); rows.write(b shr 8); rows.write(b)
         }
-        row(0, 0, 65535); row(1, off[1], 0); row(2, 1, 0); row(2, 1, 1); row(1, off[4], 0); row(1, off[5], 0); row(1, off[6], 0)
+        row(0, 0, 65535); row(1, off[1] + objStmOffsetSkew, 0); row(2, 1, 0); row(2, 1, 1); row(1, off[4], 0); row(1, off[5], 0); row(1, off[6], 0)
         val xref = rows.toByteArray()
         obj(5, stream("/Type/XRef/Size 7/W[1 4 2]/Root 2 0 R/Encrypt 6 0 R/ID[<${hex(id)}><${hex(id)}>]", xref))
         out.write("startxref\n${off[5]}\n%%EOF\n".toByteArray())

@@ -98,10 +98,17 @@ internal object ObjStmScan {
      * Must run before the page count or any other object that may live in an object stream is
      * resolved. Resolves only the recorded object numbers.
      *
+     * K7-3: resolving a candidate can make MuPDF repair the file (an `N G obj` header that does not
+     * match the xref), and a repair loads every object stream before it is measured. The cost of
+     * that one repair is already paid, but the document is refused when it was not repaired before
+     * pass 2 and is after any step of it, so nothing further is done with it.
+     *
      * @throws PdfInputException `OutOfMemory` when a limit is exceeded or a stream cannot be measured.
      */
     fun checkDecrypted(pdf: PDFDocument, pass1: Result, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES) {
         if (pass1.overflow) tooLargeInput()
+        val repairedBefore = pdf.wasRepaired()
+        fun checkRepair() { if (!repairedBefore && pdf.wasRepaired()) tooLargeInput() }
         var totalOut = pass1.rawTotal
         var totalIn = 0L
         val seen = HashSet<Ref>()
@@ -110,7 +117,9 @@ internal object ObjStmScan {
             if (!seen.add(ref)) continue
             val obj = pdf.newIndirect(ref.num, ref.gen)
             try {
-                if (!obj.isStream) tooLargeInput()
+                val isStream = obj.isStream
+                checkRepair()
+                if (!isStream) tooLargeInput()
                 val flate = when (streamFilter(obj)) {
                     null -> false
                     "FlateDecode", "Fl" -> true
@@ -147,6 +156,7 @@ internal object ObjStmScan {
                 obj.destroy()
             }
         }
+        checkRepair()
     }
 
     private fun tooLargeInput(): Nothing = throw PdfInputException(PdfError.OutOfMemory)
