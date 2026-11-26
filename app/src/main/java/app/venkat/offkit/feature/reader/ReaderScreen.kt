@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -58,6 +59,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -86,6 +88,7 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.SemanticsPropertyReceiver
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -130,7 +133,7 @@ const val TAG_READER_INDICATOR = "reader_indicator"
 /** Test tag of the file name in the top bar (the screen title before a document is open). */
 const val TAG_READER_TITLE = "reader_title"
 
-/** Test tag of the "Open another PDF" top-bar action. */
+/** Test tag of the "Open another PDF" entry of the overflow menu ([readerMenuItems]). */
 const val TAG_READER_OPEN_ANOTHER = "reader_open_another"
 
 /** Test tags of the selection bar (the top bar while text is selected) and its actions. */
@@ -264,7 +267,6 @@ fun ReaderScreen(
             title = stringResource(R.string.tool_read_title),
             indicator = null,
             onBack = onBack,
-            onOpenAnother = null,
         ) {
             if (d == ReaderDocState.Opening) Opening()
         }
@@ -277,7 +279,8 @@ private fun ReaderFrame(
     title: String,
     indicator: Pair<Int, Int>?,
     onBack: () -> Unit,
-    onOpenAnother: (() -> Unit)?,
+    menu: List<ReaderMenuItem> = emptyList(),
+    onIndicatorClick: (() -> Unit)? = null,
     bar: (@Composable () -> Unit)? = null,
     body: @Composable () -> Unit,
 ) {
@@ -289,15 +292,24 @@ private fun ReaderFrame(
                 .background(colors.surfaceDim)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
         ) {
-            if (bar != null) bar() else ReaderTopBar(title, indicator, onBack, onOpenAnother)
+            if (bar != null) bar() else ReaderTopBar(title, indicator, onBack, menu, onIndicatorClick)
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) { body() }
         }
     }
 }
 
-/** Back, the file name (one line), the page indicator and "Open another PDF" (SPEC §0 top bar). */
+/**
+ * Back, the file name (one line), the page indicator (a tap on it calls [onIndicatorClick]) and the
+ * overflow menu of [menu] (SPEC §0 top bar; no menu while [menu] is empty).
+ */
 @Composable
-private fun ReaderTopBar(title: String, indicator: Pair<Int, Int>?, onBack: () -> Unit, onOpenAnother: (() -> Unit)?) {
+private fun ReaderTopBar(
+    title: String,
+    indicator: Pair<Int, Int>?,
+    onBack: () -> Unit,
+    menu: List<ReaderMenuItem>,
+    onIndicatorClick: (() -> Unit)?,
+) {
     val colors = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
@@ -323,21 +335,29 @@ private fun ReaderTopBar(title: String, indicator: Pair<Int, Int>?, onBack: () -
         if (indicator != null) {
             val (page, count) = indicator
             val spoken = stringResource(R.string.reader_page_cd, page, count)
+            val clickLabel = stringResource(R.string.reader_go_to_page)
+            val click = if (onIndicatorClick != null) {
+                Modifier
+                    .clickable(onClickLabel = clickLabel, role = Role.Button, onClick = onIndicatorClick)
+                    .heightIn(min = OffkitDimens.touchTarget)
+                    .padding(horizontal = 8.dp, vertical = 12.dp)
+            } else {
+                Modifier.padding(start = 8.dp)
+            }
             Text(
                 text = stringResource(R.string.reader_page_indicator, page, count),
                 style = MaterialTheme.typography.labelLarge,
                 color = colors.onSurfaceVariant,
                 maxLines = 1,
                 modifier = Modifier
-                    .padding(start = 8.dp)
+                    .padding(start = 4.dp)
+                    .then(click)
                     .semantics { contentDescription = spoken }
                     .testTag(TAG_READER_INDICATOR),
             )
         }
-        if (onOpenAnother != null) {
-            IconButton(onClick = onOpenAnother, modifier = Modifier.testTag(TAG_READER_OPEN_ANOTHER)) {
-                Icon(painterResource(R.drawable.ic_folder_open), stringResource(R.string.reader_open_another))
-            }
+        if (menu.isNotEmpty()) {
+            ReaderOverflowMenu(menu)
         } else {
             Spacer(Modifier.width(8.dp))
         }
@@ -376,6 +396,9 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     val pageCount = doc.pages.size
     var current by remember { mutableIntStateOf(0) }
     val selection by vm.selection.collectAsState()
+    // Go to page: the dialog's open state survives rotation (its typed text is saved by the dialog).
+    var goToOpen by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     val res by rememberUpdatedState(LocalResources.current)
@@ -407,7 +430,8 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
         title = doc.name,
         indicator = (current + 1) to pageCount,
         onBack = onBack,
-        onOpenAnother = onOpenAnother,
+        menu = readerMenuItems(onGoToPage = { goToOpen = true }, onOpenAnother = onOpenAnother),
+        onIndicatorClick = { goToOpen = true },
         bar = if (selection != null) {
             { SelectionBar(onClose = vm::clearSelection, onSelectAll = vm::selectAll, onCopy = vm::copySelection) }
         } else {
@@ -493,6 +517,20 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
                         ),
                     )
                 }
+            }
+            if (goToOpen) {
+                GoToPageDialog(
+                    currentPage = current + 1,
+                    pageCount = pageCount,
+                    onGo = { page ->
+                        goToOpen = false
+                        vm.clearSelection()
+                        // Lazy: only the target's items are composed. The zoom and horizontal pan are
+                        // kept; the vertical position is the list's own scroll, so nothing else to reset.
+                        scope.launch { listState.scrollToItem((page - 1).coerceIn(0, pageCount - 1)) }
+                    },
+                    onDismiss = { goToOpen = false },
+                )
             }
             SnackbarHost(
                 snackbar,
