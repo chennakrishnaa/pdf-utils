@@ -90,12 +90,6 @@ class RecentFilesStore private constructor(context: Context) {
         old.forEach { release(it.uri) }
     }
 
-    /** An `ACTION_VIEW` intent for [file] (type `application/pdf`, read grant). Start it with an activity context. */
-    fun viewIntent(file: RecentFile): Intent =
-        Intent(Intent.ACTION_VIEW)
-            .setDataAndType(file.uri, MIME_PDF)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-
     /** A chooser wrapping an `ACTION_SEND` of [file] (`EXTRA_STREAM`, `application/pdf`, read grant). */
     fun shareIntent(file: RecentFile): Intent {
         val send = Intent(Intent.ACTION_SEND)

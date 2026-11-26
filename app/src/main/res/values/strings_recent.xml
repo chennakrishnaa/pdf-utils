@@ -4,7 +4,6 @@
     <string name="recent_clear_text">Clear the list of recent files? The files themselves are not deleted.</string>
     <string name="recent_clear_confirm">Clear</string>
     <string name="recent_clear_cancel">Cancel</string>
-    <string name="recent_no_viewer">No app found to open PDFs</string>
     <string name="recent_no_share">No app found to share PDFs</string>
     <string name="recent_unavailable">This file is no longer available</string>
     <string name="recent_just_now">Just now</string>

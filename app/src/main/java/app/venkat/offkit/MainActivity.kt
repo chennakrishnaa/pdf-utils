@@ -51,7 +51,13 @@ class MainActivity : ComponentActivity() {
                     })
                 } else {
                     val request by viewRequests.request.collectAsState()
-                    AppNavHost(viewRequest = request, onViewRequestHandled = viewRequests::handled)
+                    AppNavHost(
+                        viewRequest = request,
+                        onViewRequestHandled = viewRequests::handled,
+                        // In-app opens (a recent file) take the same path as "Open with", with no
+                        // intent: they never reach onNewIntent or the intent scrub.
+                        onOpenDocument = { uri -> viewRequests.post(uri) },
+                    )
                 }
             }
         }
@@ -100,7 +106,8 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * The PDF this activity was asked to open ("Open with"), until the reader takes it. In memory
+ * The PDF this activity was asked to open ("Open with", or a recent file tapped on home), until
+ * the reader takes it. In memory
  * only: it survives rotation and the introduction, never process death (the grant would be gone).
  */
 class ViewRequests : ViewModel() {

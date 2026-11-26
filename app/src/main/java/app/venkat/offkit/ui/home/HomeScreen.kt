@@ -3,6 +3,7 @@ package app.venkat.offkit.ui.home
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -149,6 +150,7 @@ fun HomeScreen(
     onOpenTool: (route: String) -> Unit,
     onOpenAbout: () -> Unit,
     onOpenSupport: () -> Unit = {},
+    onOpenDocument: (Uri) -> Unit = {},
     promos: List<HousePromo> = HOUSE_PROMOS,
 ) {
     val vm: HomeViewModel = viewModel {
@@ -159,7 +161,6 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val msgUnavailable = stringResource(R.string.recent_unavailable)
-    val msgNoViewer = stringResource(R.string.recent_no_viewer)
     val msgNoShare = stringResource(R.string.recent_no_share)
 
     HomeContent(
@@ -169,11 +170,10 @@ fun HomeScreen(
         onOpenAbout = onOpenAbout,
         onOpen = { file ->
             scope.launch {
-                val intent = vm.viewIntentIfAvailable(file)
-                if (intent == null) {
+                if (vm.checkAvailable(file)) {
+                    onOpenDocument(file.uri)
+                } else {
                     showMessage(scope, snackbar, msgUnavailable)
-                } else if (!tryStart(context, intent)) {
-                    showMessage(scope, snackbar, msgNoViewer)
                 }
             }
         },

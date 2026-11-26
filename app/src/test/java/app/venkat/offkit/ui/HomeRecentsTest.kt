@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasContentDescription
@@ -23,6 +24,8 @@ import app.venkat.offkit.R
 import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.core.RecentFile
 import app.venkat.offkit.core.RecentFilesStore
+import app.venkat.offkit.feature.reader.TAG_READER_TITLE
+import app.venkat.offkit.ui.components.TAG_ACTION_BACK
 import app.venkat.offkit.ui.components.formatBytes
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -46,12 +49,14 @@ class HomeRecentsTest {
     @get:Rule(order = Int.MIN_VALUE)
     val onboardingSeen = OnboardingSeenRule()
 
+    private val fake = FakePdfEngine()
+
     /** Runs before the activity starts: a fresh store with empty preferences, and the fake engine. */
     @get:Rule(order = 0)
     val freshStore = object : ExternalResource() {
         override fun before() {
             val app = ApplicationProvider.getApplicationContext<Application>()
-            (app as PdfUtilApp).engine = FakePdfEngine()
+            (app as PdfUtilApp).engine = fake
             app.getSharedPreferences("recent_files", Context.MODE_PRIVATE).edit().clear().commit()
             RecentFilesStore.resetForTesting()
         }
@@ -63,6 +68,10 @@ class HomeRecentsTest {
     @After
     fun tearDown() {
         RecentFilesStore.resetForTesting()
+    }
+
+    private companion object {
+        val PDF_BYTES = "%PDF-1.7\n%fake\n".toByteArray()
     }
 
     private val store: RecentFilesStore get() = RecentFilesStore.get(rule.activity)
@@ -159,29 +168,52 @@ class HomeRecentsTest {
         rule.onNodeWithTag("recent_row_0").assertDoesNotExist()
     }
 
+    private fun waitForReaderTitle(name: String) = CoreTestSupport.idleUntil(rule, message = "reader shows $name") {
+        rule.onAllNodesWithTag(TAG_READER_TITLE).fetchSemanticsNodes()
+            .any { it.config[SemanticsProperties.Text].joinToString() == name }
+    }
+
+    /** Nothing left the app: no `ACTION_VIEW` ("Open with" dialog) and no system picker. */
+    private fun assertNothingStarted() {
+        val shadow = shadowOf(rule.activity)
+        assertNull("an activity was started", shadow.nextStartedActivity)
+        assertNull("a picker was launched", shadow.nextStartedActivityForResult)
+    }
+
+    private fun drainStarted() {
+        val shadow = shadowOf(rule.activity)
+        while (shadow.nextStartedActivity != null) Unit
+        while (shadow.nextStartedActivityForResult != null) Unit
+    }
+
+    /**
+     * A readable entry opens in the in-app reader on that Uri: no intent leaves the app and the
+     * reader's picker never shows. Back returns to home with the list intact.
+     */
     @Test
-    fun tappingAvailableEntryStartsViewIntent() {
+    fun tappingAvailableEntryOpensItInTheReaderAndBackReturnsHome() {
         waitFor("recent_empty")
         val app = ApplicationProvider.getApplicationContext<Application>()
         val newer = RecentFile(
-            CoreTestSupport.contentUri(app, "newer.pdf", "%PDF-1.4".toByteArray()),
+            CoreTestSupport.contentUri(app, "newer.pdf", PDF_BYTES),
             "newer.pdf", 8, System.currentTimeMillis(), "merge",
         )
         store.add(newer)
         waitFor("recent_row_0")
-        val shadow = shadowOf(rule.activity)
-        while (shadow.nextStartedActivity != null) Unit // drain
+        drainStarted()
         rule.onNodeWithTag("recent_row_0").performScrollTo().performClick()
-        var started: Intent? = null
-        CoreTestSupport.idleUntil(rule, message = "view intent") {
-            started = shadow.nextStartedActivity
-            started != null
-        }
-        val intent = started!!
-        assertEquals(Intent.ACTION_VIEW, intent.action)
-        assertEquals(newer.uri, intent.data)
-        assertEquals("application/pdf", intent.type)
-        assertTrue(intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        waitForReaderTitle("newer.pdf")
+        CoreTestSupport.idleUntil(rule, message = "engine asked") { fake.readerCalls.isNotEmpty() }
+        assertNothingStarted()
+        // The reader copied the document itself: no new grant, and nothing was added to recents.
+        assertEquals(listOf(newer.uri), store.recents.value.map { it.uri })
+
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+        waitFor("recent_row_0")
+        rule.onNodeWithTag("recent_row_0").performScrollTo().assertTextContains("newer.pdf")
+        rule.onNodeWithTag(TAG_READER_TITLE).assertDoesNotExist()
+        assertNothingStarted()
         assertEquals(1, store.recents.value.size)
     }
 
@@ -189,43 +221,39 @@ class HomeRecentsTest {
      * Pins the cause of the old flake: the availability check runs on `Dispatchers.IO` and the
      * tap handler resumes on the composition scope. When the check finishes after
      * `performClick` returns (a loaded machine), only a wait that drives the Compose test clock
-     * sees the intent; a looper-only wait timed out however long it was.
+     * sees the reader open; a looper-only wait timed out however long it was.
      */
     @Test
-    fun viewIntentStartsWhenAvailabilityCheckFinishesAfterTheTap() {
+    fun readerOpensWhenAvailabilityCheckFinishesAfterTheTap() {
         waitFor("recent_empty")
         val app = ApplicationProvider.getApplicationContext<Application>()
         val gate = CountDownLatch(1)
         val uri = Uri.parse("content://app.venkat.offkit.test/${System.nanoTime()}/slow.pdf")
         shadowOf(app.contentResolver).registerInputStreamSupplier(uri) {
             gate.await(30, TimeUnit.SECONDS)
-            ByteArrayInputStream("%PDF-1.4".toByteArray())
+            ByteArrayInputStream(PDF_BYTES)
         }
         store.add(RecentFile(uri, "slow.pdf", 8, System.currentTimeMillis(), "merge"))
         waitFor("recent_row_0")
-        val shadow = shadowOf(rule.activity)
-        while (shadow.nextStartedActivity != null) Unit
+        drainStarted()
         try {
             rule.onNodeWithTag("recent_row_0").performScrollTo().performClick()
         } finally {
             gate.countDown()
         }
-        var started: Intent? = null
-        CoreTestSupport.idleUntil(rule, message = "view intent after slow check") {
-            started = shadow.nextStartedActivity
-            started != null
-        }
-        assertEquals(uri, started!!.data)
+        waitForReaderTitle("slow.pdf")
+        CoreTestSupport.idleUntil(rule, message = "engine asked after slow check") { fake.readerCalls.isNotEmpty() }
+        assertNothingStarted()
     }
 
+    /** An entry that can no longer be read keeps home's behaviour: a message, the entry removed, no reader. */
     @Test
     fun unavailableEntryShowsMessageAndIsRemoved() {
         waitFor("recent_empty")
         val gone = RecentFile(fileUri("gone.pdf", exists = false), "gone.pdf", 5, System.currentTimeMillis(), "merge")
         store.add(gone)
         waitFor("recent_row_0")
-        val shadow = shadowOf(rule.activity)
-        while (shadow.nextStartedActivity != null) Unit
+        drainStarted()
         rule.onNodeWithTag("recent_row_0").performScrollTo().performClick()
         val message = rule.activity.getString(R.string.recent_unavailable)
         CoreTestSupport.idleUntil(rule, message = "snackbar") {
@@ -233,7 +261,10 @@ class HomeRecentsTest {
         }
         CoreTestSupport.idleUntil(rule) { store.recents.value.isEmpty() }
         waitFor("recent_empty")
-        assertNull(shadow.nextStartedActivity)
+        rule.onNodeWithTag(TAG_READER_TITLE).assertDoesNotExist()
+        rule.onNodeWithTag(TAG_ACTION_BACK).assertDoesNotExist()
+        assertTrue("the reader was not opened", fake.readerCalls.isEmpty())
+        assertNothingStarted()
     }
 
     @Test

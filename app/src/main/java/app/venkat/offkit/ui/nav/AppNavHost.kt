@@ -33,8 +33,8 @@ object Routes {
 }
 
 /**
- * A PDF another app asked Offkit to open ("Open with"). [id] tells two requests for the same
- * [uri] apart. [typeVerified] is false when the intent named no type: the reader then asks the
+ * A PDF to open in the reader: one another app asked Offkit to open ("Open with"), or one chosen
+ * in the app (a recent file on home). [id] tells two requests for the same [uri] apart. [typeVerified] is false when the intent named no type: the reader then asks the
  * provider for it off the main thread before copying anything. Held in memory only, never in
  * navigation state.
  */
@@ -45,7 +45,9 @@ class ViewRequest(val uri: Uri, val id: Long, val typeVerified: Boolean = true)
  *
  * A non-null [viewRequest] opens the reader on its document, on top of the current back stack (so
  * Back returns to whatever was open, e.g. a tool's unsaved result, or to home); the reader calls
- * [onViewRequestHandled] once it has started opening it.
+ * [onViewRequestHandled] once it has started opening it. [onOpenDocument] asks for such a request
+ * from inside the app (home's recent files); it must post a [ViewRequest], the only way a Uri
+ * enters the reader.
  */
 @Composable
 fun AppNavHost(
@@ -53,6 +55,7 @@ fun AppNavHost(
     navController: NavHostController = rememberNavController(),
     viewRequest: ViewRequest? = null,
     onViewRequestHandled: (ViewRequest) -> Unit = {},
+    onOpenDocument: (Uri) -> Unit = {},
 ) {
     val route = navController.currentBackStackEntryAsState().value?.destination?.route
     LaunchedEffect(viewRequest, route) {
@@ -75,6 +78,11 @@ fun AppNavHost(
                 onOpenTool = navigate,
                 onOpenAbout = { navigate(Routes.ABOUT) },
                 onOpenSupport = { navigate(Routes.SUPPORT) },
+                // Called after an availability check off the main thread: dropped if home was
+                // left meanwhile, so a late answer never pushes the reader over another screen.
+                onOpenDocument = { uri ->
+                    if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) onOpenDocument(uri)
+                },
             )
         }
         composable(Routes.IMAGES_TO_PDF) {

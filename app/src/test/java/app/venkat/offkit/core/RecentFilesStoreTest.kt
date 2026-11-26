@@ -1,9 +1,13 @@
 package app.venkat.offkit.core
 
+import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import app.venkat.offkit.ui.home.HomeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -186,12 +190,17 @@ class RecentFilesStoreTest {
     }
 
     @Test
-    fun viewIntentContents() {
-        val intent = store.viewIntent(file(1))
-        assertEquals(Intent.ACTION_VIEW, intent.action)
-        assertEquals(uri(1), intent.data)
-        assertEquals("application/pdf", intent.type)
-        assertTrue(intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+    fun homeAvailabilityCheckKeepsReadableEntryAndRemovesUnreadableOne() {
+        // What home checks before handing a recent file to the in-app reader.
+        val readable = RecentFile(CoreTestSupport.contentUri(context, "r.pdf", "%PDF".toByteArray()), "r.pdf", 4, 2, "")
+        val gone = RecentFile(Uri.fromFile(File(context.filesDir, "missing.pdf").apply { delete() }), "missing.pdf", 3, 1, "")
+        store.add(gone)
+        store.add(readable)
+        val vm = HomeViewModel(context as Application, Dispatchers.Unconfined)
+        assertTrue(runBlocking { vm.checkAvailable(readable) })
+        assertEquals(listOf(readable, gone), store.recents.value)
+        assertFalse(runBlocking { vm.checkAvailable(gone) })
+        assertEquals(listOf(readable), store.recents.value)
     }
 
     @Test

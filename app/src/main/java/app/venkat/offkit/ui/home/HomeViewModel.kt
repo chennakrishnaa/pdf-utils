@@ -49,17 +49,12 @@ class HomeViewModel(
     }
 
     /**
-     * The intent that opens [file] in a PDF viewer, or null if the document can no longer be
-     * read, in which case its entry is removed.
+     * True if [file]'s document can still be read; otherwise its entry is removed and false is
+     * returned.
      */
-    suspend fun viewIntentIfAvailable(file: RecentFile): Intent? = withContext(io) {
+    suspend fun checkAvailable(file: RecentFile): Boolean = withContext(io) {
         val s = store.await()
-        if (s.isAvailable(file)) {
-            s.viewIntent(file)
-        } else {
-            s.remove(file.uri)
-            null
-        }
+        s.isAvailable(file).also { available -> if (!available) s.remove(file.uri) }
     }
 
     /** A chooser intent that shares [file]. */
