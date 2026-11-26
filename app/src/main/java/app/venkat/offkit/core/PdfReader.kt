@@ -14,6 +14,7 @@ import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfPageText
+import app.venkat.offkit.engine.PdfResult
 import app.venkat.offkit.engine.PageText
 import app.venkat.offkit.engine.PageTextFormat
 import app.venkat.offkit.engine.PageTextParse
@@ -81,6 +82,12 @@ class ReaderDocument internal constructor(
 
     internal fun newTextFile(): File = File(dir, "text-${tileCounter.incrementAndGet()}.bin")
 
+    /**
+     * The unencrypted copy [PdfReader.preparePrint] made of this encrypted document
+     * (`print-<uuid>.pdf` in [dir]), or null. Read and written on the engine thread only.
+     */
+    internal var printCopy: File? = null
+
     /** The last copy [PdfReader.prepareShare] made of this document (under `cacheDir/shared/`), or null. */
     @Volatile
     internal var sharedCopy: SharedCopy? = null
@@ -127,6 +134,13 @@ sealed interface ReaderTile {
 }
 
 /** Result of [PdfReader.text]. */
+/** Result of [PdfReader.preparePrint]. */
+sealed interface ReaderPrintFile {
+    /** Print [file]: the private copy, or the unencrypted copy of an encrypted document. */
+    data class Ok(val file: File) : ReaderPrintFile
+    data class Err(val error: PdfError) : ReaderPrintFile
+}
+
 sealed interface ReaderText {
     /** The page's text and geometry (zero length for a page without text). */
     data class Ok(val text: PageText) : ReaderText
@@ -436,6 +450,77 @@ class PdfReader internal constructor(
     fun openSource(document: ReaderDocument): FileChannel {
         if (document.closed) throw IOException("Document closed")
         return FileInputStream(document.file).channel
+    }
+
+    /**
+     * The file to hand to the print framework for [document]: its private copy if it is not
+     * encrypted; else an unencrypted copy (`print-<uuid>.pdf` in the document's own folder under
+     * `cacheDir/jobs`), written by the engine with the document's password (none for a PDF with
+     * only an owner password) on the engine thread. The copy is made once per open document and
+     * reused while it exists; it is deleted with the folder when the document is closed (and by
+     * [PdfJobs]' startup wipe of `cacheDir/jobs`). It is never shared ([prepareShare] copies the
+     * original) and never leaves `cacheDir/jobs`.
+     *
+     * A closed document is `Err(Cancelled)`; closing it while the copy is written asks the engine
+     * to stop (the save itself cannot stop, so the engine is killed after its cancel grace) and
+     * the partial copy is deleted. Engine errors are passed on; a reply whose page count differs
+     * from the document's is `Err(Io)`. Cancelling the caller lets the engine call finish (as for
+     * [render]); the copy is then kept for the next print.
+     */
+    suspend fun preparePrint(document: ReaderDocument): ReaderPrintFile {
+        if (document.closed) return ReaderPrintFile.Err(PdfError.Cancelled)
+        if (!document.isEncrypted) return ReaderPrintFile.Ok(document.file)
+        val engine = renderer() ?: return ReaderPrintFile.Err(PdfError.Io(IOException("Engine cannot print")))
+        try {
+            return withContext(jobs.engineDispatcher) {
+                document.printCopy?.takeIf { it.isFile }?.let { return@withContext ReaderPrintFile.Ok(it) }
+                if (document.closed) return@withContext ReaderPrintFile.Err(PdfError.Cancelled)
+                val out = File(document.dir, "print-${UUID.randomUUID()}.pdf")
+                val result = try {
+                    engine.decryptCopy(document.file, out, document.password?.takeIf { it.isNotEmpty() }, cancelWhen { document.closed })
+                } catch (e: Throwable) {
+                    out.delete()
+                    throw e
+                }
+                when {
+                    result is PdfResult.Err -> {
+                        out.delete()
+                        ReaderPrintFile.Err(result.error)
+                    }
+                    document.closed -> {
+                        out.delete()
+                        ReaderPrintFile.Err(PdfError.Cancelled)
+                    }
+                    result is PdfResult.Ok && result.pages != document.pages.size -> {
+                        out.delete()
+                        ReaderPrintFile.Err(PdfError.Io(IOException("Decrypted copy has ${result.pages} pages")))
+                    }
+                    else -> {
+                        document.printCopy = out
+                        ReaderPrintFile.Ok(out)
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            return ReaderPrintFile.Err(PdfError.Cancelled)
+        } catch (e: OutOfMemoryError) {
+            return ReaderPrintFile.Err(PdfError.OutOfMemory)
+        } catch (e: Exception) {
+            return ReaderPrintFile.Err(PdfError.Io(e))
+        } finally {
+            if (document.closed) deleteFolder(document)
+        }
+    }
+
+    /**
+     * Opens [file] (from [preparePrint] for [document]) for reading, as [openSource]: throws
+     * [IOException] if the document is closed or the file is gone; the channel keeps the bytes
+     * readable after [close] deletes the folder. Blocking: call off the main thread.
+     */
+    fun openPrintSource(document: ReaderDocument, file: File): FileChannel {
+        if (document.closed) throw IOException("Document closed")
+        return FileInputStream(file).channel
     }
 
     /**
