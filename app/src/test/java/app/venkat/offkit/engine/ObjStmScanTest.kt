@@ -95,6 +95,34 @@ class ObjStmScanTest {
         assertTrue(engine.compress(f, CompressionLevel.HIGH, o) is PdfResult.Ok)
     }
 
+    /** K7-2: MuPDF reads the filter as `Filter|F` (`pdf_dict_geta`), so `/F /FlateDecode` is a Flate object stream. */
+    @Test
+    fun k7_2_abbreviatedFilterKey_isMeasured_inToolAndReaderPaths() {
+        val bomb = write("f-bomb.pdf", abbreviated(inCatalogStream(repeated("null ", 3_500_000))))
+        assertTooLarge("tool path") { PdfInputs.open(bomb).destroy() }
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.compress(bomb, CompressionLevel.HIGH, out("fc.pdf")))
+        assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb))
+        // A benign object stream spelled the same way still opens.
+        val ok = write("f-ok.pdf", abbreviated(inCatalogStream(repeated("null ", 1000))))
+        PdfInputs.open(ok).destroy()
+        assertTrue(engine.pageInfo(ok) is PdfPageInfo.Ok)
+    }
+
+    /** K7-2: a non-name, non-array `/F` (a file specification) on a candidate is refused. */
+    @Test
+    fun k7_2_fileSpecificationAsFilter_isRefused() {
+        for ((name, f) in listOf("dict" to "/F<</Type/Filespec/F(x.bin)>>", "string" to "/F(x.bin)", "ref" to "/F 9 0 R")) {
+            val pdf = HostilePdf()
+            basicPage(pdf)
+            pdf.add(20, "<</Type/ObjStm/N 1/First 4$f/Length 8>>stream\n1 0 null\nendstream")
+            assertTooLarge(name) { ObjStmScan.check(write("fs-$name.pdf", pdf.bytes())) }
+        }
+    }
+
+    /** Respells every `/Filter/FlateDecode` as `/F/FlateDecode` padded to the same length (offsets unchanged). */
+    private fun abbreviated(pdf: ByteArray): ByteArray =
+        String(pdf, Charsets.ISO_8859_1).replace("/Filter/FlateDecode", "/F/FlateDecode     ").latin1()
+
     private fun inCatalogStream(extra: ByteArray, dictExtra: String = "/Type/ObjStm", nKey: String = "N", flate: Boolean = true): ByteArray {
         val pdf = HostilePdf()
         pdf.stream(4, "", "BT ET".latin1())

@@ -26,8 +26,11 @@ import java.util.zip.Inflater
  * `endstream` keyword) contains the name `/ObjStm` OR `/N` is a candidate: MuPDF loads any type-2
  * xref target as an object stream reading only `/N` and `/First` (no `/Type` check), so the `/N`
  * test catches a dictionary without `/Type`. ICC profile streams also carry `/N`; they are small and
- * pass. Per candidate:
- * - `/Filter` absent: its raw extent (to the next `endstream`) counts as decoded bytes;
+ * pass. The filter is read as MuPDF reads it (`pdf_open_filter`: `Filter|F`, `/F` used only when
+ * `/Filter` is absent; K7-2). `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
+ * has no external-file streams, no `/FFilter`, and would read the data raw) is refused like any
+ * other non-name filter. Per candidate:
+ * - no filter: its raw extent (to the next `endstream`) counts as decoded bytes;
  * - `/Filter` exactly `/FlateDecode` or `/Fl` (a name or a one-element array): inflated with a
  *   bounded [Inflater] into a scratch buffer, stopping at the bound. A stream that is not valid
  *   zlib (e.g. encrypted) counts what it yielded and is otherwise ignored, so encrypted files still
@@ -95,10 +98,17 @@ internal object ObjStmScan {
      * Must run before the page count or any other object that may live in an object stream is
      * resolved. Resolves only the recorded object numbers.
      *
+     * K7-3: resolving a candidate can make MuPDF repair the file (an `N G obj` header that does not
+     * match the xref), and a repair loads every object stream before it is measured. The cost of
+     * that one repair is already paid, but the document is refused when it was not repaired before
+     * pass 2 and is after any step of it, so nothing further is done with it.
+     *
      * @throws PdfInputException `OutOfMemory` when a limit is exceeded or a stream cannot be measured.
      */
     fun checkDecrypted(pdf: PDFDocument, pass1: Result, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES) {
         if (pass1.overflow) tooLargeInput()
+        val repairedBefore = pdf.wasRepaired()
+        fun checkRepair() { if (!repairedBefore && pdf.wasRepaired()) tooLargeInput() }
         var totalOut = pass1.rawTotal
         var totalIn = 0L
         val seen = HashSet<Ref>()
@@ -107,7 +117,9 @@ internal object ObjStmScan {
             if (!seen.add(ref)) continue
             val obj = pdf.newIndirect(ref.num, ref.gen)
             try {
-                if (!obj.isStream) tooLargeInput()
+                val isStream = obj.isStream
+                checkRepair()
+                if (!isStream) tooLargeInput()
                 val flate = when (streamFilter(obj)) {
                     null -> false
                     "FlateDecode", "Fl" -> true
@@ -144,13 +156,22 @@ internal object ObjStmScan {
                 obj.destroy()
             }
         }
+        checkRepair()
     }
 
     private fun tooLargeInput(): Nothing = throw PdfInputException(PdfError.OutOfMemory)
 
-    /** The single filter name of [stream] (null: none); "?" for a chain, an indirect or non-name filter. */
+    /**
+     * The single filter name of [stream] (`Filter|F`, as `pdf_open_filter`; null: none); "?" for a
+     * chain, an indirect or non-name filter (including an `/F` file specification, K7-2).
+     */
     private fun streamFilter(stream: PDFObject): String? {
-        val f = stream.get("Filter")
+        val f = stream.get("Filter").let {
+            if (!it.isNull) it else {
+                if (it !== PDFObject.Null) it.destroy()
+                stream.get("F")
+            }
+        }
         try {
             if (f.isIndirect) return "?"
             return when {
@@ -186,9 +207,19 @@ internal object ObjStmScan {
         private var bufLen = 0
 
         private var candidate = false
-        private val filters = ArrayList<String>()
-        private var filterUnknown = false
-        private var filterState = 0 // 0 none, 1 after /Filter, 2 inside its array
+
+        /** The value of one filter key of the current dictionary: names read, and whether anything else was. */
+        private class FilterSlot {
+            val names = ArrayList<String>()
+            var unknown = false
+            var seen = false
+            fun clear() { names.clear(); unknown = false; seen = false }
+        }
+
+        private val filterSlot = FilterSlot() // /Filter
+        private val fSlot = FilterSlot() // /F, MuPDF's abbreviation (used when /Filter is absent)
+        private var cur = filterSlot // the slot being read while filterState != 0
+        private var filterState = 0 // 0 none, 1 after /Filter or /F, 2 inside its array
         private var rawStart = -1L
         private var totalOut = 0L
         private var totalIn = 0L
@@ -222,7 +253,7 @@ internal object ObjStmScan {
                     isWhite(c) -> p + 1
                     c == '%'.code -> skipUntil(p + 1) { it == '\n'.code || it == '\r'.code }
                     c == '('.code -> skipString(p + 1).also { otherValue() }
-                    c == '<'.code -> if (at(p + 1) == '<'.code) p + 2 else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
+                    c == '<'.code -> if (at(p + 1) == '<'.code) (p + 2).also { otherValue() } else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
                     c == '['.code -> { if (filterState == 1) filterState = 2 else otherValue(); p + 1 }
                     c == ']'.code -> { if (filterState == 2) filterState = 0; p + 1 }
                     c == '/'.code -> readName(p + 1)
@@ -236,7 +267,7 @@ internal object ObjStmScan {
 
         private fun otherValue() {
             if (filterState != 0) {
-                filterUnknown = true
+                cur.unknown = true
                 if (filterState == 1) filterState = 0
             }
         }
@@ -320,20 +351,29 @@ internal object ObjStmScan {
         }
 
         private fun onName(n: String) {
+            // A name read as a filter value still makes a candidate (a superset: `/X /F /N 1`).
+            if (n == "ObjStm" || n == "N") candidate = true
             when (filterState) {
-                1 -> { filters.add(n); filterState = 0; return }
-                2 -> { filters.add(n); return }
+                1 -> { cur.names.add(n); filterState = 0; return }
+                2 -> { cur.names.add(n); return }
             }
             when (n) {
-                "Filter" -> { filterState = 1; filters.clear() }
-                "ObjStm", "N" -> candidate = true
+                "Filter" -> startFilter(filterSlot)
+                "F" -> startFilter(fSlot)
             }
+        }
+
+        private fun startFilter(slot: FilterSlot) {
+            slot.clear()
+            slot.seen = true
+            cur = slot
+            filterState = 1
         }
 
         private fun reset() {
             candidate = false
-            filters.clear()
-            filterUnknown = false
+            filterSlot.clear()
+            fSlot.clear()
             filterState = 0
         }
 
@@ -344,8 +384,10 @@ internal object ObjStmScan {
             var d = after
             if (at(d) == '\r'.code) d++
             if (at(d) == '\n'.code) d++
+            val slot = if (filterSlot.seen) filterSlot else fSlot
+            val filters = slot.names
             when {
-                filterUnknown || filters.size > 1 -> tooLarge()
+                slot.unknown || filters.size > 1 -> tooLarge()
                 filters.isEmpty() -> rawStart = d
                 filters[0] == "FlateDecode" || filters[0] == "Fl" -> { record(); inflate(d) }
                 else -> tooLarge()
