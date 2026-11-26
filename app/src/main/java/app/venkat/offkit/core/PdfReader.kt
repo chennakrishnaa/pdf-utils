@@ -1,6 +1,7 @@
 package app.venkat.offkit.core
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.core.graphics.createBitmap
@@ -19,12 +20,14 @@ import app.venkat.offkit.engine.PageTextParse
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -109,6 +112,10 @@ class PdfReader internal constructor(
 ) {
     private val appContext: Context = context.applicationContext ?: context
 
+    /** How long [open] waits for the provider to name a Uri's type (see `checkType`). Lowered in tests. */
+    @Volatile
+    internal var typeTimeoutMillis: Long = TYPE_TIMEOUT_MILLIS
+
     /**
      * Copies the PDF at [uri] (a `content:` Uri, read once with its transient grant) to a fresh
      * `cacheDir/jobs/reader-<uuid>/` directory on the IO dispatcher, then reads its page sizes on
@@ -120,13 +127,19 @@ class PdfReader internal constructor(
      * passes the limit; the engine's
      * `Encrypted`, `Corrupt`, `OutOfMemory`, `EngineCrashed`, ...; a document with no pages or with
      * an invalid page size: `Corrupt`. Page sizes are passed through [sanePageDims]. Cancelling the caller deletes the directory and rethrows.
+     *
+     * With [checkType] (an "Open with" intent that named no type), the provider is first asked
+     * for the Uri's type on the IO dispatcher, with a [typeTimeoutMillis] limit; anything but
+     * `application/pdf` (another type, none, an exception, no answer in time) is `Io`, before
+     * any copy is made.
      */
-    suspend fun open(uri: Uri): ReaderOpenResult {
+    suspend fun open(uri: Uri, checkType: Boolean = false): ReaderOpenResult {
         if (!UriIo.isContentUri(uri)) return ReaderOpenResult.Failed(PdfError.Io(IOException("Not a content Uri")))
         val dir = File(jobs.jobsRoot, READER_DIR_PREFIX + UUID.randomUUID())
         val file = File(dir, DOCUMENT_NAME)
         var keep = false
         try {
+            if (checkType && !providerSaysPdf(uri)) throw IOException("Not a PDF")
             val name = withContext(jobs.ioDispatcher) {
                 if (!dir.mkdirs() && !dir.isDirectory) throw IOException("Cannot create $dir")
                 val ctx = currentCoroutineContext()
@@ -213,10 +226,10 @@ class PdfReader internal constructor(
         } catch (e: Exception) {
             return ReaderTile.Err(PdfError.Io(e))
         } finally {
-            withContext(NonCancellable + jobs.ioDispatcher) {
-                out.delete()
-                if (document.closed) document.dir.deleteRecursively()
-            }
+            // Only this call's own file: the folder is deleted on the engine thread alone
+            // (two concurrent deleteRecursively walks of one folder can fail).
+            withContext(NonCancellable + jobs.ioDispatcher) { out.delete() }
+            if (document.closed) deleteFolder(document)
         }
     }
 
@@ -267,10 +280,10 @@ class PdfReader internal constructor(
         } catch (e: Exception) {
             return ReaderText.Err(PdfError.Io(e))
         } finally {
-            withContext(NonCancellable + jobs.ioDispatcher) {
-                out.delete()
-                if (document.closed) document.dir.deleteRecursively()
-            }
+            // Only this call's own file: the folder is deleted on the engine thread alone
+            // (two concurrent deleteRecursively walks of one folder can fail).
+            withContext(NonCancellable + jobs.ioDispatcher) { out.delete() }
+            if (document.closed) deleteFolder(document)
         }
     }
 
@@ -282,6 +295,15 @@ class PdfReader internal constructor(
      */
     fun close(document: ReaderDocument) {
         document.markClosed()
+        deleteFolder(document)
+    }
+
+    /**
+     * Deletes [document]'s folder on the engine thread, so deletions never run concurrently with
+     * each other or with an engine call writing into the folder. Queued, never blocks. Engine
+     * calls for a closed document are refused before they start, so nothing is written after.
+     */
+    private fun deleteFolder(document: ReaderDocument) {
         jobs.processScope.launch(jobs.engineDispatcher) {
             try {
                 document.dir.deleteRecursively()
@@ -289,6 +311,26 @@ class PdfReader internal constructor(
                 // Best effort; PdfJobs.get wipes cacheDir/jobs in the next process.
             }
         }
+    }
+
+    /**
+     * True if the provider reports [uri]'s type as `application/pdf`. Asked on the IO dispatcher,
+     * never the main thread; a provider that throws or does not answer within [typeTimeoutMillis]
+     * counts as "not a PDF". The call runs detached, as a blocked binder call cannot be
+     * interrupted: a provider that never answers pins one IO thread until the system's provider
+     * timeout, and its late answer is dropped.
+     */
+    private suspend fun providerSaysPdf(uri: Uri): Boolean = withContext(jobs.ioDispatcher) {
+        val type = jobs.processScope.async(jobs.ioDispatcher) {
+            try {
+                appContext.contentResolver.getType(uri)
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val resolved = withTimeoutOrNull(typeTimeoutMillis) { type.await() }
+        type.cancel()
+        Intent.normalizeMimeType(resolved) == MIME_PDF
     }
 
     private fun renderer(): PdfPageRenderer? = (appContext as PdfUtilApp).engine as? PdfPageRenderer
@@ -326,6 +368,10 @@ class PdfReader internal constructor(
         /** Prefix of reader directories under `cacheDir/jobs`. */
         const val READER_DIR_PREFIX = "reader-"
         private const val DOCUMENT_NAME = "document.pdf"
+        private const val MIME_PDF = "application/pdf"
+
+        /** Default for [typeTimeoutMillis]. */
+        const val TYPE_TIMEOUT_MILLIS = 3_000L
 
         @Volatile
         private var instance: PdfReader? = null

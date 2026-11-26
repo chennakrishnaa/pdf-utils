@@ -34,9 +34,11 @@ object Routes {
 
 /**
  * A PDF another app asked Offkit to open ("Open with"). [id] tells two requests for the same
- * [uri] apart. Held in memory only, never in navigation state.
+ * [uri] apart. [typeVerified] is false when the intent named no type: the reader then asks the
+ * provider for it off the main thread before copying anything. Held in memory only, never in
+ * navigation state.
  */
-class ViewRequest(val uri: Uri, val id: Long)
+class ViewRequest(val uri: Uri, val id: Long, val typeVerified: Boolean = true)
 
 /**
  * The app's navigation graph, starting at [Routes.HOME].

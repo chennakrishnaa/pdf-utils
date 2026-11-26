@@ -25,6 +25,7 @@ import app.venkat.offkit.engine.PageTextFormat
 import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.engine.RenderRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
@@ -42,6 +43,8 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
 
 @RunWith(RobolectricTestRunner::class)
@@ -331,6 +334,45 @@ class PdfReaderTest {
         val g = runBlocking { reader.text(doc, 0) }
         assertTrue(g.toString(), g is ReaderText.Err && g.error is PdfError.Io)
         assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+    }
+
+    @Test
+    fun closingDuringARenderAndATextCallNeverRacesTheFolderDeletion() {
+        // close() deletes the folder on the engine thread while the render's and the text call's
+        // cleanup run on the IO dispatcher; two concurrent deleteRecursively walks of one folder
+        // trip FileTreeWalk's assert (enabled with -ea), on whichever thread loses.
+        val errors = CopyOnWriteArrayList<Throwable>()
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { _, e -> errors += e }
+        try {
+            fake.readerTexts[0] = canned()
+            repeat(100) { round ->
+                val doc = openOk()
+                val inRender = CountDownLatch(1)
+                val go = CountDownLatch(1)
+                fake.beforeRender = {
+                    inRender.countDown()
+                    go.await(5, TimeUnit.SECONDS)
+                }
+                runBlocking {
+                    val tile = async(Dispatchers.IO) { reader.render(doc, RenderRequest(0, 0.1f, 0, 0, 10, 10)) }
+                    assertTrue(inRender.await(5, TimeUnit.SECONDS))
+                    val text = async(Dispatchers.IO) { reader.text(doc, 0) }
+                    reader.close(doc)
+                    go.countDown()
+                    tile.await()
+                    text.await()
+                }
+                fake.beforeRender = null
+                val deadline = System.nanoTime() + 5_000_000_000L
+                while (doc.dir.exists() && System.nanoTime() < deadline) Thread.sleep(2)
+                assertFalse("round $round: folder left behind", doc.dir.exists())
+            }
+        } finally {
+            Thread.setDefaultUncaughtExceptionHandler(previous)
+        }
+        assertTrue(errors.toString(), errors.isEmpty())
+        assertTrue(readerDirs().isEmpty())
     }
 
     @Test

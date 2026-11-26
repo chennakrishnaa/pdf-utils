@@ -2,6 +2,13 @@ package app.venkat.offkit.ui
 
 import android.app.Application
 import android.content.ComponentName
+import android.content.ContentProvider
+import android.content.ContentValues
+import android.database.Cursor
+import android.database.MatrixCursor
+import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.provider.OpenableColumns
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -23,6 +30,7 @@ import app.venkat.offkit.core.RecentFilesStore
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.feature.reader.ReaderPageRendered
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
+import app.venkat.offkit.feature.reader.TAG_READER_OPENING
 import app.venkat.offkit.feature.reader.TAG_READER_TITLE
 import app.venkat.offkit.feature.reader.readerPageTag
 import app.venkat.offkit.setOnboardingSeen
@@ -45,6 +53,9 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * "Open with Offkit": `ACTION_VIEW` of a `content:` PDF opens the reader on it, with no picker.
@@ -68,10 +79,13 @@ class OpenWithIntentTest {
         RecentFilesStore.resetForTesting()
         PdfJobs.get(app)
         setOnboardingSeen(true)
+        TypeProvider.reset()
     }
 
     @After
     fun tearDown() {
+        TypeProvider.release.countDown()
+        PdfReader.get(app).typeTimeoutMillis = PdfReader.TYPE_TIMEOUT_MILLIS
         controller?.let { runCatching { it.pause().stop().destroy() } }
         setOnboardingSeen(true)
         RecentFilesStore.resetForTesting()
@@ -149,11 +163,81 @@ class OpenWithIntentTest {
         assertTrue(RecentFilesStore.get(app).recents.value.isEmpty())
     }
 
+    /** A Uri of [TypeProvider], whose type is whatever [TypeProvider.answer] says. */
+    private fun typed(name: String): Uri {
+        Robolectric.setupContentProvider(TypeProvider::class.java, TypeProvider.AUTHORITY)
+        return Uri.parse("content://${TypeProvider.AUTHORITY}/${System.nanoTime()}/$name")
+    }
+
+    /** The reader's error screen, with nothing copied or given to the engine. */
+    private fun assertErrorScreenAndNothingCopied() {
+        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(TAG_HOME_PRIVACY) && !exists(TAG_READER_OPENING) && !exists(readerPageTag(0)) }
+        assertTrue("nothing given to the engine", fake.readerCalls.isEmpty())
+        assertTrue("nothing copied", readerDirs().isEmpty())
+        assertEquals("nothing read from the provider", 0, TypeProvider.opened.get())
+    }
+
     @Test
-    fun typeFromTheProviderWhenTheIntentHasNone() {
+    fun noIntentTypeAndTheProviderSaysPdfOpensOffTheMainThread() {
+        TypeProvider.answer = { "application/pdf" }
+        val activity = start(view(typed("untyped.pdf"), type = null))
+        waitForTitle("untyped.pdf")
+        waitUntilPage1()
+        assertNoPicker(activity)
+        assertScrubbed(activity)
+        assertTrue("type asked", TypeProvider.calls.get() >= 1)
+        assertEquals("provider called on the main thread", 0, TypeProvider.mainThreadCalls.get())
+    }
+
+    @Test
+    fun noIntentTypeAndTheProviderSaysOtherOrNoneOrThrowsCopiesNothing() {
+        val answers = listOf<Pair<String, () -> String?>>(
+            "other" to { "image/png" },
+            "none" to { null },
+            "throws" to { throw SecurityException("no") },
+        )
+        for ((name, answer) in answers) {
+            TypeProvider.reset()
+            TypeProvider.answer = answer
+            start(view(typed("$name.pdf"), type = null))
+            try {
+                assertErrorScreenAndNothingCopied()
+                assertTrue("type asked", TypeProvider.calls.get() >= 1)
+                assertEquals("provider called on the main thread", 0, TypeProvider.mainThreadCalls.get())
+            } catch (e: AssertionError) {
+                throw AssertionError("$name: ${e.message}", e)
+            }
+            controller!!.pause().stop().destroy()
+            controller = null
+        }
+    }
+
+    @Test
+    fun noIntentTypeAndAStalledProviderTimesOutWithoutBlockingTheMainThread() {
+        PdfReader.get(app).typeTimeoutMillis = 300
+        TypeProvider.answer = {
+            TypeProvider.release.await(20, TimeUnit.SECONDS)
+            "application/pdf"
+        }
+        start(view(typed("stalled.pdf"), type = null))
+        // start() returned: onCreate did not wait for the provider.
+        assertErrorScreenAndNothingCopied()
+        assertEquals("provider called on the main thread", 0, TypeProvider.mainThreadCalls.get())
+        // Its late "PDF" answer opens nothing.
+        TypeProvider.release.countDown()
+        Thread.sleep(200)
+        rule.waitForIdle()
+        assertTrue(fake.readerCalls.isEmpty())
+        assertTrue(readerDirs().isEmpty())
+    }
+
+    @Test
+    fun noIntentTypeAndNoProviderShowsTheErrorScreen() {
         // No type on the intent and the provider reports none either: not taken as a PDF.
         start(view(pdf("untyped.pdf"), type = null))
-        assertHome()
+        waitUntil("error screen") { exists(TAG_ACTION_BACK) && !exists(TAG_HOME_PRIVACY) && !exists(readerPageTag(0)) }
+        assertTrue(fake.readerCalls.isEmpty())
+        assertTrue(readerDirs().isEmpty())
     }
 
     @Test
@@ -253,6 +337,21 @@ class OpenWithIntentTest {
     }
 
     @Test
+    fun aViewRelaunchedFromRecentsIsNotOpenedAgain() {
+        // Back finished the task's root (or the process died) and the user picks the task in
+        // Recents: the original VIEW comes back, with no saved state, flagged as from history.
+        val uri = pdf("old.pdf")
+        for (type in listOf("application/pdf", null)) {
+            val activity = start(view(uri, type).addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY))
+            assertScrubbed(activity)
+            assertNoPicker(activity)
+            assertHome()
+            controller!!.pause().stop().destroy()
+            controller = null
+        }
+    }
+
+    @Test
     fun unreadableDocumentShowsTheReadersErrorScreen() {
         // A content: Uri with no data behind it (as one without a grant): the reader's Io error.
         val activity = start(view(Uri.parse("content://other.provider/doc/secret.pdf")))
@@ -309,5 +408,49 @@ class OpenWithIntentTest {
         rule.waitForIdle()
         assertScrubbed(activity)
         assertHome()
+    }
+
+    /** A provider whose [getType] answers with [answer] and records the thread it was called on. */
+    class TypeProvider : ContentProvider() {
+        override fun onCreate() = true
+        override fun getType(uri: Uri): String? {
+            calls.incrementAndGet()
+            if (Looper.getMainLooper().isCurrentThread) mainThreadCalls.incrementAndGet()
+            return answer()
+        }
+        override fun query(uri: Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): Cursor =
+            MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE))
+                .apply { addRow(arrayOf<Any>(uri.lastPathSegment!!, BYTES.size.toLong())) }
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+            opened.incrementAndGet()
+            val file = File.createTempFile("typed", ".pdf", context!!.cacheDir).apply { writeBytes(BYTES) }
+            return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).also { file.delete() }
+        }
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+        override fun delete(uri: Uri, selection: String?, args: Array<out String>?) = 0
+        override fun update(uri: Uri, values: ContentValues?, selection: String?, args: Array<out String>?) = 0
+
+        companion object {
+            const val AUTHORITY = "app.venkat.offkit.typetest"
+            private val BYTES = "%PDF-1.7\n%fake\n".toByteArray()
+
+            @Volatile
+            var answer: () -> String? = { null }
+            val calls = AtomicInteger()
+            val mainThreadCalls = AtomicInteger()
+            val opened = AtomicInteger()
+
+            @Volatile
+            var release = CountDownLatch(1)
+
+            fun reset() {
+                answer = { null }
+                calls.set(0)
+                mainThreadCalls.set(0)
+                opened.set(0)
+                release.countDown()
+                release = CountDownLatch(1)
+            }
+        }
     }
 }

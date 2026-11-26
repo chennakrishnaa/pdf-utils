@@ -52,8 +52,8 @@ sealed interface ReaderTextEvent {
     data class Failed(val error: PdfError) : ReaderTextEvent
 }
 
-/** What the screen shows after a copy. */
-enum class CopyNotice { NONE, COPIED, COPIED_CUT, CUT }
+/** What the screen shows after a copy. [FAILED]: the clipboard refused the text. */
+enum class CopyNotice { NONE, COPIED, COPIED_CUT, CUT, FAILED }
 
 /**
  * Pure selection maths. Item pixels are the unscaled pixels of a page item (the coordinates inside
@@ -146,6 +146,51 @@ object SelectionMath {
     fun handleAim(s: ReaderSelection, index: Int): Float {
         val b = s.text.box(index)
         return (b.y1 - b.y0) / 2f
+    }
+
+    /**
+     * Most characters put on the clipboard. A clip travels to the system in one binder transaction
+     * (about 1 MB); a page's text can be several times this, and a clip that is too large throws.
+     */
+    const val MAX_COPY_CHARS = 100_000
+
+    /** Most highlight rectangles drawn for one selection (see [boundedHighlights]). */
+    const val MAX_HIGHLIGHT_RECTS = 500
+
+    /** [text] cut to at most [max] characters, never between the two halves of a surrogate pair. */
+    fun capForClipboard(text: String, max: Int = MAX_COPY_CHARS): String {
+        if (text.length <= max) return text
+        var end = max
+        if (end > 0 && Character.isHighSurrogate(text[end - 1])) end--
+        return text.substring(0, end)
+    }
+
+    /**
+     * Copies [text] (cut to [MAX_COPY_CHARS]) with [setClip], and returns what to say: the cut
+     * note if the page's text was cut ([cut]) or this cut it, [CopyNotice.FAILED] if [setClip]
+     * threw (e.g. the clipboard service refused the transaction). Never throws.
+     */
+    fun copy(text: String, cut: Boolean, sdkInt: Int, setClip: (String) -> Unit): CopyNotice {
+        val capped = capForClipboard(text)
+        try {
+            setClip(capped)
+        } catch (e: Exception) {
+            return CopyNotice.FAILED
+        }
+        return copyNotice(sdkInt, cut || capped.length < text.length)
+    }
+
+    /**
+     * At most [max] rectangles covering [rects]: past [max], runs of consecutive rectangles (lines
+     * in reading order) are merged into their bounding box, so a "Select all" on a page of very
+     * many lines draws a bounded number of rectangles each frame.
+     */
+    fun boundedHighlights(rects: List<ItemRect>, max: Int = MAX_HIGHLIGHT_RECTS): List<ItemRect> {
+        if (rects.size <= max) return rects
+        val run = (rects.size + max - 1) / max
+        return rects.chunked(run) { group ->
+            ItemRect(group.minOf { it.left }, group.minOf { it.top }, group.maxOf { it.right }, group.maxOf { it.bottom })
+        }
     }
 
     /** What to say after a copy: Android 13 (API 33) and later show their own "copied" notice. */

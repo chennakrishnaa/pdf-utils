@@ -9,6 +9,8 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.swipe
 import app.venkat.offkit.TestPageTexts
+import app.venkat.offkit.engine.PageTextFormat
+import app.venkat.offkit.feature.reader.SelectionMath
 import app.venkat.offkit.feature.reader.TAG_READER_COPY
 import app.venkat.offkit.feature.reader.TAG_READER_HANDLE_ANCHOR
 import app.venkat.offkit.feature.reader.TAG_READER_HANDLE_FOCUS
@@ -627,6 +629,17 @@ class ReaderScreenTest {
         customAction(readerPageTag(0), str(R.string.reader_copy_page_action))
         waitUntil("copied") { clip() == "Hello world\nSecond line" }
         assertTrue(!selectionShown())
+    }
+
+    @Test
+    fun copyingAHugePageCopiesTheFirstPartAndSaysSo() {
+        // The most text a page can have (a crafted page's string() can be about three times this
+        // with its line breaks); whole, it would not fit in one clipboard transaction.
+        openWithText("x".repeat(PageTextFormat.MAX_UNITS))
+        customAction(readerPageTag(0), str(R.string.reader_copy_page_action))
+        waitUntil("copied") { clip() != null }
+        assertEquals(SelectionMath.MAX_COPY_CHARS, clip()!!.length)
+        waitUntil("cut note") { rule.onAllNodesWithText(str(R.string.reader_text_cut)).fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test

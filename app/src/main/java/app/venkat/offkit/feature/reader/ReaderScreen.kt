@@ -234,7 +234,7 @@ fun ReaderScreen(
             // Opened like a picked file; the Uri is not saved (its grant does not outlive the activity).
             launched = true
             openCount++
-            vm.open(viewRequest.uri)
+            vm.open(viewRequest.uri, checkType = !viewRequest.typeVerified)
             handled(viewRequest)
         } else if (!launched) {
             launched = true
@@ -385,9 +385,10 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
         vm.textEvents.collect { event ->
             val message = when (event) {
                 is ReaderTextEvent.Copy -> {
-                    copyToClipboard(context, res.getString(R.string.app_name), event.text)
-                    when (SelectionMath.copyNotice(Build.VERSION.SDK_INT, event.cut)) {
+                    val label = res.getString(R.string.app_name)
+                    when (SelectionMath.copy(event.text, event.cut, Build.VERSION.SDK_INT) { copyToClipboard(context, label, it) }) {
                         CopyNotice.NONE -> null
+                        CopyNotice.FAILED -> res.getString(R.string.reader_copy_failed)
                         CopyNotice.COPIED -> res.getString(R.string.reader_copied)
                         CopyNotice.COPIED_CUT -> res.getString(R.string.reader_copied_cut)
                         CopyNotice.CUT -> res.getString(R.string.reader_text_cut)
@@ -501,6 +502,7 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     }
 }
 
+/** Puts [text] on the clipboard; throws if the clipboard refuses it (see [SelectionMath.copy]). */
 private fun copyToClipboard(context: Context, label: String, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
@@ -713,7 +715,7 @@ private fun ReaderPage(
     val highlight = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
     val selection = text.selection
     val highlights = remember(selection, pageRect, text.dims) {
-        selection?.rects()?.map { SelectionMath.pageRectToItem(it, text.dims, pageRect) }.orEmpty()
+        SelectionMath.boundedHighlights(selection?.rects()?.map { SelectionMath.pageRectToItem(it, text.dims, pageRect) }.orEmpty())
     }
     val longPress by rememberUpdatedState(text.onLongPress)
     val tap by rememberUpdatedState(text.onTap)
