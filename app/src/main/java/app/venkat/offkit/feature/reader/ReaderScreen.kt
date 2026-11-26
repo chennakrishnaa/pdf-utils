@@ -76,6 +76,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -377,22 +378,23 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     val selection by vm.selection.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val res by rememberUpdatedState(LocalResources.current)
     // Back clears a selection first, then leaves as before.
     BackHandler(enabled = selection != null) { vm.clearSelection() }
     LaunchedEffect(vm) {
         vm.textEvents.collect { event ->
             val message = when (event) {
                 is ReaderTextEvent.Copy -> {
-                    copyToClipboard(context, event.text)
+                    copyToClipboard(context, res.getString(R.string.app_name), event.text)
                     when (SelectionMath.copyNotice(Build.VERSION.SDK_INT, event.cut)) {
                         CopyNotice.NONE -> null
-                        CopyNotice.COPIED -> context.getString(R.string.reader_copied)
-                        CopyNotice.COPIED_CUT -> context.getString(R.string.reader_copied_cut)
-                        CopyNotice.CUT -> context.getString(R.string.reader_text_cut)
+                        CopyNotice.COPIED -> res.getString(R.string.reader_copied)
+                        CopyNotice.COPIED_CUT -> res.getString(R.string.reader_copied_cut)
+                        CopyNotice.CUT -> res.getString(R.string.reader_text_cut)
                     }
                 }
-                ReaderTextEvent.NoText -> context.getString(R.string.reader_no_text)
-                is ReaderTextEvent.Failed -> context.getString(R.string.reader_text_error, context.getString(pdfErrorTitle(event.error)))
+                ReaderTextEvent.NoText -> res.getString(R.string.reader_no_text)
+                is ReaderTextEvent.Failed -> res.getString(R.string.reader_text_error, res.getString(pdfErrorTitle(event.error)))
             }
             if (message != null) {
                 snackbar.currentSnackbarData?.dismiss()
@@ -499,9 +501,9 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     }
 }
 
-private fun copyToClipboard(context: Context, text: String) {
+private fun copyToClipboard(context: Context, label: String, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    clipboard.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.app_name), text))
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
 }
 
 /** The top bar while text is selected: Close, then Select all and Copy (a contextual action bar). */
