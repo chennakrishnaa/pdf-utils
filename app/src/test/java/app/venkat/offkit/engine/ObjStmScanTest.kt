@@ -119,6 +119,67 @@ class ObjStmScanTest {
         }
     }
 
+    /**
+     * M2-2: only keys at the top level of the stream dictionary count. A nested dictionary's
+     * `/Filter` or `/F` used to replace the outer one, so `/Filter/FlateDecode/X<</Filter[]>>` read
+     * as unfiltered and the stream was counted as raw bytes while MuPDF inflates it.
+     */
+    @Test
+    fun m2_2_nestedFilterKeyDoesNotHideTheOuterFilter() {
+        val bombData = inCatalogStream(repeated("null ", 3_500_000), dictExtra = PAD)
+        val missed = ArrayList<String>()
+        for ((name, nested) in listOf(
+            "nested /Filter []" to "/X<</Filter[]>>",
+            "nested /F []" to "/X<</F[]>>",
+            "nested in array" to "/X[<</Filter[]>>]",
+            "array of names" to "/X[/Filter]",
+            "string and comment" to "/X(<<)/Y<</Z(>>)%>>\n/Filter[]>>",
+        )) {
+            val bomb = write("nested.pdf", nestedAfterFilter(bombData, nested))
+            val refused = runCatching { ObjStmScan.check(bomb) }.exceptionOrNull().let { it is PdfInputException && it.error == PdfError.OutOfMemory }
+            if (!refused) { missed.add(name); continue }
+            assertTooLarge("$name: tool path") { PdfInputs.open(bomb).destroy() }
+            assertEquals(name, PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb))
+        }
+        assertTrue("not refused: $missed", missed.isEmpty())
+    }
+
+    /** M2-2: a candidate whose dictionary nesting cannot be trusted (a string cut at 64 KiB, unbalanced `<<`) is refused. */
+    @Test
+    fun m2_2_untrustworthyNestingIsRefused() {
+        for ((name, extra) in listOf("cut string" to "/X(${"a".repeat(70_000)}<<)", "unbalanced" to "/X<</Y 1")) {
+            val pdf = HostilePdf()
+            basicPage(pdf)
+            pdf.add(20, "<</Type/ObjStm/N 1/First 4$extra/Length 8>>stream\n1 0 null\nendstream")
+            assertTooLarge(name) { ObjStmScan.check(write("nest-$name.pdf", pdf.bytes())) }
+        }
+    }
+
+    /** M2-2: ordinary nested dictionaries in an object stream's dictionary still open. */
+    @Test
+    fun m2_2_benignNestedDictionariesStillOpen() {
+        val small = inCatalogStream(repeated("null ", 1000), dictExtra = PAD)
+        for (nested in listOf("/DecodeParms<</Columns 4>>", "/X<</F(file.txt)/Filter/LZWDecode>>", "/X[<</F 1>>]")) {
+            val ok = write("benign-nested.pdf", nestedAfterFilter(small, nested))
+            ObjStmScan.check(ok)
+            PdfInputs.open(ok).destroy()
+            assertTrue(nested, engine.pageInfo(ok) is PdfPageInfo.Ok)
+        }
+    }
+
+    /**
+     * Moves [nested] to just after the object stream's `/Filter/FlateDecode` (which [HostilePdf]
+     * writes after the dictionary's other keys), taking the room from [PAD]: offsets are unchanged.
+     */
+    private fun nestedAfterFilter(pdf: ByteArray, nested: String): ByteArray {
+        val s = String(pdf, Charsets.ISO_8859_1)
+        val start = s.indexOf(PAD)
+        val end = s.indexOf("/Length", start)
+        val dict = "/Type/ObjStm" + s.substring(start + PAD.length, end) + nested
+        assertTrue(nested, dict.length <= end - start)
+        return (s.substring(0, start) + dict.padEnd(end - start, ' ') + s.substring(end)).latin1()
+    }
+
     /** Respells every `/Filter/FlateDecode` as `/F/FlateDecode` padded to the same length (offsets unchanged). */
     private fun abbreviated(pdf: ByteArray): ByteArray =
         String(pdf, Charsets.ISO_8859_1).replace("/Filter/FlateDecode", "/F/FlateDecode     ").latin1()
@@ -155,6 +216,7 @@ class ObjStmScanTest {
     private fun out(name: String) = File(dir, name).also { it.delete() }
 
     companion object {
+        private const val PAD = "/Type/ObjStm/Pad(                                        )"
         private lateinit var dir: File
 
         @BeforeClass

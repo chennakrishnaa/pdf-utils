@@ -26,8 +26,10 @@ import java.util.zip.Inflater
  * `endstream` keyword) contains the name `/ObjStm` OR `/N` is a candidate: MuPDF loads any type-2
  * xref target as an object stream reading only `/N` and `/First` (no `/Type` check), so the `/N`
  * test catches a dictionary without `/Type`. ICC profile streams also carry `/N`; they are small and
- * pass. The filter is read as MuPDF reads it (`pdf_open_filter`: `Filter|F`, `/F` used only when
- * `/Filter` is absent; K7-2). `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
+ * pass (`/N` anywhere, also in a nested dictionary, makes a candidate: a superset). The filter is
+ * read as MuPDF reads it (`pdf_open_filter`: `Filter|F`, `/F` used only when `/Filter` is absent;
+ * K7-2), from the top level of the stream dictionary only (M2-2: `<<`/`>>` and `[`/`]` nesting is
+ * tracked, so a nested `/DecodeParms<</F …>>` or `/X<</Filter[]>>` does not replace the outer key). `/F` as a file specification (a dictionary or string: MuPDF 1.28.5
  * has no external-file streams, no `/FFilter`, and would read the data raw) is refused like any
  * other non-name filter. Per candidate:
  * - no filter: its raw extent (to the next `endstream`) counts as decoded bytes;
@@ -220,6 +222,20 @@ internal object ObjStmScan {
         private val fSlot = FilterSlot() // /F, MuPDF's abbreviation (used when /Filter is absent)
         private var cur = filterSlot // the slot being read while filterState != 0
         private var filterState = 0 // 0 none, 1 after /Filter or /F, 2 inside its array
+
+        /*
+         * M2-2: nesting since the last reset keyword. Only a `/Filter` or `/F` at the top level of the
+         * stream dictionary (dictDepth <= 1, outside any array) names the stream's filter; one in a
+         * nested dictionary (`/DecodeParms<</F …>>`, `/X<</Filter[]>>`) or an array does not, as in
+         * MuPDF's `pdf_parse_dict`. Strings and comments are skipped by the tokeniser, so `(<<)` or
+         * `%>>` do not count. Depth 0 (no `<<` seen) keeps the old reading: any such name counts.
+         */
+        private var dictDepth = 0
+        private var arrayDepth = 0
+        private var filterArrayDepth = 0 // arrayDepth outside the filter's own array
+
+        /** A string or comment was cut at [MAX_SPAN] since the last reset (its tail was tokenised). */
+        private var cut = false
         private var rawStart = -1L
         private var totalOut = 0L
         private var totalIn = 0L
@@ -253,9 +269,18 @@ internal object ObjStmScan {
                     isWhite(c) -> p + 1
                     c == '%'.code -> skipUntil(p + 1) { it == '\n'.code || it == '\r'.code }
                     c == '('.code -> skipString(p + 1).also { otherValue() }
-                    c == '<'.code -> if (at(p + 1) == '<'.code) (p + 2).also { otherValue() } else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
-                    c == '['.code -> { if (filterState == 1) filterState = 2 else otherValue(); p + 1 }
-                    c == ']'.code -> { if (filterState == 2) filterState = 0; p + 1 }
+                    c == '<'.code -> if (at(p + 1) == '<'.code) (p + 2).also { otherValue(); dictDepth++ } else skipUntil(p + 1) { it == '>'.code }.also { otherValue() }
+                    c == '>'.code && at(p + 1) == '>'.code -> (p + 2).also { otherValue(); if (dictDepth > 0) dictDepth-- }
+                    c == '['.code -> {
+                        if (filterState == 1) { filterState = 2; filterArrayDepth = arrayDepth } else otherValue()
+                        arrayDepth++
+                        p + 1
+                    }
+                    c == ']'.code -> {
+                        if (arrayDepth > 0) arrayDepth--
+                        if (filterState == 2 && arrayDepth <= filterArrayDepth) filterState = 0
+                        p + 1
+                    }
                     c == '/'.code -> readName(p + 1)
                     isDelim(c) -> p + 1
                     else -> readWord(p)
@@ -281,6 +306,7 @@ internal object ObjStmScan {
                 p++
                 if (stop(c)) return p
             }
+            cut = true
             return p
         }
 
@@ -297,6 +323,7 @@ internal object ObjStmScan {
                     ')'.code -> if (--depth == 0) return p
                 }
             }
+            cut = true
             return p
         }
 
@@ -357,6 +384,7 @@ internal object ObjStmScan {
                 1 -> { cur.names.add(n); filterState = 0; return }
                 2 -> { cur.names.add(n); return }
             }
+            if (dictDepth > 1 || arrayDepth > 0) return // M2-2: not a key of the stream dictionary
             when (n) {
                 "Filter" -> startFilter(filterSlot)
                 "F" -> startFilter(fSlot)
@@ -375,12 +403,18 @@ internal object ObjStmScan {
             filterSlot.clear()
             fSlot.clear()
             filterState = 0
+            dictDepth = 0
+            arrayDepth = 0
+            cut = false
         }
 
         /** `stream` keyword ending at [after]: checks the stream if its dictionary made it a candidate. */
         private fun onStream(after: Long) {
             finishRaw(after)
             if (!candidate) return
+            // M2-2: the nesting is not where MuPDF's would be (unbalanced, or a cut string or comment
+            // whose tail was tokenised could fake a `<<`): which keys are top-level is not known.
+            if (dictDepth != 0 || arrayDepth != 0 || cut) tooLarge()
             var d = after
             if (at(d) == '\r'.code) d++
             if (at(d) == '\n'.code) d++

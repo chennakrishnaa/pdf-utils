@@ -212,6 +212,16 @@ class EncryptedReaderTest {
         assertEquals(PdfRender.Err(PdfError.OutOfMemory), render(bomb, "user1"))
     }
 
+    /** M2-2: a nested dictionary's `/Filter` does not hide the outer one from pass 1 (so pass 2 measures it). */
+    @Test
+    fun objectStreamBombWithNestedFilterKeyIsRefusedAfterDecryption() {
+        val small = encryptedObjStmPdf("small-nested.pdf", padding = 1000, dictTail = "/DecodeParms<</Columns 4>>/X<</Filter[]>>")
+        assertTrue("benign nested object stream opens", engine.pageInfo(small, "user1") is PdfPageInfo.Ok)
+        val bomb = encryptedObjStmPdf("bomb-nested.pdf", padding = 17 shl 20, dictTail = "/X<</Filter[]>>")
+        assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb, "user1"))
+        assertEquals(PdfRender.Err(PdfError.OutOfMemory), render(bomb, "user1"))
+    }
+
     /** K7-3: a repair triggered while pass 2 resolves the object streams refuses the document. */
     @Test
     fun repairDuringObjectStreamPass2IsRefused() {
@@ -249,7 +259,7 @@ class EncryptedReaderTest {
      * An RC4-128 (V2 R3) PDF whose catalog and page tree live in a Flate object stream (object 1)
      * padded with [padding] spaces after its objects, with an xref stream (object 5).
      */
-    private fun encryptedObjStmPdf(name: String, padding: Int, filterKey: String = "Filter", objStmOffsetSkew: Int = 0): File {
+    private fun encryptedObjStmPdf(name: String, padding: Int, filterKey: String = "Filter", objStmOffsetSkew: Int = 0, dictTail: String = ""): File {
         val id = ByteArray(16) { it.toByte() }
         val p = -4
         // Algorithm 3: O
@@ -279,7 +289,7 @@ class EncryptedReaderTest {
             off[num] = out.size()
             out.write("$num 0 obj\n".toByteArray()); out.write(body); out.write("\nendobj\n".toByteArray())
         }
-        obj(1, stream("/Type/ObjStm/N 2/First ${header.length}/$filterKey/FlateDecode", objStmData))
+        obj(1, stream("/Type/ObjStm/N 2/First ${header.length}/$filterKey/FlateDecode$dictTail", objStmData))
         obj(4, "<</Type/Page/Parent 3 0 R/MediaBox[0 0 200 200]>>".toByteArray())
         obj(6, "<</Filter/Standard/V 2/R 3/Length 128/P $p/O<${hex(o)}>/U<${hex(u)}>>>".toByteArray())
         off[5] = out.size()
