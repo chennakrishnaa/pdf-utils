@@ -527,6 +527,87 @@ class RenderImageGateTest {
         }))
     }
 
+    /** A stream with resources naming [hugeImage] as /C, drawn by its content; [dict] replaces its /Subtype. */
+    private fun HostilePdf.runStream(num: Int, dict: String) =
+        stream(num, "$dict/BBox[0 0 200 200]/Resources<</XObject<</C 12 0 R>>>>", "q 200 0 0 200 0 0 cm /C Do Q".latin1())
+
+    /** Runs every case, then fails listing each case that was not refused (all are reported, not only the first). */
+    private fun assertEachRefused(block: MutableList<Pair<String, ByteArray>>.() -> Unit) {
+        val cases = ArrayList<Pair<String, ByteArray>>().apply(block)
+        val missed = cases.filter { (name, bytes) -> runCatching { assertRefused(name, bytes) }.isFailure }.map { it.first }
+        assertTrue("not refused: $missed", missed.isEmpty())
+    }
+
+    private fun MutableList<Pair<String, ByteArray>>.refused(name: String, bytes: ByteArray) = add(name to bytes)
+
+    /**
+     * M2-1: MuPDF runs a soft mask's /G (`pdf_run_xobject` from `pdf-op-run.c` begin_softmask) and
+     * an annotation's appearance (`pdf_process_annot` → `op_Do_form`) as a form without reading
+     * /Subtype; only `Do` (`pdf_process_Do`) reads it. The gate must walk such a stream's resources
+     * whatever its /Subtype says.
+     */
+    @Test
+    fun m2_1_softMaskGroupRunAsFormWhateverItsSubtype() {
+        assertEachRefused {
+            val gs = "<</ExtGState<</G0<</SMask<</S/Luminosity/G 11 0 R>>>>>>>>"
+            refused("smask-g-image", page(gs, "/G0 gs 0 0 200 200 re f") {
+                runStream(11, "/Subtype/Image"); stream(12, hugeImage, ByteArray(64))
+            })
+            refused("smask-g-nosubtype", page(gs, "/G0 gs 0 0 200 200 re f") {
+                runStream(11, ""); stream(12, hugeImage, ByteArray(64))
+            })
+            refused("smask-g-ps", page(gs, "/G0 gs 0 0 200 200 re f") {
+                runStream(11, "/Subtype/PS"); stream(12, hugeImage, ByteArray(64))
+            })
+        }
+    }
+
+    @Test
+    fun m2_1_annotationAppearanceRunAsFormWhateverItsSubtype() {
+        assertEachRefused {
+            refused("ap-n-image", page("<<>>", "", annots = "/Annots[20 0 R]") {
+                add(20, "<</Type/Annot/Subtype/Square/Rect[0 0 100 100]/AP<</N 11 0 R>>>>")
+                runStream(11, "/Subtype/Image"); stream(12, hugeImage, ByteArray(64))
+            })
+            refused("ap-n-nosubtype", page("<<>>", "", annots = "/Annots[20 0 R]") {
+                add(20, "<</Type/Annot/Subtype/Square/Rect[0 0 100 100]/AP<</N 11 0 R>>>>")
+                runStream(11, ""); stream(12, hugeImage, ByteArray(64))
+            })
+            refused("ap-state-image", page("<<>>", "", annots = "/Annots[20 0 R]") {
+                add(20, "<</Type/Annot/Subtype/Widget/FT/Btn/Rect[0 0 100 100]/AS/On/AP<</N<</On 11 0 R/Off 11 0 R>>>>>>")
+                runStream(11, "/Subtype/Image"); stream(12, hugeImage, ByteArray(64))
+            })
+            // The same stream also drawn by `Do` as an image elsewhere: checked in both roles.
+            refused("ap-and-do", page("<</XObject<</B 11 0 R>>>>", "q 10 0 0 10 0 0 cm /B Do Q", annots = "/Annots[20 0 R]") {
+                add(20, "<</Type/Annot/Subtype/Square/Rect[0 0 100 100]/AP<</N 11 0 R>>>>")
+                stream(11, "$smallImage/Resources<</XObject<</C 12 0 R>>>>", ByteArray(192)); stream(12, hugeImage, ByteArray(64))
+            })
+        }
+    }
+
+    /** `pdf_process_Do`: `/Subtype /Form` with `/Subtype2 /Image` is loaded as an image (`pdf_load_image`). */
+    @Test
+    fun m2_1_formWithSubtype2ImageIsCheckedAsAnImage() {
+        assertRefused("subtype2-image", page("<</XObject<</Im0 10 0 R>>>>", drawIm0) {
+            stream(10, "/Subtype/Form/Subtype2/Image/Width 60000/Height 60000/ColorSpace/DeviceRGB/BitsPerComponent 8", ByteArray(64))
+        })
+    }
+
+    /** Ordinary soft-mask groups and annotation appearances (stream and state dictionary) still render. */
+    @Test
+    fun m2_1_ordinarySoftMaskAndAppearancesStillRender() {
+        val gs = "<</ExtGState<</G0<</SMask<</S/Luminosity/G 11 0 R>>>>>>/XObject<</Im0 13 0 R>>>>"
+        assertRenders("benign-smask-ap", file("benign-smask-ap.pdf", page(gs, "q /G0 gs $drawIm0 Q", annots = "/Annots[20 0 R 21 0 R]") {
+            form(11, "<</XObject<</C 12 0 R>>>>", "q 200 0 0 200 0 0 cm /C Do Q")
+            stream(12, "/Subtype/Image/Width 8/Height 8/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(64))
+            stream(13, smallImage, ByteArray(192))
+            add(20, "<</Type/Annot/Subtype/Square/Rect[0 0 100 100]/AP<</N 14 0 R>>>>")
+            form(14, "<</XObject<</C 12 0 R>>>>", "q 100 0 0 100 0 0 cm /C Do Q")
+            add(21, "<</Type/Annot/Subtype/Widget/FT/Btn/Rect[100 100 200 200]/AS/On/AP<</N<</On 14 0 R/Off 15 0 R>>/D<</On 14 0 R>>>>>>")
+            form(15, "<<>>", "0 0 10 10 re f")
+        }))
+    }
+
     /** Overhead of the walk on a normal page (printed; asserted loosely so it is not flaky). */
     @Test
     fun walkOverheadOnAPhotoPage() {
