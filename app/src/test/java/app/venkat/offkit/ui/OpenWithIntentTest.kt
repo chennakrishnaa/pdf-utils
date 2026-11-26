@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Parcel
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -229,11 +230,23 @@ class OpenWithIntentTest {
         controller = null
         waitUntil("copy deleted") { readerDirs().isEmpty() }
         val opens = fake.readerCalls.size
+        // The saved state goes through a Parcel, as it does across a real process death.
+        val parcel = Parcel.obtain()
+        val restored = try {
+            parcel.writeBundle(saved)
+            parcel.setDataPosition(0)
+            parcel.readBundle(MainActivity::class.java.classLoader)!!
+        } finally {
+            parcel.recycle()
+        }
         // The system re-delivers the original VIEW intent with the saved state; the grant is gone.
-        start(intent, saved)
+        val activity = start(intent, restored)
         rule.waitForIdle()
-        // The Uri is not reused: nothing is copied or opened again (the restored reader is empty;
-        // under Robolectric it offers the picker again rather than going home).
+        // The Uri is not reused: nothing is copied or opened again, no picker the user did not ask
+        // for is launched, and the restored reader (it has no document) gives way to Home.
+        assertNoPicker(activity)
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
+        rule.onNodeWithTag(TAG_ACTION_BACK).assertDoesNotExist()
         assertTrue(!exists(readerPageTag(0)))
         assertEquals(opens, fake.readerCalls.size)
         assertTrue(readerDirs().isEmpty())

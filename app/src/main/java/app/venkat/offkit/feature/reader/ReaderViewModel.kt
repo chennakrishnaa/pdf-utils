@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.core.ReaderDocument
@@ -100,9 +101,24 @@ class ReaderViewModel internal constructor(
     private val reader: PdfReader,
     private val limits: ReaderLimits,
     private val textLimits: ReaderTextLimits = ReaderTextLimits(),
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : AndroidViewModel(application) {
     /** Used by the default `ViewModelProvider` factory. */
     constructor(application: Application) : this(application, PdfReader.get(application), ReaderLimits())
+
+    /** Used by the screen, with the destination's saved state. */
+    constructor(application: Application, savedState: SavedStateHandle) :
+        this(application, PdfReader.get(application), ReaderLimits(), ReaderTextLimits(), savedState)
+
+    /** The screen's automatic picker has run (kept across process death). */
+    var pickerLaunched: Boolean
+        get() = savedState[KEY_LAUNCHED] ?: false
+        set(value) { savedState[KEY_LAUNCHED] = value }
+
+    /** A picker is out and its result not yet received (kept across process death). */
+    var pickerPending: Boolean
+        get() = savedState[KEY_PENDING] ?: false
+        set(value) { savedState[KEY_PENDING] = value }
 
     private val _document = MutableStateFlow<ReaderDocState>(ReaderDocState.Idle)
 
@@ -451,6 +467,8 @@ class ReaderViewModel internal constructor(
     internal companion object {
         /** A selection is cleared once the viewport is more than this many pages away from it. */
         const val SELECTION_KEEP_PAGES = 2
+        private const val KEY_LAUNCHED = "reader.pickerLaunched"
+        private const val KEY_PENDING = "reader.pickerPending"
 
         val EMPTY_PAGE: StateFlow<ReaderPageState> = MutableStateFlow(ReaderPageState()).asStateFlow()
     }

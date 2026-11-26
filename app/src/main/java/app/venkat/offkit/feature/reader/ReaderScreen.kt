@@ -42,6 +42,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.lifecycle.createSavedStateHandle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -194,14 +196,21 @@ fun ReaderScreen(
 ) {
     // Explicit initializer: the default factory caches the first Application process-wide.
     val vm: ReaderViewModel = viewModel {
-        ReaderViewModel(checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]))
+        ReaderViewModel(checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]), createSavedStateHandle())
     }
     val doc by vm.document.collectAsState()
 
     // The automatic picker ran (saved, so neither rotation nor process death launches it again).
-    var launched by rememberSaveable { mutableStateOf(false) }
+    // Both flags are also kept in the view model's SavedStateHandle: after process death the
+    // destination's rememberSaveable values were found not to come back (H3), which popped a
+    // picker nobody asked for instead of going back home.
+    var launched by rememberSaveable { mutableStateOf(vm.pickerLaunched) }
     // A picker is out; its result may arrive after rotation or process death.
-    var pickerPending by rememberSaveable { mutableStateOf(false) }
+    var pickerPending by rememberSaveable { mutableStateOf(vm.pickerPending) }
+    SideEffect {
+        vm.pickerLaunched = launched
+        vm.pickerPending = pickerPending
+    }
     // Bumped with every vm.open, so the page list restarts even for an equal Open (same file again).
     var openCount by rememberSaveable { mutableIntStateOf(0) }
 
