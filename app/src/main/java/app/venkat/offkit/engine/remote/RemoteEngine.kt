@@ -278,6 +278,29 @@ class RemoteEngine(
         return result
     }
 
+    /**
+     * [PdfPageRenderer.decryptCopy] in the engine process. The reply is untrusted: an `Ok` must
+     * report at least one page and [out] must exist with exactly the reported size; else `Err(Io)`.
+     * [out] is deleted on every `Err`.
+     */
+    override fun decryptCopy(pdf: File, out: File, password: String?, job: JobControl): PdfResult {
+        passwordError(password)?.let {
+            out.delete()
+            return PdfResult.Err(it)
+        }
+        val result = when (val r = call(EngineRequest.DecryptCopy(pdf.path, out.path, password), job)) {
+            is Reply.Done -> when (val d = EngineWire.decodeResult(r.bundle)) {
+                is PdfResult.Ok ->
+                    if (d.pages > 0 && out.isFile && out.length() == d.bytes) d
+                    else PdfResult.Err(PdfError.Io(IOException("Decrypted copy does not match its reply")))
+                is PdfResult.Err -> d
+            }
+            is Reply.Failed -> PdfResult.Err(r.error)
+        }
+        if (result is PdfResult.Err) out.delete()
+        return result
+    }
+
     private fun result(request: EngineRequest, out: File, job: JobControl): PdfResult =
         when (val r = call(request, job)) {
             is Reply.Done -> EngineWire.decodeResult(r.bundle).also { if (it is PdfResult.Err) out.delete() }
@@ -394,13 +417,19 @@ class RemoteEngine(
                 request is EngineRequest.PageInfo -> limits.infoTotalMs
                 request is EngineRequest.RenderPage -> limits.renderTotalMs
                 request is EngineRequest.PageText -> limits.textTotalMs
+                request is EngineRequest.DecryptCopy -> limits.decryptTotalMs
                 request.isImageRequest() -> limits.imageTotalMs
                 else -> limits.totalMs
             },
         )
         // Reader requests report no progress: only their total limit applies.
-        val stallNs = if (request is EngineRequest.PageInfo || request is EngineRequest.RenderPage || request is EngineRequest.PageText) Long.MAX_VALUE
-        else TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
+        val stallNs = if (request is EngineRequest.PageInfo || request is EngineRequest.RenderPage || request is EngineRequest.PageText ||
+            request is EngineRequest.DecryptCopy
+        ) {
+            Long.MAX_VALUE
+        } else {
+            TimeUnit.MILLISECONDS.toNanos(limits.stallMs)
+        }
         var sentAt = nanoTime()
         var lastActivity = sentAt
         var nextRssSample = sentAt

@@ -2,6 +2,7 @@ package app.venkat.offkit.engine
 
 import app.venkat.offkit.engine.ops.AppendImagesOp
 import app.venkat.offkit.engine.ops.CompressOp
+import app.venkat.offkit.engine.ops.DecryptCopyOp
 import app.venkat.offkit.engine.ops.ImagesToPdfOp
 import app.venkat.offkit.engine.ops.MergeOp
 import app.venkat.offkit.engine.ops.PageInfoOp
@@ -64,6 +65,9 @@ class MuPdfEngine : PdfEngine, PdfPageRenderer {
 
     override fun pageText(pdf: File, page: Int, out: File, password: String?, job: JobControl): PdfPageText =
         PageTextOp().run(pdf, page, out, job, password)
+
+    override fun decryptCopy(pdf: File, out: File, password: String?, job: JobControl): PdfResult =
+        DecryptCopyOp().run(pdf, out, job, password)
 }
 
 /**

@@ -25,6 +25,7 @@ import java.io.File
  *   progress and have no stall limit, only this total.
  * @param renderTotalMs longest time one reader page render may take (total only, as [infoTotalMs]).
  * @param textTotalMs longest time one reader page-text extraction may take (total only).
+ * @param decryptTotalMs longest time the reader's decrypted copy for printing may take (total only).
  */
 data class EngineLimits(
     val stallMs: Long = STALL_MS,
@@ -35,6 +36,7 @@ data class EngineLimits(
     val infoTotalMs: Long = INFO_TOTAL_MS,
     val renderTotalMs: Long = RENDER_TOTAL_MS,
     val textTotalMs: Long = TEXT_TOTAL_MS,
+    val decryptTotalMs: Long = DECRYPT_TOTAL_MS,
 ) {
     companion object {
         /**
@@ -79,6 +81,12 @@ data class EngineLimits(
 
         /** 30 s for one page's text and geometry: as a render, a page stuck longer is hostile or broken. */
         const val TEXT_TOTAL_MS = 30_000L
+
+        /**
+         * 120 s for the reader's decrypted copy (printing a protected PDF): the whole file, up to
+         * the 1 GiB input limit, is read, decrypted and written again in one uncancellable save.
+         */
+        const val DECRYPT_TOTAL_MS = 120_000L
 
         /**
          * 10 s: the shortest gap between two wake-ups of [RemoteEngine]'s wait loop (normally

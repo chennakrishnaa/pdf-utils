@@ -200,6 +200,11 @@ class EncryptedReaderTest {
         assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb, "user1"))
         assertEquals(PdfRender.Err(PdfError.OutOfMemory), render(bomb, "user1"))
         assertEquals(PdfPageText.Err(PdfError.OutOfMemory), text(bomb, "user1"))
+        // P1: the decrypted copy for printing is refused before any save.
+        val copy = File(dir, "print-bomb.pdf")
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.decryptCopy(bomb, copy, "user1"))
+        assertFalse(copy.exists())
+        assertTrue(engine.decryptCopy(small, copy, "user1") is PdfResult.Ok)
     }
 
     /** K7-2: pass 2 reads the filter as `Filter|F` too. */

@@ -92,6 +92,16 @@ sealed interface EngineRequest {
         override fun toString() = "PageText(pdf=$pdf, page=$page, out=$out, password=${redacted(password)})"
     }
 
+    /**
+     * [PdfPageRenderer.decryptCopy] of [pdf] into [out]; the reply is [EngineWire.encodeResult].
+     * The engine also requires [pdf] and [out] to share one `reader-*` folder directly under the
+     * jobs directory ([EngineServer.checkReaderPair]).
+     */
+    data class DecryptCopy(val pdf: String, override val out: String, val password: String? = null) : EngineRequest {
+        override val paths get() = listOf(pdf, out)
+        override fun toString() = "DecryptCopy(pdf=$pdf, out=$out, password=${redacted(password)})"
+    }
+
     data class RenderPage(val pdf: String, val request: RenderRequest, override val out: String, val password: String? = null) : EngineRequest {
         override val paths get() = listOf(pdf, out)
         override fun toString() = "RenderPage(pdf=$pdf, request=$request, out=$out, password=${redacted(password)})"
@@ -119,11 +129,13 @@ internal fun EngineRequest.execute(
     is EngineRequest.PageInfo -> renderer().pageInfo(File(pdf), password, job)
     is EngineRequest.RenderPage -> renderer().renderPage(File(pdf), request, File(out), password, job)
     is EngineRequest.PageText -> renderer().pageText(File(pdf), page, File(out), password, job)
+    is EngineRequest.DecryptCopy -> renderer().decryptCopy(File(pdf), File(out), password, job)
     else -> execute(engine(), job)
 }
 
 private fun EngineRequest.execute(engine: PdfEngine, job: JobControl): Any = when (this) {
-    is EngineRequest.NormalizeImage, is EngineRequest.PageInfo, is EngineRequest.RenderPage, is EngineRequest.PageText ->
+    is EngineRequest.NormalizeImage, is EngineRequest.PageInfo, is EngineRequest.RenderPage, is EngineRequest.PageText,
+    is EngineRequest.DecryptCopy ->
         error("not an engine request")
     is EngineRequest.ImagesToPdf -> engine.imagesToPdf(images.map(::File), pageSize, File(out), job, compression)
     is EngineRequest.Estimate -> engine.estimateImage(File(image))
@@ -237,6 +249,12 @@ object EngineWire {
                 putInt(PAGE, r.page)
                 r.password?.let { putString(PASSWORD, it) }
             }
+            is EngineRequest.DecryptCopy -> {
+                putString(OP, "decryptCopy")
+                putString(PDF, r.pdf)
+                putString(OUT, r.out)
+                r.password?.let { putString(PASSWORD, it) }
+            }
             is EngineRequest.RenderPage -> {
                 putString(OP, "renderPage")
                 putString(PDF, r.pdf)
@@ -289,6 +307,7 @@ object EngineWire {
                 require(page >= 0) { "bad page $page" }
                 EngineRequest.PageText(str(PDF), page, str(OUT), password())
             }
+            "decryptCopy" -> EngineRequest.DecryptCopy(str(PDF), str(OUT), password())
             "renderPage" -> {
                 require(b.containsKey(SCALE)) { "missing $SCALE" }
                 val request = RenderRequest(int(PAGE), b.getFloat(SCALE), int(LEFT), int(TOP), int(WIDTH), int(HEIGHT))

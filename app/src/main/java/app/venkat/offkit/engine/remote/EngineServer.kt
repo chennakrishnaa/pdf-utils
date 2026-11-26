@@ -147,6 +147,7 @@ class EngineServer(
             val request = EngineWire.decodeRequest(bundle ?: throw IllegalArgumentException("no request"))
             decoded = request
             checkPaths(jobsRoot, request.paths)
+            if (request is EngineRequest.DecryptCopy) checkReaderPair(jobsRoot, request.pdf, request.out)
             val job = object : JobControl {
                 override fun progress(done: Int, total: Int) {
                     if (clientGone) return
@@ -229,6 +230,27 @@ class EngineServer(
                 }
             }
         }
+
+        /**
+         * For [EngineRequest.DecryptCopy]: throws [SecurityException] unless [pdf] and [out] (after
+         * canonicalisation) lie in the same folder, and that folder is a `reader-*` folder directly
+         * inside [jobsRoot] (one reader document's own folder).
+         */
+        fun checkReaderPair(jobsRoot: File, pdf: String, out: String) {
+            try {
+                val root = jobsRoot.canonicalFile
+                val a = File(pdf).canonicalFile.parentFile
+                val b = File(out).canonicalFile.parentFile
+                if (a == null || a != b || a.parentFile != root || !a.name.startsWith(READER_DIR_PREFIX)) {
+                    throw SecurityException("decrypted copy outside the document's folder")
+                }
+            } catch (e: IOException) {
+                throw SecurityException("cannot resolve path")
+            }
+        }
+
+        /** Folder name prefix of a reader document (`PdfReader`'s `cacheDir/jobs/reader-<uuid>/`). */
+        const val READER_DIR_PREFIX = "reader-"
 
         /**
          * Throws [SecurityException] unless every path in [paths] resolves, after

@@ -58,6 +58,21 @@ interface PdfPageRenderer {
     /** [pageText] with a [password], as in the password [pageInfo]. */
     fun pageText(pdf: File, page: Int, out: File, password: String?, job: JobControl = JobControl.None): PdfPageText =
         if (password.isNullOrEmpty()) pageText(pdf, page, out, job) else PdfPageText.Err(PdfError.Encrypted).also { out.delete() }
+
+    /**
+     * Writes an unencrypted copy of [pdf] to [out], for printing a password-protected PDF (the
+     * print spooler opens the file in its own process, without the password). [pdf] is opened
+     * exactly as for [pageInfo] with [password] (same pre-checks and password errors); a PDF with
+     * only an owner password needs none. Streams are copied, not decoded or re-encoded; the PDF's
+     * permission bits are dropped with its encryption. `Ok.pages` is [pdf]'s page count and
+     * `Ok.bytes` the size of [out]. On any `Err`, [out] does not exist.
+     *
+     * The default (renderers without it) is `Err(Io(UnsupportedOperationException))`.
+     */
+    fun decryptCopy(pdf: File, out: File, password: String?, job: JobControl = JobControl.None): PdfResult {
+        out.delete()
+        return PdfResult.Err(PdfError.Io(UnsupportedOperationException("no decrypted copy")))
+    }
 }
 
 /**

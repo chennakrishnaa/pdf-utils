@@ -249,6 +249,37 @@ class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
         return asUnlocked { pageText(pdf, page, out, job) }
     }
 
+    /** Every [decryptCopy] call as (pdf, out), in order. */
+    val decryptCalls: MutableList<Pair<File, File>> = CopyOnWriteArrayList()
+
+    /** When set, [decryptCopy] fails with it (and `out` is deleted). */
+    @Volatile
+    var decryptError: PdfError? = null
+
+    /** Called by [decryptCopy] before it writes (for tests that close a document meanwhile). */
+    @Volatile
+    var beforeDecrypt: () -> Unit = {}
+
+    /**
+     * Writes [DECRYPTED_PREFIX] followed by [pdf]'s bytes to [out] (a stand-in for MuPDF's
+     * unencrypted copy) and answers `Ok(readerPages.size, size)`.
+     */
+    override fun decryptCopy(pdf: File, out: File, password: String?, job: JobControl): PdfResult {
+        passwordError(password)?.let {
+            out.delete()
+            return PdfResult.Err(it)
+        }
+        decryptCalls += pdf to out
+        beforeDecrypt()
+        val error = decryptError ?: readerError ?: if (job.isCancelled()) PdfError.Cancelled else null
+        if (error != null) {
+            out.delete()
+            return PdfResult.Err(error)
+        }
+        out.writeBytes(DECRYPTED_PREFIX + pdf.readBytes())
+        return PdfResult.Ok(readerPages.size, out.length())
+    }
+
     override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
         plainError()?.let {
             out.delete()
@@ -334,5 +365,10 @@ class FakePdfEngine : PdfEngine, ImagePreparer, PdfPageRenderer {
     private fun fail(out: File, err: PdfResult.Err): PdfResult.Err {
         out.delete()
         return err
+    }
+
+    companion object {
+        /** What [decryptCopy] writes before the source's bytes. */
+        val DECRYPTED_PREFIX: ByteArray = "%FAKE-DECRYPTED\n".toByteArray()
     }
 }
