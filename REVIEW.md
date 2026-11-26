@@ -624,7 +624,7 @@ Independent review (K7) of the code at `f016e77`, recorded by N1. The reviewer c
 | K7-5 | Note | Print page count when page info is capped. | **No change needed:** page info is never capped (a document over `MAX_PAGES` is refused). |
 | K7-6 | Note | Search matching runs on the main thread, O(n·m) per page; acceptable for the user's own query. | Open (note). |
 
-**Found while fixing, being fixed in M2.** Status: being fixed in M2.
+**Found while fixing, fixed in M2.** The gate trusted `/Subtype` where MuPDF does not: soft-mask `/G` and annotation appearance streams are run as forms whatever their subtype, `/Subtype2 /Image` on a form is loaded as an image, a font with `/CharProcs` and an unknown subtype is loaded as Type 3, and an ExtGState `/Font` entry loads a font. `ObjStmScan` pass 1 did not track dictionary nesting, so a nested `/Filter` could hide the outer one. All fixed in M2, with tests that failed before the fixes. M2 has had no independent review.
 
 - The gate trusts `/Subtype` where MuPDF does not: a soft mask's `/G` and annotation appearance streams are run as forms whatever their subtype.
 - `ObjStmScan` pass 1 does not track dictionary nesting, so a nested `/Filter` can hide the outer one.
@@ -642,7 +642,7 @@ Independent review (K7) of the code at `f016e77`, recorded by N1. The reviewer c
 
 **Not reviewed.** `RenderImageGateTest` contents; the search bar, menu and screen wiring; the wire decode paths beyond the password; H5-4 and process death on the open-with path; the privacy HTML.
 
-**Pattern.** Three reviews in a row (RF, H5, K7) have each found a way past the image gate after a rework. The owner should decide between continuing to patch the gate and a simpler, conservative design. M2's report will include an assessment.
+**Pattern.** Three reviews in a row (RF, H5, K7) have each found a way past the image gate after a rework. The owner should decide between continuing to patch the gate and a simpler, conservative design. M2's report will include an assessment. **M2's assessment:** every bypass so far has one root cause: the gate re-derives, site by site, how MuPDF will use an object (by subtype, by role, by narrowed names), so each place where MuPDF is more lenient than the PDF specification becomes a hole; more such mismatches are plausible. A conservative design (no name narrowing, no subtype or role dispatch; every stream reachable from the page is checked as a possible image and walked as a possible form) would remove that class of bug. Its estimated cost: under 0.1% false refusals on office and web PDFs, a few percent on scanned books whose pages share one resource dictionary (about 10 colour or 30 grey 600-dpi A4 scans in one shared dictionary exceed the 1 GiB page budget), which a relaxed page sum could soften. Not implemented; the owner decides.
 
 **L1 (test fix).** `OpenWithIntentTest.unreadableDocumentShowsTheReadersErrorScreen` failed once in a full verify at `f016e77`. The cause was a race in the test (it took the Opening frame for the error screen); the test was fixed and the product is unchanged.
 
