@@ -263,8 +263,13 @@ open class JobViewModel(
      * Call once the screen has handled [shareRequest] (launched the share sheet or explained that
      * no app can take it): clears it. The result's state is left as is: Android reports nothing
      * about what happens in the share sheet, so an unsaved result stays unsaved.
+     *
+     * Also cancels a share still being prepared (no [shareRequest] will follow): the screen calls
+     * it when the user leaves for the reader (Open), so the share sheet does not pop up unasked on
+     * the way back.
      */
     fun onShareHandled() {
+        shareJob?.cancel()
         _shareRequest.value = null
     }
 

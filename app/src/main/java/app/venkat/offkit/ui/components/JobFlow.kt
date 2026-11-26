@@ -145,7 +145,10 @@ fun OffkitJobFlow(
                     },
                     onShare = onShare,
                     onFinish = requestLeave,
-                    onOpen = onOpen,
+                    onOpen = { uri ->
+                        onShareHandled() // drops a share still being prepared: no share sheet on the way back
+                        onOpen(uri)
+                    },
                     snackbarHostState = snackbar,
                 )
                 if (askDiscard) OffkitDiscardDialog(onKeep = { askDiscard = false }, onDiscard = leave)

@@ -104,7 +104,7 @@ class JobFlowTest {
                 saveError = saveError,
                 onSaveErrorShown = { calls += "errorShown"; saveError = null },
                 shareRequest = null,
-                onShareHandled = {},
+                onShareHandled = { calls += "shareHandled" },
                 onCancel = { calls += "cancel" },
                 onSave = { calls += "save" },
                 onShare = { calls += "share" },
@@ -429,7 +429,8 @@ class JobFlowTest {
         while (shadow.nextStartedActivity != null) Unit
         rule.onNodeWithTag(TAG_JOB_OPEN).performScrollTo().performClick()
         rule.waitForIdle()
-        assertEquals(listOf("open $uri"), calls)
+        // Z2-4: a share still being prepared is dropped first, so no share sheet pops up on the way back.
+        assertEquals(listOf("shareHandled", "open $uri"), calls)
         // In-app reader only: no ACTION_VIEW ("Open with" dialog) leaves the app.
         assertNull(shadow.nextStartedActivity)
     }

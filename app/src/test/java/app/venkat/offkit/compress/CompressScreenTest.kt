@@ -610,6 +610,25 @@ class CompressScreenTest {
         assertArrayEquals(fake.outputContent, again.toByteArray())
     }
 
+    /** Z2-4: Open drops a share still being prepared (onShareHandled cancels it); a later Share works. */
+    @Test
+    fun aShareStillBeingPreparedIsDroppedByOnShareHandled() {
+        choose(pdf("a.pdf"))
+        runToReady()
+        saveTo(ByteArrayOutputStream())
+        shadowOf(rule.activity).clearNextStartedActivities()
+        rule.runOnUiThread {
+            vm.share()
+            vm.onShareHandled()
+        }
+        val settle = System.currentTimeMillis() + 300
+        CoreTestSupport.idleUntil(rule) { System.currentTimeMillis() > settle }
+        rule.waitForIdle()
+        assertNull("no share request after it was dropped", vm.shareRequest.value)
+        assertNull("no share sheet", shadowOf(rule.activity).nextStartedActivity)
+        shareAndGetChooser()
+    }
+
     private fun shareAndGetChooser(): Intent {
         shadowOf(rule.activity).clearNextStartedActivities()
         click(TAG_JOB_SHARE)
