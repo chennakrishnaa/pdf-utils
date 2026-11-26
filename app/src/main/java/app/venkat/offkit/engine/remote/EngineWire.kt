@@ -17,6 +17,7 @@ import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.engine.PageTextFormat
 import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.ReaderPassword
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
 import java.io.File
@@ -69,10 +70,16 @@ sealed interface EngineRequest {
         override val out: String? get() = null
     }
 
-    /** [PdfPageRenderer.pageInfo] of [pdf]; the reply is [EngineWire.encodePageInfo]. */
-    data class PageInfo(val pdf: String) : EngineRequest {
+    /**
+     * [PdfPageRenderer.pageInfo] of [pdf]; the reply is [EngineWire.encodePageInfo]. [password]
+     * (reader requests only) is the one value that is not a path: it travels in the request Bundle,
+     * is checked with [app.venkat.offkit.engine.ReaderPassword] on both sides, and is never part of
+     * [toString].
+     */
+    data class PageInfo(val pdf: String, val password: String? = null) : EngineRequest {
         override val paths get() = listOf(pdf)
         override val out: String? get() = null
+        override fun toString() = "PageInfo(pdf=$pdf, password=${redacted(password)})"
     }
 
     /**
@@ -80,14 +87,19 @@ sealed interface EngineRequest {
      * [EngineWire.decodeRequest] rejects a [request] that fails `RenderLimits.check(request, null)`.
      */
     /** [PdfPageRenderer.pageText] of [page] of [pdf] into [out]; the reply is [EngineWire.encodePageText]. */
-    data class PageText(val pdf: String, val page: Int, override val out: String) : EngineRequest {
+    data class PageText(val pdf: String, val page: Int, override val out: String, val password: String? = null) : EngineRequest {
         override val paths get() = listOf(pdf, out)
+        override fun toString() = "PageText(pdf=$pdf, page=$page, out=$out, password=${redacted(password)})"
     }
 
-    data class RenderPage(val pdf: String, val request: RenderRequest, override val out: String) : EngineRequest {
+    data class RenderPage(val pdf: String, val request: RenderRequest, override val out: String, val password: String? = null) : EngineRequest {
         override val paths get() = listOf(pdf, out)
+        override fun toString() = "RenderPage(pdf=$pdf, request=$request, out=$out, password=${redacted(password)})"
     }
 }
+
+/** How a password appears in `toString`: whether there is one, never its text or length. */
+internal fun redacted(password: String?): String = if (password == null) "null" else "<redacted>"
 
 /** Largest image input index accepted by [EngineRequest.NormalizeImage] (file names are `img_NNN`). */
 internal const val MAX_IMAGE_INDEX = 99_999
@@ -104,9 +116,9 @@ internal fun EngineRequest.execute(
     renderer: () -> PdfPageRenderer = { engine() as PdfPageRenderer },
 ): Any = when (this) {
     is EngineRequest.NormalizeImage -> preparer.prepareImage(File(raw), File(destDir), index, job)
-    is EngineRequest.PageInfo -> renderer().pageInfo(File(pdf), job)
-    is EngineRequest.RenderPage -> renderer().renderPage(File(pdf), request, File(out), job)
-    is EngineRequest.PageText -> renderer().pageText(File(pdf), page, File(out), job)
+    is EngineRequest.PageInfo -> renderer().pageInfo(File(pdf), password, job)
+    is EngineRequest.RenderPage -> renderer().renderPage(File(pdf), request, File(out), password, job)
+    is EngineRequest.PageText -> renderer().pageText(File(pdf), page, File(out), password, job)
     else -> execute(engine(), job)
 }
 
@@ -149,6 +161,11 @@ object EngineWire {
     private const val WIDTH = "width"
     private const val HEIGHT = "height"
     private const val SIZES = "sizes"
+    private const val PASSWORD = "password"
+    private const val FLAGS = "flags"
+    private const val FLAG_ENCRYPTED = 1
+    private const val FLAG_NO_PRINT = 2
+    private const val FLAG_NO_COPY = 4
 
     private const val KIND = "kind"
     private const val PAGES = "pages"
@@ -211,12 +228,14 @@ object EngineWire {
             is EngineRequest.PageInfo -> {
                 putString(OP, "pageInfo")
                 putString(PDF, r.pdf)
+                r.password?.let { putString(PASSWORD, it) }
             }
             is EngineRequest.PageText -> {
                 putString(OP, "pageText")
                 putString(PDF, r.pdf)
                 putString(OUT, r.out)
                 putInt(PAGE, r.page)
+                r.password?.let { putString(PASSWORD, it) }
             }
             is EngineRequest.RenderPage -> {
                 putString(OP, "renderPage")
@@ -228,6 +247,7 @@ object EngineWire {
                 putInt(TOP, r.request.top)
                 putInt(WIDTH, r.request.width)
                 putInt(HEIGHT, r.request.height)
+                r.password?.let { putString(PASSWORD, it) }
             }
         }
     }
@@ -243,6 +263,9 @@ object EngineWire {
             return b.getInt(k)
         }
         fun list(k: String) = requireNotNull(b.getStringArray(k)) { "missing $k" }.map { requireNotNull(it) }
+        fun password(): String? = b.getString(PASSWORD)?.also { p ->
+            ReaderPassword.check(p)?.let { throw IllegalArgumentException(it) }
+        }
         return when (val op = b.getString(OP)) {
             "imagesToPdf" -> EngineRequest.ImagesToPdf(
                 list(IMAGES),
@@ -260,17 +283,17 @@ object EngineWire {
                 require(index in 0..MAX_IMAGE_INDEX) { "bad index $index" }
                 EngineRequest.NormalizeImage(str(RAW), str(DEST_DIR), index)
             }
-            "pageInfo" -> EngineRequest.PageInfo(str(PDF))
+            "pageInfo" -> EngineRequest.PageInfo(str(PDF), password())
             "pageText" -> {
                 val page = int(PAGE)
                 require(page >= 0) { "bad page $page" }
-                EngineRequest.PageText(str(PDF), page, str(OUT))
+                EngineRequest.PageText(str(PDF), page, str(OUT), password())
             }
             "renderPage" -> {
                 require(b.containsKey(SCALE)) { "missing $SCALE" }
                 val request = RenderRequest(int(PAGE), b.getFloat(SCALE), int(LEFT), int(TOP), int(WIDTH), int(HEIGHT))
                 RenderLimits.check(request, null)?.let { throw IllegalArgumentException(it) }
-                EngineRequest.RenderPage(str(PDF), request, str(OUT))
+                EngineRequest.RenderPage(str(PDF), request, str(OUT), password())
             }
             else -> throw IllegalArgumentException("unknown op $op")
         }
@@ -363,6 +386,11 @@ object EngineWire {
                 sizes[2 * i + 1] = d.heightPt
             }
             putFloatArray(SIZES, sizes)
+            putInt(
+                FLAGS,
+                (if (p.encrypted) FLAG_ENCRYPTED else 0) or (if (p.canPrint) 0 else FLAG_NO_PRINT) or
+                    (if (p.canCopy) 0 else FLAG_NO_COPY),
+            )
         }
         is PdfPageInfo.Err -> encodeResult(PdfResult.Err(p.error))
     }
@@ -375,12 +403,19 @@ object EngineWire {
     fun decodePageInfo(b: Bundle): PdfPageInfo = when (b.getString(KIND)) {
         KIND_INFO_OK -> {
             val sizes = b.getFloatArray(SIZES)
+            val flags = b.getInt(FLAGS, -1)
             if (sizes == null || sizes.size % 2 != 0 || sizes.size / 2 > RenderLimits.MAX_PAGES ||
-                sizes.any { !it.isFinite() || it <= 0f }
+                sizes.any { !it.isFinite() || it <= 0f } || flags !in 0..7 ||
+                (flags != 0 && flags and FLAG_ENCRYPTED == 0) // restrictions only on an encrypted PDF
             ) {
                 PdfPageInfo.Err(malformed())
             } else {
-                PdfPageInfo.Ok(List(sizes.size / 2) { PageDims(sizes[2 * it], sizes[2 * it + 1]) })
+                PdfPageInfo.Ok(
+                    List(sizes.size / 2) { PageDims(sizes[2 * it], sizes[2 * it + 1]) },
+                    encrypted = flags and FLAG_ENCRYPTED != 0,
+                    canPrint = flags and FLAG_NO_PRINT == 0,
+                    canCopy = flags and FLAG_NO_COPY == 0,
+                )
             }
         }
         KIND_ERR -> PdfPageInfo.Err(getError(b))
@@ -457,6 +492,7 @@ object EngineWire {
     private fun putError(b: Bundle, e: PdfError) {
         val code = when (e) {
             PdfError.Encrypted -> "Encrypted"
+            PdfError.WrongPassword -> "WrongPassword"
             PdfError.Corrupt -> "Corrupt"
             PdfError.UnsupportedImage -> "UnsupportedImage"
             PdfError.OutOfMemory -> "OutOfMemory"
@@ -477,6 +513,7 @@ object EngineWire {
 
     private fun getError(b: Bundle): PdfError = when (b.getString(ERROR)) {
         "Encrypted" -> PdfError.Encrypted
+        "WrongPassword" -> PdfError.WrongPassword
         "Corrupt" -> PdfError.Corrupt
         "UnsupportedImage" -> PdfError.UnsupportedImage
         "OutOfMemory" -> PdfError.OutOfMemory

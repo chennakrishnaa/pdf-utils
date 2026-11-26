@@ -1,5 +1,17 @@
 package app.venkat.offkit.reader
 
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_CANCEL
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_DIALOG
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_FIELD
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_NAME
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_PROBLEM
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_TOGGLE
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_UNLOCK
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.assertContentDescriptionContains
+import androidx.test.platform.app.InstrumentationRegistry
+import android.os.Bundle
+import android.os.Parcel
 import android.app.Activity
 import android.app.Application
 import android.content.ClipboardManager
@@ -405,9 +417,6 @@ class ReaderScreenTest {
         waitUntilRendered(0)
         rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("fine.pdf")
     }
-
-    @Test
-    fun encryptedPdfShowsPasswordProtectedErrorAndCanChooseAnother() = assertOpenErrorScreen(PdfError.Encrypted)
 
     @Test
     fun corruptPdfShowsDamagedErrorAndCanChooseAnother() = assertOpenErrorScreen(PdfError.Corrupt)
@@ -987,5 +996,142 @@ class ReaderScreenTest {
         assertTrue(!selectionShown())
         assertTrue("search still open", exists(TAG_READER_SEARCH_BAR))
         assertEquals(1, searchHitsOn(0))
+    }
+
+    private fun waitForPasswordDialog(name: String) {
+        waitFor(TAG_PASSWORD_DIALOG)
+        rule.onNodeWithTag(TAG_PASSWORD_NAME).assertTextEquals(name)
+        rule.onNodeWithText(str(R.string.reader_password_body)).assertIsDisplayed()
+        rule.onNodeWithText(str(R.string.reader_password_title)).assertIsDisplayed()
+    }
+
+    private fun typePassword(text: String) {
+        rule.onNodeWithTag(TAG_PASSWORD_FIELD).performTextInput(text)
+        rule.waitForIdle()
+    }
+
+    private fun passwordFieldText(): String =
+        rule.onNodeWithTag(TAG_PASSWORD_FIELD).fetchSemanticsNode().config
+            .getOrElseNullable(SemanticsProperties.EditableText) { null }?.text.orEmpty()
+
+    private fun pressUnlock() {
+        rule.onNodeWithTag(TAG_PASSWORD_UNLOCK).performClick()
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun protectedPdfFromThePickerAsksForThePasswordWrongThenRightShowsThePages() {
+        fake.readerPassword = "right-one"
+        answer(enterReader(), pdf("locked.pdf"))
+        waitForPasswordDialog("locked.pdf")
+        assertTrue(!exists(TAG_JOB_RESET))
+        rule.onNodeWithTag(TAG_PASSWORD_UNLOCK).assertIsNotEnabled()
+        rule.onNodeWithTag(TAG_PASSWORD_TOGGLE).assertContentDescriptionContains(str(R.string.reader_password_show_description))
+        rule.onNodeWithTag(TAG_PASSWORD_TOGGLE).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_PASSWORD_TOGGLE).assertContentDescriptionContains(str(R.string.reader_password_hide_description))
+
+        typePassword("wrong-one")
+        pressUnlock()
+        waitFor(TAG_PASSWORD_PROBLEM)
+        rule.onNodeWithTag(TAG_PASSWORD_PROBLEM).assertTextEquals(str(R.string.reader_password_wrong))
+        waitUntil("field cleared") { passwordFieldText().isEmpty() }
+        rule.onNodeWithTag(TAG_PASSWORD_FIELD).assertIsFocused()
+        assertEquals(1, readerDirs().size)
+
+        typePassword("right-one")
+        pressUnlock()
+        waitUntilRendered(0)
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("locked.pdf")
+        assertTrue(!exists(TAG_PASSWORD_DIALOG))
+        assertEquals(1, readerDirs().size)
+    }
+
+    @Test
+    fun cancellingThePasswordOnFirstEntryLeavesTheReader() {
+        fake.readerPassword = "pw"
+        answer(enterReader(), pdf("locked.pdf"))
+        waitForPasswordDialog("locked.pdf")
+        rule.onNodeWithTag(TAG_PASSWORD_CANCEL).performClick()
+        rule.waitForIdle()
+        waitFor(TAG_TOOL_READ)
+        assertNoPicker()
+        waitUntil("locked copy deleted") { readerDirs().isEmpty() }
+    }
+
+    @Test
+    fun aProtectedPdfFromOpenAnotherKeepsTheOpenDocumentWhenCancelled() {
+        openDocument("first.pdf")
+        fake.readerPassword = "pw"
+        openAnother()
+        answer(takePdfPicker(), pdf("locked.pdf"))
+        waitForPasswordDialog("locked.pdf")
+        assertEquals(2, readerDirs().size)
+        rule.onNodeWithTag(TAG_PASSWORD_CANCEL).performClick()
+        rule.waitForIdle()
+        waitFor(TAG_READER_TITLE)
+        assertTrue(!exists(TAG_PASSWORD_DIALOG))
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("first.pdf")
+        waitUntilRendered(0)
+        waitUntil("only the open document's copy is kept") { readerDirs().size == 1 }
+
+        openAnother()
+        answer(takePdfPicker(), pdf("locked.pdf"))
+        waitForPasswordDialog("locked.pdf")
+        typePassword("pw")
+        pressUnlock()
+        waitUntil("locked.pdf open") {
+            rule.onAllNodesWithTag(TAG_READER_TITLE).fetchSemanticsNodes()
+                .any { it.config[SemanticsProperties.Text].joinToString() == "locked.pdf" }
+        }
+        waitUntilRendered(0)
+        waitUntil("first closed") { readerDirs().size == 1 }
+    }
+
+    @Test
+    fun rotationKeepsTheDialogWithAnEmptyFieldAndThePasswordIsNotSaved() {
+        val secret = "Zq9-unique-K3-secret"
+        fake.readerPassword = "pw"
+        answer(enterReader(), pdf("locked.pdf"))
+        waitForPasswordDialog("locked.pdf")
+        rule.onNodeWithTag(TAG_PASSWORD_TOGGLE).performClick() // shown: the field holds the plain text
+        typePassword(secret)
+        assertEquals(secret, passwordFieldText())
+
+        val saved = Bundle()
+        rule.runOnUiThread { InstrumentationRegistry.getInstrumentation().callActivityOnSaveInstanceState(rule.activity, saved) }
+        val parcel = Parcel.obtain()
+        val bytes = try {
+            parcel.writeBundle(saved)
+            parcel.marshall()
+        } finally {
+            parcel.recycle()
+        }
+        fun contains(needle: ByteArray) = (0..bytes.size - needle.size).any { i -> needle.indices.all { bytes[i + it] == needle[it] } }
+        // The search works: a key known to be saved is found (Robolectric parcels strings as UTF-8, Android as UTF-16).
+        assertTrue(listOf(Charsets.UTF_8, Charsets.UTF_16LE).any { contains("reader.pickerLaunched".toByteArray(it)) })
+        assertTrue(!contains(secret.toByteArray(Charsets.UTF_16LE)))
+        assertTrue(!contains(secret.toByteArray(Charsets.UTF_8)))
+
+        rule.activityRule.scenario.recreate()
+        rule.waitForIdle()
+        waitForPasswordDialog("locked.pdf")
+        assertEquals("", passwordFieldText())
+        rule.onNodeWithTag(TAG_PASSWORD_UNLOCK).assertIsNotEnabled()
+        assertNoPicker()
+    }
+
+    @Test
+    fun aPasswordTooLongShowsAHintWithoutCallingTheEngine() {
+        fake.readerPassword = "pw"
+        answer(enterReader(), pdf("locked.pdf"))
+        waitForPasswordDialog("locked.pdf")
+        val calls = fake.readerPasswords.size
+        typePassword("a".repeat(128))
+        pressUnlock()
+        waitFor(TAG_PASSWORD_PROBLEM)
+        rule.onNodeWithTag(TAG_PASSWORD_PROBLEM).assertTextEquals(str(R.string.reader_password_invalid))
+        assertEquals(calls, fake.readerPasswords.size)
+        rule.onNodeWithTag(TAG_PASSWORD_DIALOG).assertExists()
     }
 }

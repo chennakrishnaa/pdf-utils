@@ -175,4 +175,30 @@ class EngineWireTest {
         val r2 = EngineWire.decodeRender(EngineWire.encodePageInfo(PdfPageInfo.Ok(listOf(PageDims(1f, 1f)))))
         assertTrue("$r2", (r2 as PdfRender.Err).error is PdfError.Io)
     }
+
+    @Test
+    fun passwordAndPermissionsRoundTrip() {
+        val r = app.venkat.offkit.engine.RenderRequest(0, 1f, 0, 0, 2, 2)
+        for (req in listOf(
+            EngineRequest.PageInfo("/a.pdf", "p\u00e9w"), EngineRequest.PageInfo("/a.pdf"),
+            EngineRequest.RenderPage("/a.pdf", r, "/o", "pw"), EngineRequest.PageText("/a.pdf", 1, "/o", "pw"),
+        )) {
+            assertEquals(req, EngineWire.decodeRequest(viaParcel(EngineWire.encodeRequest(req))))
+        }
+        val tooLong = EngineWire.encodeRequest(EngineRequest.PageInfo("/a.pdf", "a".repeat(128)))
+        try {
+            EngineWire.decodeRequest(viaParcel(tooLong))
+            org.junit.Assert.fail("a 128-unit password must be refused by the engine side")
+        } catch (e: IllegalArgumentException) {
+            org.junit.Assert.assertFalse(e.message.orEmpty().contains("aaaa"))
+        }
+        val dims = listOf(app.venkat.offkit.engine.PageDims(1f, 2f))
+        for (info in listOf(
+            app.venkat.offkit.engine.PdfPageInfo.Ok(dims),
+            app.venkat.offkit.engine.PdfPageInfo.Ok(dims, encrypted = true, canPrint = false, canCopy = false),
+            app.venkat.offkit.engine.PdfPageInfo.Err(app.venkat.offkit.engine.PdfError.WrongPassword),
+        )) {
+            assertEquals(info, EngineWire.decodePageInfo(viaParcel(EngineWire.encodePageInfo(info))))
+        }
+    }
 }

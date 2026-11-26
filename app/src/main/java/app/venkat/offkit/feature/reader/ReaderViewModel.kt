@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import app.venkat.offkit.core.LockedPdf
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.core.ReaderDocument
 import app.venkat.offkit.core.ReaderOpenResult
@@ -14,6 +15,7 @@ import app.venkat.offkit.core.ReaderTile
 import app.venkat.offkit.engine.PageDims
 import app.venkat.offkit.engine.PageText
 import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.engine.ReaderPassword
 import app.venkat.offkit.engine.RenderRequest
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
@@ -36,11 +38,33 @@ sealed interface ReaderDocState {
     /** Copying the picked file and reading its pages. */
     data object Opening : ReaderDocState
 
-    /** Opening failed (`Encrypted`, `Corrupt`, `Io` for an unreadable file, ...). Nothing is kept. */
+    /** Opening failed (`Corrupt`, `Io` for an unreadable file, ...). Nothing is kept. */
     data class Failed(val error: PdfError) : ReaderDocState
+
+    /**
+     * The file called [name] needs a password: its private copy waits for [ReaderViewModel.unlock]
+     * or [ReaderViewModel.cancelPassword]. A document that was open before stays open (not shown)
+     * until this one is unlocked. [attempt] is bumped by every wrong password; [problem] says why
+     * the last attempt failed; [busy] while a password is being tried. Holds no password.
+     */
+    data class Locked(
+        val name: String,
+        val attempt: Int = 0,
+        val problem: PasswordProblem? = null,
+        val busy: Boolean = false,
+    ) : ReaderDocState
 
     /** [pages] (one [PageDims] per page, at least one) of the file called [name] are ready to show. */
     data class Open(val name: String, val pages: List<PageDims>) : ReaderDocState
+}
+
+/** Why a password attempt failed. */
+enum class PasswordProblem {
+    /** The engine said the password does not open the PDF. */
+    WRONG,
+
+    /** [ReaderPassword.check] refused it (too long, or U+0000); the engine was not called. */
+    INVALID,
 }
 
 /**
@@ -68,7 +92,8 @@ data class ReaderPageState(val base: Bitmap? = null, val detail: PageDetail? = n
  * State and actions of the PDF reader screen. Holds no Compose types.
  *
  * Lifecycle: [open] a picked `content:` Uri -> [document] goes `Opening`, then `Open` or `Failed`.
- * Opening again, [close] and [onCleared] close the previous document (its engine work is asked to
+ * A PDF that needs a password goes `Locked` ([unlock], [cancelPassword]).
+ * Opening again (once the new one opens or fails), [close] and [onCleared] close the previous document (its engine work is asked to
  * stop and its `cacheDir/jobs/reader-<uuid>/` copy is deleted).
  *
  * Rendering: the screen reports what it shows with [onViewport] whenever scrolling or zooming
@@ -162,28 +187,98 @@ class ReaderViewModel internal constructor(
     private var openJob: Job? = null
     private var generation = 0
 
+    /** The private copy of a PDF waiting for its password ([ReaderDocState.Locked]). */
+    private var locked: LockedPdf? = null
+
     /**
      * Opens the PDF at [uri] (a `content:` Uri from the system picker; it is read once, now, and
      * not kept). Closes any document already open or opening. [checkType]: the Uri's type is not
      * known yet and the provider must report `application/pdf` first (see [PdfReader.open]).
+     *
+     * A document already open is closed only once the new one opens or fails; while the new one
+     * is [ReaderDocState.Locked] it stays open, and [cancelPassword] shows it again. A PDF waiting
+     * for its password is discarded.
      */
     fun open(uri: Uri, checkType: Boolean = false) {
-        closeAll()
+        clearSelection()
+        // A search on the shown document ends here, even if that document stays open while the
+        // new one waits for its password.
+        closeSearch()
+        stopOpening()
         val gen = ++generation
         _document.value = ReaderDocState.Opening
         openJob = viewModelScope.launch {
-            val result = reader.open(uri, checkType)
+            val result = reader.open(uri, checkType, keepLockedCopy = true)
+            if (gen != generation) {
+                when (result) {
+                    is ReaderOpenResult.Opened -> reader.close(result.document)
+                    is ReaderOpenResult.Failed -> result.locked?.let { reader.discard(it) }
+                }
+                return@launch
+            }
+            openJob = null
+            settle(result)
+        }
+    }
+
+    /**
+     * Tries [password] on the PDF that is [ReaderDocState.Locked] (ignored otherwise, while busy,
+     * or for an empty one). A password [ReaderPassword.check] refuses gives [PasswordProblem.INVALID]
+     * without calling the engine; a wrong one [PasswordProblem.WRONG] (any number of attempts). The
+     * password is not kept here: [PdfReader] keeps it inside the opened document only.
+     */
+    fun unlock(password: String) {
+        val pdf = locked ?: return
+        val state = _document.value as? ReaderDocState.Locked ?: return
+        if (state.busy || password.isEmpty()) return
+        if (ReaderPassword.check(password) != null) {
+            _document.value = state.copy(problem = PasswordProblem.INVALID)
+            return
+        }
+        val gen = generation
+        _document.value = state.copy(busy = true, problem = null)
+        openJob = viewModelScope.launch {
+            val result = reader.unlock(pdf, password)
             if (gen != generation) {
                 if (result is ReaderOpenResult.Opened) reader.close(result.document)
                 return@launch
             }
             openJob = null
-            _document.value = when (result) {
-                is ReaderOpenResult.Opened -> {
-                    session = Session(result.document)
-                    ReaderDocState.Open(result.document.name, result.document.pages)
+            if (result is ReaderOpenResult.Failed && result.locked != null) {
+                _document.value = state.copy(attempt = state.attempt + 1, problem = PasswordProblem.WRONG, busy = false)
+            } else {
+                locked = null
+                settle(result)
+            }
+        }
+    }
+
+    /**
+     * The user gave up on the password: the private copy is deleted and the document open before
+     * is shown again, or, if there was none, [document] becomes `Idle`.
+     */
+    fun cancelPassword() {
+        if (_document.value !is ReaderDocState.Locked) return
+        stopOpening()
+        generation++
+        _document.value = session?.state ?: ReaderDocState.Idle
+    }
+
+    private fun settle(result: ReaderOpenResult) {
+        _document.value = when (result) {
+            is ReaderOpenResult.Opened -> {
+                closeSession()
+                Session(result.document).also { session = it }.state
+            }
+            is ReaderOpenResult.Failed -> {
+                val pdf = result.locked
+                if (pdf != null) {
+                    locked = pdf
+                    ReaderDocState.Locked(pdf.name)
+                } else {
+                    closeSession()
+                    ReaderDocState.Failed(result.error)
                 }
-                is ReaderOpenResult.Failed -> ReaderDocState.Failed(result.error)
             }
         }
     }
@@ -297,8 +392,19 @@ class ReaderViewModel internal constructor(
 
     private fun closeAll() {
         clearSelection()
+        stopOpening()
+        closeSession()
+    }
+
+    /** Stops opening or unlocking and discards a PDF waiting for its password. */
+    private fun stopOpening() {
         openJob?.cancel()
         openJob = null
+        locked?.let { reader.discard(it) }
+        locked = null
+    }
+
+    private fun closeSession() {
         session?.close()
         session = null
         _search.value = null
@@ -306,6 +412,7 @@ class ReaderViewModel internal constructor(
 
     /** One open document: its page states, caches and render worker. Main thread only. */
     private inner class Session(val doc: ReaderDocument) {
+        val state = ReaderDocState.Open(doc.name, doc.pages)
         private val pageCount = doc.pages.size
         private val states = HashMap<Int, MutableStateFlow<ReaderPageState>>()
 

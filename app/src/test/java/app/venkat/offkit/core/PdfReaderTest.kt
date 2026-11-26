@@ -73,6 +73,48 @@ class PdfReaderTest {
 
     private fun readerDirs() = File(app.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith("reader-") }
 
+    private fun drain() = runBlocking { kotlinx.coroutines.withContext(engineDispatcher) {} }
+
+    @Test
+    fun passwordRetryKeepsOneCopyAndSendsThePasswordWithEveryCall() = runBlocking {
+        fake.readerPassword = "pw1"
+        fake.readerCanCopy = false
+        val first = reader.open(pdfUri(), keepLockedCopy = true) as ReaderOpenResult.Failed
+        assertEquals(PdfError.Encrypted, first.error)
+        val locked = requireNotNull(first.locked)
+        assertEquals(1, readerDirs().size)
+        val copy = locked.file.readBytes()
+        val wrong = reader.unlock(locked, "nope") as ReaderOpenResult.Failed
+        assertEquals(PdfError.WrongPassword, wrong.error)
+        assertTrue(wrong.locked === locked)
+        val doc = (reader.unlock(locked, "pw1") as ReaderOpenResult.Opened).document
+        assertEquals(1, readerDirs().size) // never copied again
+        assertTrue(copy.contentEquals(doc.file.readBytes()))
+        assertTrue(doc.isEncrypted && !doc.canCopy && doc.canPrint)
+        assertFalse(doc.toString().contains("pw1"))
+        reader.render(doc, RenderRequest(0, 1f, 0, 0, 10, 10))
+        reader.text(doc, 0)
+        assertEquals(listOf(null, "nope", "pw1", "pw1", "pw1"), fake.readerPasswords.toList())
+        reader.close(doc)
+        drain()
+        assertTrue(readerDirs().isEmpty())
+    }
+
+    @Test
+    fun givingUpDeletesTheLockedCopy() = runBlocking {
+        fake.readerPassword = "pw1"
+        val locked = requireNotNull((reader.open(pdfUri(), keepLockedCopy = true) as ReaderOpenResult.Failed).locked)
+        assertEquals(1, readerDirs().size)
+        reader.discard(locked)
+        drain()
+        assertTrue(readerDirs().isEmpty())
+        assertEquals(ReaderOpenResult.Failed(PdfError.Cancelled), reader.unlock(locked, "pw1"))
+        // Without keepLockedCopy nothing is kept, as before.
+        assertEquals(ReaderOpenResult.Failed(PdfError.Encrypted), reader.open(pdfUri()))
+        drain()
+        assertTrue(readerDirs().isEmpty())
+    }
+
     private fun openOk(uri: Uri = pdfUri()): ReaderDocument = when (val r = runBlocking { reader.open(uri) }) {
         is ReaderOpenResult.Opened -> r.document
         is ReaderOpenResult.Failed -> throw AssertionError("open failed: ${r.error}")

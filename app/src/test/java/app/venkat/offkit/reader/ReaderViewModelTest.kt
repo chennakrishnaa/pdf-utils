@@ -30,6 +30,7 @@ import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.RenderRequest
 import app.venkat.offkit.feature.reader.ItemRect
 import app.venkat.offkit.feature.reader.ReaderDocState
+import app.venkat.offkit.feature.reader.PasswordProblem
 import app.venkat.offkit.feature.reader.ReaderLimits
 import app.venkat.offkit.feature.reader.ReaderPlanner
 import app.venkat.offkit.feature.reader.ReaderViewModel
@@ -168,8 +169,9 @@ class ReaderViewModelTest {
     }
 
     @Test
-    fun encryptedOrCorruptFailsAndLeavesNothing() {
-        for (error in listOf(PdfError.Encrypted, PdfError.Corrupt)) {
+    fun corruptOrTooLargeFailsAndLeavesNothing() {
+        // Encrypted (needs a password) is no longer a failure: see needsPasswordIsLockedThenWrongThenRight...
+        for (error in listOf(PdfError.Corrupt, PdfError.OutOfMemory)) {
             val vm = newVm()
             fake.readerError = error
             vm.open(pdf())
@@ -594,6 +596,133 @@ class ReaderViewModelTest {
         assertEquals(12, vm.search.value!!.hits.size)
         assertEquals(1, vm.cachedTextPagesForTest())
         assertEquals("Hello", vm.selection.value!!.string())
+    }
+
+    private fun awaitLocked(vm: ReaderViewModel, name: String): ReaderDocState.Locked {
+        CoreTestSupport.idleUntil(message = "locked $name") { (vm.document.value as? ReaderDocState.Locked)?.name == name }
+        return vm.document.value as ReaderDocState.Locked
+    }
+
+    @Test
+    fun needsPasswordIsLockedThenWrongThenRightWithoutACopyAgain() {
+        fake.readerPassword = "s3cret"
+        val vm = newVm()
+        vm.open(pdf("Locked.pdf"))
+        assertEquals(ReaderDocState.Locked("Locked.pdf"), awaitLocked(vm, "Locked.pdf"))
+        val dir = readerDirs().single()
+        assertTrue(File(dir, "document.pdf").isFile)
+
+        vm.unlock("nope")
+        assertTrue((vm.document.value as ReaderDocState.Locked).busy)
+        CoreTestSupport.idleUntil(message = "wrong") { (vm.document.value as? ReaderDocState.Locked)?.attempt == 1 }
+        assertEquals(ReaderDocState.Locked("Locked.pdf", 1, PasswordProblem.WRONG, busy = false), vm.document.value)
+        assertEquals(listOf(dir), readerDirs())
+
+        vm.unlock("nope again")
+        CoreTestSupport.idleUntil(message = "wrong 2") { (vm.document.value as? ReaderDocState.Locked)?.attempt == 2 }
+
+        vm.unlock("s3cret")
+        CoreTestSupport.idleUntil(message = "open") { vm.document.value is ReaderDocState.Open }
+        assertEquals(ReaderDocState.Open("Locked.pdf", fake.readerPages), vm.document.value)
+        assertEquals(listOf(dir), readerDirs()) // the same copy, not copied again
+        assertFalse(vm.document.value.toString().contains("s3cret"))
+
+        // Later reader calls carry the password inside PdfReader's document.
+        val before = fake.readerPasswords.size
+        assertEquals(listOf(null, "nope", "nope again", "s3cret"), fake.readerPasswords.toList())
+        vm.onViewport(WIDTH, 1f, listOf(band(0)))
+        CoreTestSupport.idleUntil(message = "base 0") { vm.page(0).value.base != null }
+        vm.copyPageText(0)
+        CoreTestSupport.idleUntil(message = "text") { vm.cachedTextPagesForTest() == 1 }
+        val later = fake.readerPasswords.drop(before)
+        assertTrue(later.size >= 2)
+        assertTrue(later.all { it == "s3cret" })
+
+        store.clear()
+        CoreTestSupport.idleUntil(message = "dir deleted on clear") { !dir.exists() }
+    }
+
+    @Test
+    fun aPasswordTheEngineCannotTakeIsRefusedWithoutCallingIt() {
+        fake.readerPassword = "pw"
+        val vm = newVm()
+        vm.open(pdf("Locked.pdf"))
+        awaitLocked(vm, "Locked.pdf")
+        val calls = fake.readerPasswords.size
+        for (bad in listOf("a".repeat(128), "é".repeat(64), "p\u0000w")) {
+            vm.unlock(bad)
+            assertEquals(ReaderDocState.Locked("Locked.pdf", 0, PasswordProblem.INVALID), vm.document.value)
+        }
+        vm.unlock("") // empty: ignored
+        assertEquals(ReaderDocState.Locked("Locked.pdf", 0, PasswordProblem.INVALID), vm.document.value)
+        assertEquals(calls, fake.readerPasswords.size)
+        assertEquals(1, readerDirs().size)
+    }
+
+    @Test
+    fun cancelOnFirstEntryDiscardsTheCopyAndGoesIdle() {
+        fake.readerPassword = "pw"
+        val vm = newVm()
+        vm.open(pdf("Locked.pdf"))
+        awaitLocked(vm, "Locked.pdf")
+        val dir = readerDirs().single()
+        vm.cancelPassword()
+        assertEquals(ReaderDocState.Idle, vm.document.value)
+        CoreTestSupport.idleUntil(message = "copy deleted") { !dir.exists() }
+        assertTrue(readerDirs().isEmpty())
+    }
+
+    @Test
+    fun aLockedFileKeepsTheOpenDocumentUntilUnlockedAndCancelShowsItAgain() {
+        val vm = newVm()
+        val first = openVm(vm, "first.pdf")
+        val firstDir = readerDirs().single()
+
+        fake.readerPassword = "pw"
+        vm.open(pdf("second.pdf"))
+        awaitLocked(vm, "second.pdf")
+        assertEquals(2, readerDirs().size)
+        assertTrue(firstDir.exists())
+        vm.cancelPassword()
+        assertSame(first, vm.document.value)
+        CoreTestSupport.idleUntil(message = "locked copy deleted") { readerDirs() == listOf(firstDir) }
+
+        vm.open(pdf("third.pdf"))
+        awaitLocked(vm, "third.pdf")
+        assertTrue(firstDir.exists())
+        vm.unlock("pw")
+        CoreTestSupport.idleUntil(message = "third open") { (vm.document.value as? ReaderDocState.Open)?.name == "third.pdf" }
+        CoreTestSupport.idleUntil(message = "first closed once the third opened") { !firstDir.exists() }
+        assertEquals(1, readerDirs().size)
+    }
+
+    @Test
+    fun anotherOpenWhileLockedDiscardsTheFirstCopy() {
+        fake.readerPassword = "pw"
+        val vm = newVm()
+        vm.open(pdf("a.pdf"))
+        awaitLocked(vm, "a.pdf")
+        val a = readerDirs().single()
+        vm.open(pdf("b.pdf"))
+        awaitLocked(vm, "b.pdf")
+        CoreTestSupport.idleUntil(message = "a discarded") { !a.exists() }
+        val b = readerDirs().single()
+        vm.close()
+        assertEquals(ReaderDocState.Idle, vm.document.value)
+        CoreTestSupport.idleUntil(message = "b discarded on close") { !b.exists() }
+    }
+
+    @Test
+    fun anotherFailureWhileUnlockingShowsTheErrorAndDeletesTheCopy() {
+        fake.readerPassword = "pw"
+        val vm = newVm()
+        vm.open(pdf("Locked.pdf"))
+        awaitLocked(vm, "Locked.pdf")
+        fake.readerError = PdfError.Corrupt
+        vm.unlock("pw")
+        CoreTestSupport.idleUntil(message = "failed") { vm.document.value is ReaderDocState.Failed }
+        assertEquals(ReaderDocState.Failed(PdfError.Corrupt), vm.document.value)
+        CoreTestSupport.idleUntil(message = "copy deleted") { readerDirs().isEmpty() }
     }
 
     private companion object {

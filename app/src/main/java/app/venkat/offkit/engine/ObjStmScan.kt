@@ -1,5 +1,7 @@
 package app.venkat.offkit.engine
 
+import com.artifex.mupdf.fitz.PDFDocument
+import com.artifex.mupdf.fitz.PDFObject
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -39,6 +41,22 @@ import java.util.zip.Inflater
  * keyword inside another stream's data; scanning resumes right after each `stream` keyword, the
  * data is tokenised too) keep the total work linear in the file size plus the bounds.
  *
+ * Encrypted files (reader only; the tools refuse every encrypted PDF): the data of an encrypted
+ * object stream is ciphertext here, so pass 1 cannot measure it (not valid zlib: ignored above;
+ * an attacker who knows the key could even make the ciphertext inflate harmlessly). So pass 1 also
+ * records EVERY Flate candidate in [Result.flate], with the object number and generation of the
+ * `N G obj` header in front of it, and the bytes charged for unfiltered candidates in
+ * [Result.rawTotal] (ciphertext is as long as the plaintext, plus at most 32 bytes for AES).
+ * [checkDecrypted] (pass 2) runs after MuPDF authenticated the password and BEFORE anything
+ * resolves an object that may live in an object stream (the page count): it reads each recorded
+ * object's stream through MuPDF (`readRawStream`: crypt filter applied, no other filter) and
+ * enforces the same limits on the plaintext: the same filter policy (none, or Flate alone;
+ * anything else, including a stream-level `/Crypt` filter, refused), [maxStream] per stream and
+ * [maxTotal] for all object streams together, decoded and consumed bytes, starting from
+ * [Result.rawTotal]. Refused also: a Flate candidate with no readable header, more than
+ * [MAX_RECORDED] Flate candidates, a recorded object that MuPDF does not resolve to a stream, or a
+ * raw stream over [maxStream].
+ *
  * This is a MITIGATION, not a guarantee. MuPDF reaches objects through xref offsets, not by scanning,
  * and xref repair can find streams anywhere; an object stream can evade the scan if, for example,
  * its dictionary hides a reset keyword inside a string or comment longer than 64 KiB, or the scan's
@@ -57,8 +75,104 @@ internal object ObjStmScan {
      *   whose filter cannot be bounded.
      * @throws java.io.IOException when [file] cannot be read.
      */
-    fun check(file: File, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES) {
+    fun check(file: File, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES): Result =
         RandomAccessFile(file, "r").use { raf -> Scanner(raf.channel, maxStream, maxTotal).run() }
+
+    /** Most Flate candidates recorded; an encrypted file with more is refused by [checkDecrypted]. */
+    const val MAX_RECORDED = 10_000
+
+    /** An object reference `num gen R`; [num] is -1 when the scan saw no `num gen obj` header. */
+    data class Ref(val num: Int, val gen: Int)
+
+    /**
+     * Outcome of a passed pass 1: every Flate candidate ([flate]; [overflow] when more than
+     * [MAX_RECORDED]) and the bytes charged for unfiltered candidates ([rawTotal]).
+     */
+    class Result(val flate: List<Ref>, val overflow: Boolean, val rawTotal: Long)
+
+    /**
+     * Pass 2 for an encrypted [pdf] that MuPDF opened and authenticated; see the class comment.
+     * Must run before the page count or any other object that may live in an object stream is
+     * resolved. Resolves only the recorded object numbers.
+     *
+     * @throws PdfInputException `OutOfMemory` when a limit is exceeded or a stream cannot be measured.
+     */
+    fun checkDecrypted(pdf: PDFDocument, pass1: Result, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES) {
+        if (pass1.overflow) tooLargeInput()
+        var totalOut = pass1.rawTotal
+        var totalIn = 0L
+        val seen = HashSet<Ref>()
+        for (ref in pass1.flate) {
+            if (ref.num <= 0 || ref.gen < 0) tooLargeInput()
+            if (!seen.add(ref)) continue
+            val obj = pdf.newIndirect(ref.num, ref.gen)
+            try {
+                if (!obj.isStream) tooLargeInput()
+                val flate = when (streamFilter(obj)) {
+                    null -> false
+                    "FlateDecode", "Fl" -> true
+                    else -> tooLargeInput()
+                }
+                val raw = obj.readRawStream()
+                if (raw.size > maxStream) tooLargeInput()
+                if (!flate) {
+                    totalOut += raw.size
+                } else {
+                    val inf = Inflater()
+                    try {
+                        inf.setInput(raw)
+                        val scratch = ByteArray(CHUNK)
+                        var out = 0L
+                        while (!inf.finished()) {
+                            val got = try {
+                                inf.inflate(scratch)
+                            } catch (e: DataFormatException) {
+                                break // MuPDF stops there too
+                            }
+                            out += got
+                            if (out > maxStream || totalOut + out > maxTotal) tooLargeInput()
+                            if (got == 0 && (inf.needsInput() || inf.needsDictionary())) break
+                        }
+                        totalOut += out
+                        totalIn += inf.bytesRead
+                    } finally {
+                        inf.end()
+                    }
+                }
+                if (totalOut > maxTotal || totalIn > maxTotal) tooLargeInput()
+            } finally {
+                obj.destroy()
+            }
+        }
+    }
+
+    private fun tooLargeInput(): Nothing = throw PdfInputException(PdfError.OutOfMemory)
+
+    /** The single filter name of [stream] (null: none); "?" for a chain, an indirect or non-name filter. */
+    private fun streamFilter(stream: PDFObject): String? {
+        val f = stream.get("Filter")
+        try {
+            if (f.isIndirect) return "?"
+            return when {
+                f.isNull -> null
+                f.isName -> f.asName()
+                f.isArray -> when (f.size()) {
+                    0 -> null
+                    1 -> {
+                        val e = f.get(0)
+                        try {
+                            if (e.isName && !e.isIndirect) e.asName() else "?"
+                        } finally {
+                            if (e !== PDFObject.Null) e.destroy()
+                        }
+                    }
+                    else -> "?"
+                }
+                else -> "?"
+            }
+        } finally {
+            if (f !== PDFObject.Null) f.destroy()
+        }
     }
 
     private const val CHUNK = 64 * 1024
@@ -79,6 +193,12 @@ internal object ObjStmScan {
         private var totalOut = 0L
         private var totalIn = 0L
         private val word = StringBuilder()
+        private val flate = ArrayList<Ref>()
+        private var overflow = false
+        private var rawTotal = 0L
+        private var numA = -1L // the last two unsigned integer tokens (numA the earlier), else -1
+        private var numB = -1L
+        private var objRef: Ref? = null // `num gen obj` header of the object being scanned
 
         /** Byte at [p] (0..255), or -1 at end of file. */
         private fun at(p: Long): Int {
@@ -93,7 +213,7 @@ internal object ObjStmScan {
             return buf.get((p - bufStart).toInt()).toInt() and 0xFF
         }
 
-        fun run() {
+        fun run(): Result {
             var p = 0L
             while (true) {
                 val c = at(p)
@@ -111,6 +231,7 @@ internal object ObjStmScan {
                 }
             }
             finishRaw(size)
+            return Result(flate, overflow, rawTotal)
         }
 
         private fun otherValue() {
@@ -167,6 +288,8 @@ internal object ObjStmScan {
                 if (word.length < MAX_KEPT) word.append(ch.toChar())
             }
             onName(word.toString())
+            numA = -1L
+            numB = -1L
             return p
         }
 
@@ -179,12 +302,20 @@ internal object ObjStmScan {
                 p++
                 if (word.length < MAX_KEPT) word.append(c.toChar())
             }
-            when (word.toString()) {
+            val w = word.toString()
+            when (w) {
                 "stream" -> { onStream(p); reset() }
                 "endstream" -> { finishRaw(from); reset() }
-                "obj", "endobj" -> reset()
+                "obj" -> {
+                    reset()
+                    objRef = if (numA in 1..Int.MAX_VALUE.toLong() && numB in 0..65535L) Ref(numA.toInt(), numB.toInt()) else null
+                }
+                "endobj" -> { reset(); objRef = null }
                 else -> otherValue()
             }
+            val n = if (w.isNotEmpty() && w.length <= 10 && w.all { it in '0'..'9' }) w.toLong() else -1L
+            numA = if (n >= 0) numB else -1L
+            numB = n
             return p
         }
 
@@ -216,7 +347,7 @@ internal object ObjStmScan {
             when {
                 filterUnknown || filters.size > 1 -> tooLarge()
                 filters.isEmpty() -> rawStart = d
-                filters[0] == "FlateDecode" || filters[0] == "Fl" -> inflate(d)
+                filters[0] == "FlateDecode" || filters[0] == "Fl" -> { record(); inflate(d) }
                 else -> tooLarge()
             }
         }
@@ -227,6 +358,7 @@ internal object ObjStmScan {
             rawStart = -1
             if (n > maxStream || totalOut + n > maxTotal) tooLarge()
             totalOut += n
+            rawTotal += n
         }
 
         private fun inflate(from: Long) {
@@ -261,6 +393,11 @@ internal object ObjStmScan {
             } finally {
                 inf.end()
             }
+        }
+
+        /** Records the current Flate candidate for [checkDecrypted]. */
+        private fun record() {
+            if (flate.size >= MAX_RECORDED) overflow = true else flate.add(objRef ?: Ref(-1, -1))
         }
 
         private fun tooLarge(): Nothing = throw PdfInputException(PdfError.OutOfMemory)

@@ -19,12 +19,27 @@ interface PdfPageRenderer {
     fun pageInfo(pdf: File, job: JobControl = JobControl.None): PdfPageInfo
 
     /**
+     * [pageInfo] of a PDF that may be encrypted: [password] is tried when the PDF needs one
+     * (null or empty: none given). A PDF that needs a password gives `Err(Encrypted)` without one
+     * and `Err(WrongPassword)` with a wrong one; a PDF with only an owner password (empty user
+     * password) opens without one. A [password] that fails [ReaderPassword.check] gives
+     * `Err(Io(IllegalArgumentException))`. The default (renderers without password support) passes
+     * a null password on and answers `Err(Encrypted)` to any other.
+     */
+    fun pageInfo(pdf: File, password: String?, job: JobControl = JobControl.None): PdfPageInfo =
+        if (password.isNullOrEmpty()) pageInfo(pdf, job) else PdfPageInfo.Err(PdfError.Encrypted)
+
+    /**
      * Renders part of one page of [pdf] into [out] as raw pixels (see [RenderRequest] for the
      * geometry and [PdfRender.Ok] for the byte layout). An invalid [request]
      * ([RenderLimits.check] with the page's size) gives `Err(Io(IllegalArgumentException(reason)))`;
      * a page index past the end gives the same. On any `Err`, [out] does not exist.
      */
     fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl = JobControl.None): PdfRender
+
+    /** [renderPage] with a [password], as in the password [pageInfo]. */
+    fun renderPage(pdf: File, request: RenderRequest, out: File, password: String?, job: JobControl = JobControl.None): PdfRender =
+        if (password.isNullOrEmpty()) renderPage(pdf, request, out, job) else PdfRender.Err(PdfError.Encrypted).also { out.delete() }
 
     /**
      * Extracts the text of page [page] (0-based) of [pdf] with the box of every character, into
@@ -39,6 +54,39 @@ interface PdfPageRenderer {
         out.delete()
         return PdfPageText.Err(PdfError.Io(UnsupportedOperationException("no page text")))
     }
+
+    /** [pageText] with a [password], as in the password [pageInfo]. */
+    fun pageText(pdf: File, page: Int, out: File, password: String?, job: JobControl = JobControl.None): PdfPageText =
+        if (password.isNullOrEmpty()) pageText(pdf, page, out, job) else PdfPageText.Err(PdfError.Encrypted).also { out.delete() }
+}
+
+/**
+ * The password the reader may send with a call (a documented exception to "only paths cross the
+ * process boundary": it travels in the request Bundle, never in a file). Checked by the client
+ * before sending and by the engine before use.
+ *
+ * Cap: MuPDF 1.28.5 (`pdf-crypt.c`) truncates an R5/R6 (AES-256) password to 127 bytes of UTF-8
+ * and an R2-R4 one to 32 bytes after conversion; the JNI hands MuPDF the Java string as modified
+ * UTF-8 (`GetStringUTFChars`). So a password is refused when its modified-UTF-8 form is longer than
+ * [MAX_UTF8_BYTES] (127; this also caps it at 127 UTF-16 units) or when it contains U+0000.
+ */
+object ReaderPassword {
+    const val MAX_UTF8_BYTES = 127
+
+    /** Why [password] is refused, or null when it may be used. Never includes the password. */
+    fun check(password: String): String? {
+        if (password.length > MAX_UTF8_BYTES) return "password longer than $MAX_UTF8_BYTES units"
+        var bytes = 0
+        for (c in password) {
+            if (c == '\u0000') return "password contains U+0000"
+            bytes += when {
+                c.code < 0x80 -> 1
+                c.code < 0x800 -> 2
+                else -> 3 // BMP and each surrogate half (modified UTF-8)
+            }
+        }
+        return if (bytes > MAX_UTF8_BYTES) "password longer than $MAX_UTF8_BYTES bytes" else null
+    }
 }
 
 /** Displayed size of one page (its rotation applied), in PDF points (1/72 inch). Both finite and > 0. */
@@ -46,8 +94,20 @@ data class PageDims(val widthPt: Float, val heightPt: Float)
 
 /** Outcome of [PdfPageRenderer.pageInfo]. */
 sealed interface PdfPageInfo {
-    /** One [PageDims] per page, at most [RenderLimits.MAX_PAGES] entries. */
-    data class Ok(val pages: List<PageDims>) : PdfPageInfo
+    /**
+     * One [PageDims] per page, at most [RenderLimits.MAX_PAGES] entries. [encrypted]: the PDF uses
+     * encryption (password or owner-password only). [canPrint] / [canCopy]: the PDF's permission
+     * bits as MuPDF reports them after opening (`Document.hasPermission`): always true for an
+     * unencrypted PDF and for one opened with its OWNER password (MuPDF `pdf_has_permission`:
+     * owner access grants everything); otherwise its /P bits. Advisory: the reader does not
+     * enforce them.
+     */
+    data class Ok(
+        val pages: List<PageDims>,
+        val encrypted: Boolean = false,
+        val canPrint: Boolean = true,
+        val canCopy: Boolean = true,
+    ) : PdfPageInfo
 
     data class Err(val error: PdfError) : PdfPageInfo
 }
