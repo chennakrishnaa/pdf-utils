@@ -1,5 +1,10 @@
 package app.venkat.offkit.ui
 
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_DIALOG
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_FIELD
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_NAME
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_UNLOCK
+import androidx.compose.ui.test.performTextInput
 import android.app.Application
 import android.content.ComponentName
 import android.content.ContentProvider
@@ -455,5 +460,44 @@ class OpenWithIntentTest {
                 release = CountDownLatch(1)
             }
         }
+    }
+
+    private fun waitForPasswordPrompt(name: String) = waitUntil("password prompt for $name") {
+        rule.onAllNodesWithTag(TAG_PASSWORD_NAME).fetchSemanticsNodes()
+            .any { it.config.getOrElseNullable(SemanticsProperties.Text) { null }?.joinToString() == name }
+    }
+
+    @Test
+    fun viewOfAProtectedPdfShowsThePasswordPromptAndUnlockShowsIt() {
+        fake.readerPassword = "pw"
+        start(view(pdf("locked.pdf")))
+        waitForPasswordPrompt("locked.pdf")
+        assertEquals(1, readerDirs().size)
+        rule.onNodeWithTag(TAG_PASSWORD_FIELD).performTextInput("pw")
+        rule.onNodeWithTag(TAG_PASSWORD_UNLOCK).performClick()
+        rule.waitForIdle()
+        waitForTitle("locked.pdf")
+        waitUntilPage1()
+        assertTrue(!exists(TAG_PASSWORD_DIALOG))
+    }
+
+    @Test
+    fun aSecondViewWhileThePasswordPromptIsShownDiscardsTheLockedCopyAndOpensTheNewOne() {
+        fake.readerPassword = "pw"
+        start(view(pdf("locked.pdf")))
+        waitForPasswordPrompt("locked.pdf")
+        val locked = readerDirs().single()
+        controller!!.newIntent(view(pdf("other.pdf")))
+        rule.waitForIdle()
+        waitForPasswordPrompt("other.pdf")
+        waitUntil("the first locked copy is discarded") { !locked.exists() && readerDirs().size == 1 }
+
+        fake.readerPassword = null
+        controller!!.newIntent(view(pdf("plain.pdf")))
+        rule.waitForIdle()
+        waitForTitle("plain.pdf")
+        waitUntilPage1()
+        assertTrue(!exists(TAG_PASSWORD_DIALOG))
+        waitUntil("only the plain copy is kept") { readerDirs().size == 1 }
     }
 }
