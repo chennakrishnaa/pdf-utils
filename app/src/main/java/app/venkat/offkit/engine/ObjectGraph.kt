@@ -100,6 +100,16 @@ internal object ObjectGraph {
     const val MAX_ANNOTS_PER_PAGE = 10_000
 
     /**
+     * W2: the same bound for the READER (pageInfo, render, text), which loads one page at a time
+     * and never copies links: the cost guarded is `loadPage` building every annotation of the page
+     * (~460 B each: ~30 MB at this cap) and the check's own time; render and text are also bounded
+     * by the engine watchdog. Real files exceed [MAX_ANNOTS_PER_PAGE] (pdf.js `bug1978317.pdf`:
+     * 32,768 on one page, 168 ms in stock MuPDF), and refusing the whole document for one such page
+     * is worse than drawing it. The tools (Merge, Compress, Add images) keep [MAX_ANNOTS_PER_PAGE].
+     */
+    const val MAX_READER_ANNOTS_PER_PAGE = 65_536
+
+    /**
      * SR3-3: for every page, resolves only its `/Annots` array (the length; no annotation is loaded)
      * and charges that length to [budget] per page, so P pages sharing one array of M entries cost
      * P × M. A page with more than [maxPerPage] entries is "too large". Run it before any `loadPage`.

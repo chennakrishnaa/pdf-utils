@@ -139,7 +139,7 @@ class PageTextOpTest {
         }
         assertErr(bomb, 0, { it == PdfError.OutOfMemory })
         val annots = File(tmp.root, "annots.pdf").apply {
-            writeBytes(HostilePdf.sharedAnnots(ObjectGraph.MAX_ANNOTS_PER_PAGE + 500, 1))
+            writeBytes(HostilePdf.sharedAnnots(ObjectGraph.MAX_READER_ANNOTS_PER_PAGE + 1, 1))
         }
         assertErr(annots, 0, { it == PdfError.OutOfMemory })
         assertErr(Fixtures.encryptedPdf(tmp.root), 0, { it == PdfError.Encrypted })

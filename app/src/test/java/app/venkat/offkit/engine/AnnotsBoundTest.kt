@@ -31,6 +31,32 @@ class AnnotsBoundTest {
         assertFalse(File(dir, "m.pdf").exists())
     }
 
+    /**
+     * W2: the reader applies [ObjectGraph.MAX_READER_ANNOTS_PER_PAGE] instead (one page loaded at a
+     * time, no link copy), so a page with 10,001 annotations opens and renders in the reader, while
+     * the three tools still refuse it; one over the reader's bound is still refused by the reader.
+     */
+    @Test
+    fun w2_readerOpensAPageOverTheToolCap_toolsStillRefuseIt() {
+        val pdf = write("annots-10001.pdf", HostilePdf.sharedAnnots(ObjectGraph.MAX_ANNOTS_PER_PAGE + 1, 1))
+        val img = Fixtures.jpeg(dir, "b.jpg", 40, 30)
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.merge(listOf(pdf, pdf), out("m2.pdf")))
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.compress(pdf, CompressionLevel.HIGH, out("c2.pdf")))
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), engine.appendImages(pdf, listOf(img), out("a2.pdf")))
+        assertTrue(engine.pageInfo(pdf) is PdfPageInfo.Ok)
+        val rgba = File(dir, "p.rgba")
+        assertEquals(PdfRender.Ok(20, 20), engine.renderPage(pdf, RenderRequest(0, 0.1f, 0, 0, 20, 20), rgba, JobControl.None))
+        val over = write("annots-reader-over.pdf", HostilePdf.sharedAnnots(ObjectGraph.MAX_READER_ANNOTS_PER_PAGE + 1, 1))
+        assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(over))
+        val doc = PdfInputs.open(over)
+        try {
+            val e = runCatching { ObjectGraph.checkAnnots(doc, maxPerPage = ObjectGraph.MAX_READER_ANNOTS_PER_PAGE) }.exceptionOrNull()
+            assertEquals(PdfError.OutOfMemory, (e as PdfInputException).error)
+        } finally {
+            doc.destroy()
+        }
+    }
+
     @Test
     fun sharedAnnotsArray_isChargedOncePerPage() {
         // 300 pages x 8,000 = 2.4 M > the 2 M budget, though the array itself is under every cap.

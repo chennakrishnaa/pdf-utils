@@ -230,7 +230,7 @@ class RenderPageOpTest {
     @Test
     fun pageOverTheAnnotationCapIsRefusedBeforeLoading() {
         val pdf = File(dir, "annots.pdf").apply {
-            writeBytes(HostilePdf.sharedAnnots(ObjectGraph.MAX_ANNOTS_PER_PAGE + 500, 1))
+            writeBytes(HostilePdf.sharedAnnots(ObjectGraph.MAX_READER_ANNOTS_PER_PAGE + 1, 1))
         }
         assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(pdf))
         assertRenderErr(pdf, RenderRequest(0, 1f, 0, 0, 5, 5), { it == PdfError.OutOfMemory })

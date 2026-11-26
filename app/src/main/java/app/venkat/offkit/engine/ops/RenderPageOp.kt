@@ -36,7 +36,7 @@ internal fun pageDimsOf(bounds: Rect): PageDims? {
 
 /**
  * SR3-3 for one page: `loadPage` builds every annotation of the page, so a page whose `/Annots`
- * array has more than [ObjectGraph.MAX_ANNOTS_PER_PAGE] entries is refused (`OutOfMemory`) before
+ * array has more than [ObjectGraph.MAX_READER_ANNOTS_PER_PAGE] entries is refused (`OutOfMemory`) before
  * it is loaded. Resolves only the array (its length); no annotation is loaded.
  */
 internal fun checkPageAnnots(doc: PDFDocument, index: Int) {
@@ -46,7 +46,7 @@ internal fun checkPageAnnots(doc: PDFDocument, index: Int) {
             val raw = page.get("Annots")
             val arr = if (raw.isIndirect) raw.resolve().also { destroyObj(raw) } else raw
             try {
-                if (arr.isArray && arr.size() > ObjectGraph.MAX_ANNOTS_PER_PAGE) {
+                if (arr.isArray && arr.size() > ObjectGraph.MAX_READER_ANNOTS_PER_PAGE) {
                     throw PdfInputException(PdfError.OutOfMemory)
                 }
             } finally {
@@ -89,8 +89,9 @@ class PageInfoOp {
             val count = doc.countPages()
             if (count > RenderLimits.MAX_PAGES) return@guarded PdfPageInfo.Err(PdfError.OutOfMemory)
             if (count <= 0) return@guarded PdfPageInfo.Err(PdfError.Corrupt)
-            // SR3-3: /Annots lengths of all pages, budgeted, before any loadPage (as the other ops).
-            PdfInputs.checkGraph { ObjectGraph.checkAnnots(doc) }
+            // SR3-3: /Annots lengths of all pages, budgeted, before any loadPage (as the other ops),
+            // with the reader's per-page bound (W2).
+            PdfInputs.checkGraph { ObjectGraph.checkAnnots(doc, maxPerPage = ObjectGraph.MAX_READER_ANNOTS_PER_PAGE) }
             val dims = ArrayList<PageDims>(count)
             for (i in 0 until count) {
                 if (job.isCancelled()) return@guarded PdfPageInfo.Err(PdfError.Cancelled)
