@@ -93,4 +93,19 @@ class PageTextFormatTest {
         // An empty page is valid.
         assertEquals(0, (PageTextFormat.read(file { header(it, 0, 0, 0) }) as PageTextParse.Ok).text.length)
     }
+
+    @Test
+    fun linesOnTheSameRowAreJoinedWithASpace() {
+        // "ab" at x 10..30 and "cd" at x 40..60 on the same row, as two lines; then "ef" below.
+        val text = "abcdef"
+        val xs = listOf(10f, 20f, 40f, 50f, 10f, 20f)
+        val ys = listOf(10f, 10f, 11f, 11f, 40f, 40f)
+        val boxes = FloatArray(24)
+        for (i in 0 until 6) { boxes[4 * i] = xs[i]; boxes[4 * i + 1] = ys[i]; boxes[4 * i + 2] = xs[i] + 10f; boxes[4 * i + 3] = ys[i] + 12f }
+        val t = PageTextFormat.build(text, boxes, intArrayOf(0, 2, 4), intArrayOf(0, 0, 0), false)
+        assertEquals("ab cd\nef", t.string(0..5))
+        // A next line that starts left of the previous end is a new line even at the same height.
+        val back = boxes.copyOf().also { it[8] = 15f; it[10] = 25f }
+        assertEquals("ab\ncd\nef", PageTextFormat.build(text, back, intArrayOf(0, 2, 4), intArrayOf(0, 0, 0), false).string(0..5))
+    }
 }

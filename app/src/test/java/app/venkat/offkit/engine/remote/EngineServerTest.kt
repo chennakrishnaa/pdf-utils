@@ -323,4 +323,46 @@ class EngineServerTest {
         assertFalse(out.exists())
         release.countDown()
     }
+
+    @Test
+    fun pageTextOutsideJobsIsRefusedAndAFailedTextDeletesOut() {
+        val root = jobsRoot()
+        val fake = FakePdfEngine()
+        val server = EngineServer({ fake }, root)
+        val insidePdf = File(root, "j/in.pdf").apply { parentFile!!.mkdirs(); writeText("%PDF") }
+        val outsidePdf = tmp.newFile("in-text.pdf")
+        val outsideOut = tmp.newFile("victim-text.bin").apply { writeText("keep me") }
+        val r1 = EngineWire.decodePageText(runOn(server, EngineRequest.PageText(insidePdf.path, 0, outsideOut.path)).second)
+        assertTrue(ioMessage((r1 as app.venkat.offkit.engine.PdfPageText.Err).error).startsWith("java.lang.SecurityException"))
+        assertTrue(outsideOut.isFile)
+        val insideOut = File(root, "j/text.bin")
+        val r2 = EngineWire.decodePageText(runOn(server, EngineRequest.PageText(outsidePdf.path, 0, insideOut.path)).second)
+        assertTrue(ioMessage((r2 as app.venkat.offkit.engine.PdfPageText.Err).error).startsWith("java.lang.SecurityException"))
+        assertTrue(fake.textCalls.isEmpty())
+
+        // Ok through the engine itself.
+        val ok = EngineWire.decodePageText(runOn(server, EngineRequest.PageText(insidePdf.path, 1, insideOut.path)).second)
+        assertEquals(app.venkat.offkit.engine.PdfPageText.Ok(0, false), ok)
+        assertTrue(insideOut.isFile)
+
+        // A renderer that returns Err but leaves a file, and one that throws after writing.
+        val sloppy = object : PdfPageRenderer {
+            override fun pageInfo(pdf: File, job: JobControl) = PdfPageInfo.Err(PdfError.Corrupt)
+            override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender = error("unused")
+            override fun pageText(pdf: File, page: Int, out: File, job: JobControl): app.venkat.offkit.engine.PdfPageText {
+                out.writeText("partial")
+                if (page == 1) throw IllegalStateException("boom")
+                return app.venkat.offkit.engine.PdfPageText.Err(PdfError.Corrupt)
+            }
+        }
+        val s2 = EngineServer({ FakePdfEngine() }, root, renderer = { sloppy })
+        assertEquals(
+            app.venkat.offkit.engine.PdfPageText.Err(PdfError.Corrupt),
+            EngineWire.decodePageText(runOn(s2, EngineRequest.PageText(insidePdf.path, 0, insideOut.path)).second),
+        )
+        assertFalse(insideOut.exists())
+        val thrown = EngineWire.decodePageText(runOn(s2, EngineRequest.PageText(insidePdf.path, 1, insideOut.path)).second)
+        assertEquals("java.lang.IllegalStateException: boom", ioMessage((thrown as app.venkat.offkit.engine.PdfPageText.Err).error))
+        assertFalse(insideOut.exists())
+    }
 }

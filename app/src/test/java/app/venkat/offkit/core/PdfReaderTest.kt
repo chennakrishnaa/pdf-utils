@@ -20,6 +20,9 @@ import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.PageText
+import app.venkat.offkit.engine.PageTextFormat
+import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.engine.RenderRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
@@ -281,6 +284,63 @@ class PdfReaderTest {
         assertEquals(listOf(PageDims(PdfReader.MAX_PAGE_PT, PdfReader.MIN_PAGE_PT), PageDims(595f, 842f)), openOk().pages)
         fake.readerPages = listOf(PageDims(595f, Float.NaN))
         assertEquals(ReaderOpenResult.Failed(PdfError.Corrupt), runBlocking { reader.open(pdfUri()) })
+    }
+
+    private fun canned(): PageText {
+        val boxes = FloatArray(8 * 4) { i -> if (i % 4 < 2) 10f + i else 20f + i }
+        return PageTextFormat.build("Hi there", boxes, intArrayOf(0), intArrayOf(0), false)
+    }
+
+    @Test
+    fun textReturnsTheCannedPageTextAndDeletesTheFile() {
+        val doc = openOk()
+        fake.readerTexts[1] = canned()
+        val r = runBlocking { reader.text(doc, 1) }
+        assertTrue(r.toString(), r is ReaderText.Ok)
+        assertEquals("Hi there", (r as ReaderText.Ok).text.text)
+        assertEquals("there", r.text.string(r.text.wordRange(4)))
+        assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+        val empty = runBlocking { reader.text(doc, 0) }
+        assertEquals(0, (empty as ReaderText.Ok).text.length)
+        val past = runBlocking { reader.text(doc, 7) }
+        assertTrue(past is ReaderText.Err && past.error is PdfError.Io)
+        assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+    }
+
+    @Test
+    fun textReplyThatDisagreesWithItsFileIsIoAndDeleted() {
+        val doc = openOk()
+        fake.readerTexts[0] = canned()
+        val lies = listOf<(PdfPageText.Ok) -> PdfPageText>({ it.copy(units = it.units + 1) }, { it.copy(truncated = true) })
+        for (lie in lies) {
+            (app as PdfUtilApp).engine = object : PdfEngine by fake, PdfPageRenderer by fake {
+                override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText =
+                    lie(fake.pageText(pdf, page, out, job) as PdfPageText.Ok)
+            }
+            val r = runBlocking { reader.text(doc, 0) }
+            assertTrue(r.toString(), r is ReaderText.Err && r.error is PdfError.Io)
+            assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+        }
+        // A garbage file is Io too.
+        (app as PdfUtilApp).engine = object : PdfEngine by fake, PdfPageRenderer by fake {
+            override fun pageText(pdf: File, page: Int, out: File, job: JobControl): PdfPageText {
+                out.writeText("not a text file at all, really")
+                return PdfPageText.Ok(0, false)
+            }
+        }
+        val g = runBlocking { reader.text(doc, 0) }
+        assertTrue(g.toString(), g is ReaderText.Err && g.error is PdfError.Io)
+        assertEquals(listOf(doc.file), doc.dir.listFiles()!!.toList())
+    }
+
+    @Test
+    fun textAfterCloseIsCancelledAndLeavesNothing() {
+        val doc = openOk()
+        reader.close(doc)
+        assertEquals(ReaderText.Err(PdfError.Cancelled), runBlocking { reader.text(doc, 0) })
+        Thread.sleep(200)
+        assertTrue(!doc.dir.exists())
+        assertTrue(fake.textCalls.isEmpty())
     }
 
     /** Reports a 100-byte `big.pdf` and counts attempts to open it (which fail). */

@@ -144,7 +144,8 @@ class PageText internal constructor(
 
     /**
      * The text of [range] (clamped) for copying: "\n" between lines of one block, "\n\n" between
-     * blocks; trailing whitespace of each line is dropped.
+     * blocks, but a single space when the next line continues the same row (see [sameRow]);
+     * trailing whitespace of each line is dropped.
      */
     fun string(range: IntRange): String {
         val r = clamp(range) ?: return ""
@@ -154,13 +155,34 @@ class PageText internal constructor(
         while (l < lineCount) {
             val lr = lineRange(l)
             if (lr.first > r.last) break
-            if (!first) sb.append(if (lineBlocks[l] != lineBlocks[l - 1]) "\n\n" else "\n")
+            if (!first) {
+                sb.append(
+                    when {
+                        sameRow(l - 1, l) -> " "
+                        lineBlocks[l] != lineBlocks[l - 1] -> "\n\n"
+                        else -> "\n"
+                    },
+                )
+            }
             first = false
             sb.append(text, max(lr.first, r.first), min(lr.last, r.last) + 1)
             while (sb.isNotEmpty() && sb.last().let { it == ' ' || it == '\t' }) sb.setLength(sb.length - 1)
             l++
         }
         return sb.toString()
+    }
+
+    /**
+     * True when line [b] continues line [a] on the same row: the last box of [a] and the first box
+     * of [b] overlap vertically by at least half the smaller height, and [b] starts at or right of
+     * the end of [a] (less 1 pt of slack).
+     */
+    internal fun sameRow(a: Int, b: Int): Boolean {
+        val p = lineRange(a).last * 4
+        val q = lineRange(b).first * 4
+        val overlap = min(boxes[p + 3], boxes[q + 3]) - max(boxes[p + 1], boxes[q + 1])
+        val minH = min(boxes[p + 3] - boxes[p + 1], boxes[q + 3] - boxes[q + 1])
+        return minH > 0f && overlap >= minH / 2 && boxes[q] >= boxes[p + 2] - 1f
     }
 
     private fun clamp(range: IntRange): IntRange? {

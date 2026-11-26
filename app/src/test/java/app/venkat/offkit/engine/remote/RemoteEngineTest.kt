@@ -869,4 +869,57 @@ class RemoteEngineTest {
         assertFalse(out.exists())
         assertEquals(listOf(4242), conn.killed)
     }
+
+    /** Renderer whose pageText sizes `out` to [bytes] bytes (null: no file) and claims `Ok(units)`. */
+    private fun rogueText(units: Int, bytes: Long?) = object : PdfPageRenderer {
+        override fun pageInfo(pdf: File, job: JobControl) = PdfPageInfo.Ok(listOf(PageDims(1f, 1f)))
+        override fun renderPage(pdf: File, request: RenderRequest, out: File, job: JobControl): PdfRender = error("unused")
+        override fun pageText(pdf: File, page: Int, out: File, job: JobControl): app.venkat.offkit.engine.PdfPageText {
+            if (bytes != null) java.io.RandomAccessFile(out, "rw").use { it.setLength(bytes) }
+            return app.venkat.offkit.engine.PdfPageText.Ok(units, false)
+        }
+    }
+
+    @Test
+    fun pageTextReplyThatDoesNotFitItsFileIsIoAndDeleted() {
+        val (_, input, _) = jobDir()
+        val out = File(input.parentFile!!.parentFile, "text.bin")
+        val max = app.venkat.offkit.engine.PageTextFormat.MAX_FILE_BYTES
+        val cases = listOf(
+            rogueText(app.venkat.offkit.engine.PageTextFormat.MAX_UNITS + 1, 24),
+            rogueText(0, null), // no file
+            rogueText(0, 23),
+            rogueText(0, max + 1),
+        )
+        for (renderer in cases) {
+            val engine = RemoteEngine(FakeConnector { EngineServer({ FakePdfEngine() }, root, myPid = { 4242 }, renderer = { renderer }) })
+            val r = engine.pageText(input, 0, out)
+            assertTrue("$r", (r as app.venkat.offkit.engine.PdfPageText.Err).error is PdfError.Io)
+            assertFalse(out.exists())
+        }
+        val honest = RemoteEngine(FakeConnector { EngineServer({ FakePdfEngine() }, root, myPid = { 4242 }, renderer = { rogueText(0, 24) }) })
+        assertEquals(app.venkat.offkit.engine.PdfPageText.Ok(0, false), honest.pageText(input, 0, out))
+        // A negative page never reaches the engine.
+        val none = RemoteEngine(FakeConnector { error("must not connect") })
+        assertTrue((none.pageText(input, -1, out) as app.venkat.offkit.engine.PdfPageText.Err).error is PdfError.Io)
+        assertFalse(out.exists())
+    }
+
+    @Test
+    fun textTotalLimitKillsTheEngineReturnsTimedOutAndDeletesOut() {
+        val conn = firstThenWorking(hangingService())
+        // A short stall limit must not apply: only textTotalMs does.
+        val engine = RemoteEngine(conn, limits = EngineLimits(stallMs = 100, totalMs = 60_000, renderTotalMs = 60_000, textTotalMs = 500))
+        val (_, input, _) = jobDir()
+        val out = File(input.parentFile!!.parentFile, "text.bin").apply { writeText("partial") }
+        val t0 = System.nanoTime()
+        val r = engine.pageText(input, 0, out)
+        val ms = elapsedMs(t0)
+        assertEquals(app.venkat.offkit.engine.PdfPageText.Err(PdfError.TimedOut), r)
+        assertTrue("took $ms ms", ms in 500..2_500)
+        assertEquals(listOf(4242), conn.killed)
+        assertFalse(out.exists())
+        assertEquals(app.venkat.offkit.engine.PdfPageText.Ok(0, false), engine.pageText(input, 0, out)) // a fresh engine
+        assertEquals(30_000L, EngineLimits().textTotalMs)
+    }
 }
