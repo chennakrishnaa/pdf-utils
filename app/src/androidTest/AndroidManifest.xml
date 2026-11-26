@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Test APK only (app.venkat.offkit.test, its own uid): stands in for a file manager. The
+     provider is not exported, so Offkit can read its documents only through the read grant the
+     trampoline attaches to its VIEW intent. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="app.venkat.offkit.openwith.FixtureProvider"
+            android:authorities="app.venkat.offkit.test.fixtures"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+        <!-- Exported so the instrumentation (running as Offkit's uid) can start it. -->
+        <activity
+            android:name="app.venkat.offkit.openwith.ViewTrampolineActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+</manifest>

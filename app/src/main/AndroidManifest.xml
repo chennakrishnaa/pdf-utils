@@ -24,10 +24,20 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:taskAffinity="">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- "Open with" for a PDF: content: Uris only, read once with the caller's transient
+                 grant. singleTask: one instance, so a PDF opened from another app goes to the
+                 reader on top of the existing back stack (onNewIntent) instead of a second copy
+                 of the app sharing the same jobs and engine. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
 
