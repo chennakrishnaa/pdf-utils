@@ -435,6 +435,98 @@ class RenderImageGateTest {
         assertRefused("narrowed-escaped-name", build("q 200 0 0 200 0 0 cm /B#6fmb Do Q"))
     }
 
+    // ------------------------------------------------------------------ K7-1: roles are tracked separately
+
+    private val hugeImage = "/Subtype/Image/Width 60000/Height 60000/ColorSpace/DeviceRGB/BitsPerComponent 8"
+    private val smallImage = "/Subtype/Image/Width 8/Height 8/ColorSpace/DeviceRGB/BitsPerComponent 8"
+
+    /** Scenario A: a form first reached as an image's /SMask still has its /Resources walked when drawn. */
+    @Test
+    fun k7_1_formFirstSeenAsAMaskIsStillWalkedWhenDrawn() {
+        assertRefused("mask-then-form", page("<</XObject<</B 10 0 R/F 11 0 R>>>>", "/F Do") {
+            stream(10, "$smallImage/SMask 11 0 R", ByteArray(192))
+            form(11, "<</XObject<</C 12 0 R>>>>", "/C Do")
+            stream(12, hugeImage, ByteArray(64))
+        })
+    }
+
+    /** Scenario B: an image first reached as a mask (whose own masks MuPDF ignores) still has its masks checked when drawn. */
+    @Test
+    fun k7_1_imageFirstSeenAsAMaskHasItsOwnMaskCheckedWhenDrawn() {
+        assertRefused("mask-then-image", page("<</XObject<</B 10 0 R/A 11 0 R>>>>", "q 200 0 0 200 0 0 cm /A Do Q") {
+            stream(10, "$smallImage/SMask 11 0 R", ByteArray(192))
+            stream(11, "/Subtype/Image/Width 8/Height 8/ColorSpace/DeviceGray/BitsPerComponent 8/SMask 12 0 R", ByteArray(64))
+            stream(12, "/Subtype/Image/Width 60000/Height 60000/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(64))
+        })
+    }
+
+    /** An image first reached as an ICC profile stream is still checked when drawn. */
+    @Test
+    fun k7_1_imageFirstSeenAsAnIccProfileIsStillCheckedWhenDrawn() {
+        assertRefused("icc-then-image", page("<</XObject<</B 10 0 R/C 11 0 R>>>>", "q 200 0 0 200 0 0 cm /C Do Q") {
+            stream(10, "/Subtype/Image/Width 8/Height 8/ColorSpace[/ICCBased 11 0 R]/BitsPerComponent 8", ByteArray(192))
+            stream(11, "$hugeImage/N 3", ByteArray(64))
+        })
+        // The same through a /ColorSpace resource whose stream is a form with a bomb inside.
+        assertRefused("icc-then-form", page("<</XObject<</B 10 0 R/F 11 0 R>>>>", "/F Do") {
+            stream(10, "/Subtype/Image/Width 8/Height 8/ColorSpace[/ICCBased 11 0 R]/BitsPerComponent 8", ByteArray(192))
+            stream(11, "/N 3/Subtype/Form/BBox[0 0 200 200]/Resources<</XObject<</C 12 0 R>>>>", "/C Do".latin1())
+            stream(12, hugeImage, ByteArray(64))
+        })
+    }
+
+    /**
+     * A stream listed in /Annots is still checked when the page content draws it. Whatever MuPDF
+     * does with the bogus annotation, the page's own content stream draws C regardless.
+     */
+    @Test
+    fun k7_1_imageListedInAnnotsIsStillCheckedWhenDrawn() {
+        assertRefused("annots-then-image", page("<</XObject<</C 11 0 R>>>>", "q 200 0 0 200 0 0 cm /C Do Q", annots = "/Annots[11 0 R]") {
+            stream(11, hugeImage, ByteArray(64))
+        })
+        // A form listed in /Annots (a dictionary with /AP absent) is still walked when drawn.
+        assertRefused("annots-then-form", page("<</XObject<</F 11 0 R>>>>", "/F Do", annots = "/Annots[11 0 R]") {
+            form(11, "<</XObject<</C 12 0 R>>>>", "/C Do")
+            stream(12, hugeImage, ByteArray(64))
+        })
+    }
+
+    /**
+     * One stream that is both a tiling pattern (first reached: its resources may be narrowed) and a
+     * Type 3 font (its glyphs run on its resources alone, so they must be checked in full).
+     */
+    @Test
+    fun k7_1_type3FontFirstSeenAsAPatternHasItsResourcesCheckedInFull() {
+        assertRefused("pattern-then-type3", page("<</Pattern<</P0 11 0 R>>/Font<</F0 11 0 R>>>>", "BT /F0 12 Tf 10 10 Td (a) Tj ET") {
+            stream(
+                11,
+                "/Type/Font/Subtype/Type3/PatternType 1/PaintType 1/TilingType 1/BBox[0 0 10 10]/XStep 10/YStep 10" +
+                    "/FontBBox[0 0 1000 1000]/FontMatrix[0.001 0 0 0.001 0 0]/CharProcs<</a 14 0 R>>" +
+                    "/Encoding<</Differences[97/a]>>/FirstChar 97/LastChar 97/Widths[1000]" +
+                    "/Resources<</XObject<<${bigDict("/Bomb 10 0 R")}>>>>",
+                ByteArray(0),
+            )
+            stream(14, "", "1000 0 d0 q 1000 0 0 1000 0 0 cm /Bomb Do Q".latin1())
+            benignAndBig()
+        })
+    }
+
+    /** Ordinary shapes: 40 images sharing one SMask and one ICC profile, and nested forms sharing an image. */
+    @Test
+    fun k7_1_sharedMasksProfilesAndNestedFormsStillRender() {
+        val names = (0 until 40).joinToString("") { "/I$it ${20 + it} 0 R" }
+        val draws = (0 until 40).joinToString(" ") { "q 5 0 0 5 ${it * 5} 0 cm /I$it Do Q" }
+        assertRenders("shared-smask-icc", file("shared.pdf", page("<</XObject<<$names/Fm0 12 0 R>>>>", "$draws /Fm0 Do") {
+            stream(10, "/Subtype/Image/Width 8/Height 8/ColorSpace/DeviceGray/BitsPerComponent 8", ByteArray(64))
+            stream(11, "/N 3/Alternate/DeviceRGB", ByteArray(600))
+            form(12, "<</XObject<</Fm1 13 0 R/I0 20 0 R>>>>", "/Fm1 Do /I0 Do")
+            form(13, "<</XObject<</I1 21 0 R>>>>", "/I1 Do")
+            for (i in 0 until 40) {
+                stream(20 + i, "/Subtype/Image/Width 8/Height 8/ColorSpace[/ICCBased 11 0 R]/BitsPerComponent 8/SMask 10 0 R", ByteArray(192))
+            }
+        }))
+    }
+
     /** Overhead of the walk on a normal page (printed; asserted loosely so it is not flaky). */
     @Test
     fun walkOverheadOnAPhotoPage() {

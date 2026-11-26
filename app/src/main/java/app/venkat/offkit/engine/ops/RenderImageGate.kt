@@ -54,8 +54,10 @@ import java.util.zip.InflaterInputStream
  *   MuPDF: an Indexed lookup is read for `(hival + 1) × n` bytes only);
  * - the image's `/SMask` and `/Mask` streams, checked the same way.
  *
- * **What is walked** (iteratively; images and resource dictionaries are deduplicated by object
- * number, so cycles end; at most [MAX_NESTING] nested resource levels and [MAX_VISITS] budget
+ * **What is walked** (iteratively; objects are deduplicated by object number PER ROLE (K7-1:
+ * image checks, a drawn image's masks, a form/pattern/group's resources, a Type 3 font's resources,
+ * ICC profile, annotation, appearance-state dictionary), so an object reachable in several roles is
+ * checked for each and cycles end; resource dictionaries are listed once by object number; at most [MAX_NESTING] nested resource levels and [MAX_VISITS] budget
  * units in [MAX_WALK_MILLIS], else refused; cancellation is polled throughout and reported as
  * `Cancelled`): the page's `/Resources` (inherited), its `/XObject` entries, form XObjects'
  * `/Resources`, tiling patterns' `/Resources` (`/Pattern`), soft-mask groups (`/ExtGState` →
@@ -151,7 +153,12 @@ internal object RenderImageGate {
     private class Walk(private val doc: PDFDocument, private val isCancelled: () -> Boolean) : AutoCloseable {
         private val s = Scope()
         private val count = doc.countObjects()
-        private val visited = BitSet(count)
+        /**
+         * K7-1: object numbers already handled, one set per [Role]. An object reachable in several
+         * roles is handled once in EACH (MuPDF does something different with it in each), so the
+         * role that reaches it first cannot hide what another role would check.
+         */
+        private val visited = Array(Role.entries.size) { BitSet(count) }
         private val budget = ObjectGraph.Budget(MAX_VISITS, MAX_WALK_MILLIS)
         private var pageCost = 0L
         private var inspected = 0L
@@ -219,12 +226,13 @@ internal object RenderImageGate {
             }
         }
 
-        /** Marks [o]'s object number visited; false if it was already (or is out of range). */
-        private fun firstVisit(o: PDFObject): Boolean {
+        /** Marks [o]'s object number visited in [role]; false if it was already (or is out of range). */
+        private fun firstVisit(o: PDFObject, role: Role): Boolean {
             if (!o.isIndirect) return true
             val num = o.asIndirect()
-            if (num <= 0 || num >= count || visited.get(num)) return false
-            visited.set(num)
+            val set = visited[role.ordinal]
+            if (num <= 0 || num >= count || set.get(num)) return false
+            set.set(num)
             return true
         }
 
@@ -337,7 +345,7 @@ internal object RenderImageGate {
                 if (contents == null) unnarrow() else scan(contents)
             } else {
                 if (contents != null) scan(contents)
-                if (firstVisit(obj)) register(idOf(own), own, level, forceFull = contents == null)
+                if (firstVisit(obj, if (contents == null) Role.TYPE3 else Role.OWNER)) register(idOf(own), own, level, forceFull = contents == null)
             }
         }
 
@@ -346,13 +354,13 @@ internal object RenderImageGate {
             for (i in 0 until annots.size()) {
                 tick()
                 val a = s.add(annots.get(i))
-                if (!firstVisit(a) || !a.isDictionary) continue
+                if (!firstVisit(a, Role.ANNOT) || !a.isDictionary) continue
                 val ap = s.add(a.get("AP"))
                 if (!ap.isDictionary) continue
                 for (key in APPEARANCE_KEYS) {
                     val v = s.add(ap.get(key))
                     if (v.isStream) xobject(v, 1)
-                    else if (v.isDictionary && firstVisit(v)) for (k in keys(v)) xobject(s.add(v.get(k)), 1)
+                    else if (v.isDictionary && firstVisit(v, Role.AP_STATES)) for (k in keys(v)) xobject(s.add(v.get(k)), 1)
                 }
             }
         }
@@ -398,18 +406,25 @@ internal object RenderImageGate {
             tick()
             if (!v.isStream) return
             when (nameOf(s.add(v.get("Subtype")))) {
-                "Image" -> if (firstVisit(v)) image(v, mask = false)
+                "Image" -> image(v, mask = false)
                 "Form" -> child(v, listOf(v), level + 1)
             }
         }
 
+        /**
+         * Image [img], drawn ([mask] false) or loaded as another image's `/SMask` or `/Mask`. Its own
+         * checks are the same in both roles and run once ([Role.IMAGE], so it is charged once); its
+         * masks are walked once when it is drawn ([Role.MASKS]): MuPDF ignores a mask's mask only
+         * when loading it as a mask (`pdf-image.c`), so an image first reached as a mask still has
+         * its masks checked when it is also drawn.
+         */
         private fun image(img: PDFObject, mask: Boolean) {
-            Scope().use { t -> checkImage(t, img) }
-            if (mask) return
+            if (firstVisit(img, Role.IMAGE)) Scope().use { t -> checkImage(t, img) }
+            if (mask || !firstVisit(img, Role.MASKS)) return
             for (k in MASK_KEYS) {
                 val m = s.add(img.get(k))
                 tick()
-                if (m.isStream && firstVisit(m)) image(m, mask = true)
+                if (m.isStream) image(m, mask = true)
             }
         }
 
@@ -540,7 +555,7 @@ internal object RenderImageGate {
 
         /** SR2-1 bounds on an ICC profile stream [ref] (checked once per object). */
         private fun iccOk(ref: PDFObject) {
-            if (!ref.isStream || !firstVisit(ref)) return
+            if (!ref.isStream || !firstVisit(ref, Role.ICC)) return
             Scope().use { t ->
                 val len = intOf(t, t.add(ref.get("Length")))
                 if (len < 0 || len > ColorSpaceGate.MAX_PROFILE_RAW_BYTES) refuse()
@@ -797,6 +812,19 @@ internal object RenderImageGate {
             return k
         }
     }
+
+    /**
+     * K7-1: the roles an object is visited in ([Walk.firstVisit]), each tracked separately:
+     * - [IMAGE]: an image's own checks ([Walk.checkImage]), whether it is drawn or a mask;
+     * - [MASKS]: a drawn image's `/SMask` and `/Mask` walked;
+     * - [OWNER]: a form's, tiling pattern's or soft-mask group's own `/Resources` listed (narrowable);
+     * - [TYPE3]: a Type 3 font's own `/Resources` listed in full (MuPDF does not check `/Type` or
+     *   `/PatternType`, so one stream can be both a pattern and a Type 3 font);
+     * - [ICC]: an ICC profile stream vetted;
+     * - [ANNOT]: an `/Annots` entry's appearance walked;
+     * - [AP_STATES]: an appearance state dictionary (`/AP /N << /On … /Off … >>`) walked.
+     */
+    private enum class Role { IMAGE, MASKS, OWNER, TYPE3, ICC, ANNOT, AP_STATES }
 
     private val APPEARANCE_KEYS = listOf("N", "R", "D")
     private val MASK_KEYS = listOf("SMask", "Mask")
