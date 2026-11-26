@@ -19,8 +19,9 @@ import java.util.zip.Inflater
  * `1 0 R` costs ~900 MB; if the catalog lives in that stream, `Document.openDocument` /
  * `countPages` pays it. Parsed size grows with decoded size, so the decoded size is bounded here.
  *
- * What: one forward byte search for EVERY `obj` keyword in the file (fixed 64 KiB buffers,
- * positional reads; no whole-file array), wherever it is, also inside strings and stream data (Q1).
+ * What: one forward byte search for EVERY `obj` keyword in the file (also spelled with `#xx`
+ * escapes, `o#62j`, which MuPDF's lexer decodes, W5; fixed 64 KiB buffers, positional reads; no
+ * whole-file array), wherever it is, also inside strings and stream data (Q1).
  * Each one starts a fresh parse of that object alone: nothing before its `obj` (another object, the
  * binary data of an earlier stream) can change its state. The parse ends at once unless the first
  * token is `<<` (MuPDF gives only the object right after `obj` a stream, and only a dictionary has
@@ -502,31 +503,58 @@ internal object ObjStmScan {
                 val o = nextObj(p)
                 if (o < 0) break
                 parseObject(o)
-                p = o + 3
+                p = objEnd
             }
             return Result(flate, overflow, rawTotal)
         }
+
+        /** End of the `obj` keyword [nextObj] last returned. */
+        private var objEnd = 0L
 
         /**
          * Q1: start of the next `obj` keyword at or after [from], wherever it is (also inside a
          * string or stream data), as MuPDF's lexer could read it after a generation number: followed
          * by white space, a delimiter or the end, preceded by white space, a delimiter or a number
-         * character. -1 when there is none.
+         * character. W5: any of its letters may be written `#xx` (`o#62j`, `#6f#62#6a`): MuPDF's
+         * `lex_name` decodes keywords too, so it loads such a header from an xref offset and on
+         * repair alike. Sets [objEnd]; -1 when there is none.
          */
         private fun nextObj(from: Long): Long {
             var p = from
             while (true) {
                 val c = search.at(p)
                 if (c < 0) return -1
-                if (c == 'o'.code && search.at(p + 1) == 'b'.code && search.at(p + 2) == 'j'.code) {
-                    val after = search.at(p + 3)
-                    val before = search.at(p - 1)
-                    if ((after < 0 || isWhite(after) || isDelim(after)) &&
-                        (before < 0 || isWhite(before) || isDelim(before) || before in '0'.code..'9'.code || before == '.'.code || before == '+'.code || before == '-'.code)
-                    ) return p
+                if (c == 'o'.code || c == '#'.code) {
+                    val e = objAt(p)
+                    if (e >= 0) {
+                        val after = search.at(e)
+                        val before = search.at(p - 1)
+                        if ((after < 0 || isWhite(after) || isDelim(after)) &&
+                            (before < 0 || isWhite(before) || isDelim(before) || before in '0'.code..'9'.code || before == '.'.code || before == '+'.code || before == '-'.code)
+                        ) { objEnd = e; return p }
+                    }
                 }
                 p++
             }
+        }
+
+        /** W5: end of an `obj` at [p], each letter literal or `#xx` (hex in either case), else -1. Reads at most 9 bytes. */
+        private fun objAt(p: Long): Long {
+            var q = p
+            for (k in OBJ) {
+                val c = search.at(q)
+                q += if (c == k.code) {
+                    1
+                } else if (c == '#'.code) {
+                    val h = hex(search.at(q + 1))
+                    val l = hex(search.at(q + 2))
+                    if (h < 0 || l < 0 || h * 16 + l != k.code) return -1
+                    3
+                } else {
+                    return -1
+                }
+            }
+            return q
         }
 
         /**
@@ -539,7 +567,7 @@ internal object ObjStmScan {
         private fun parseObject(o: Long) {
             reset()
             objRef = refBefore(o)
-            var p = o + 3
+            var p = objEnd
             while (true) {
                 val c = at(p)
                 p = when {
@@ -818,4 +846,5 @@ internal object ObjStmScan {
 
     private const val BACK = 48
     private const val ENDSTREAM = "endstream"
+    private const val OBJ = "obj"
 }

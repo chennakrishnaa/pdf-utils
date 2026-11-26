@@ -208,6 +208,120 @@ class ObjStmAsciiTest {
         }
     }
 
+    // ------------------------------------------------------------------ W5: `obj` spelled with #xx
+
+    /** W5: spellings of the `obj` keyword MuPDF 1.28.5 accepts in a header (`lex_name` decodes `#xx` in keywords). */
+    private val objSpellings = listOf("obj", "o#62j", "#6fbj", "ob#6a", "#6f#62#6a", "#6F#62#6A", "o#62#6A")
+
+    /** W5: lookalikes MuPDF does not read as `obj` (`#00` is not decoded; `#6` lacks a digit; `#20` adds a space). */
+    private val notObj = listOf("obj#00", "o#6", "#6fbj#20", "o#62", "#6f#62#6a#6a", "o#42j")
+
+    private val xrefKinds = listOf("classic", "stream", "repair")
+
+    /** MuPDF loads an object whose header is `5 0 o#62j` (etc.) from a table, an xref stream and on repair. */
+    @Test
+    fun escapedObjHeaders_mupdfLoadsTheObject() {
+        for (kw in objSpellings) for (xref in xrefKinds) {
+            val f = write("w5-load.pdf", escapedHeaderPdf(kw, xref, repeated("1 0 R ", 50_000)))
+            val doc = Document.openDocument(f.path) as PDFDocument
+            try {
+                assertEquals("$kw $xref", 1, doc.countPages())
+                assertEquals("$kw $xref: repaired", xref == "repair", doc.wasRepaired())
+            } finally {
+                doc.destroy()
+            }
+            assertEquals("$kw $xref", 300_006, mupdfDecoded(f, 5))
+        }
+    }
+
+    @Test
+    fun escapedObjHeaders_bombsAreRefusedAndBenignFilesOpen() {
+        for (kw in objSpellings) for (xref in xrefKinds) {
+            val what = "$kw $xref"
+            val bomb = write("w5-bomb.pdf", escapedHeaderPdf(kw, xref, repeated("null ", 3_500_000))) // 17.5 MB > 16 MiB
+            assertTooLarge("$what: scan") { ObjStmScan.check(bomb) }
+            assertTooLarge("$what: reader") { PdfInputs.openForReader(bomb, null, null).destroy() }
+            assertTooLarge("$what: tool path") { PdfInputs.open(bomb).destroy() }
+            val ok = write("w5-ok.pdf", escapedHeaderPdf(kw, xref, repeated("null ", 1000)))
+            // The header's `5 0` is recorded for pass 2 (encrypted files).
+            assertEquals(what, listOf(ObjStmScan.Ref(5, 0)), ObjStmScan.check(ok).flate)
+            PdfInputs.openForReader(ok, null, null).destroy()
+        }
+    }
+
+    /**
+     * Differential: for every accepted spelling, xref kind and `endstream` spelling, the scan
+     * measures exactly MuPDF's `readStream` size (a limit of MuPDF's size passes, one under refuses).
+     */
+    @Test
+    fun escapedObjHeaders_scanMeasuresWhatMuPdfDecodes() {
+        for (kw in objSpellings) for (xref in xrefKinds) for (end in listOf("endstream", "end#73tream", "#65ndstream")) {
+            val what = "$kw $xref $end"
+            val f = write("w5-diff.pdf", escapedHeaderPdf(kw, xref, repeated("1 0 R ", 50_000), end))
+            val n = mupdfDecoded(f, 5)
+            assertEquals(what, 300_006, n)
+            val e = runCatching { ObjStmScan.check(f, maxStream = n.toLong()) }.exceptionOrNull()
+            assertTrue("$what: scan measured more than MuPDF's $n: $e", e == null)
+            assertTooLarge("$what: $n") { ObjStmScan.check(f, maxStream = n - 1L) }
+        }
+    }
+
+    /** Lookalikes MuPDF does not take for `obj`: it cannot load the object, from any xref kind. */
+    @Test
+    fun objLookalikes_mupdfDoesNotLoadTheObject() {
+        for (kw in notObj) for (xref in xrefKinds) {
+            val f = write("w5-not.pdf", escapedHeaderPdf(kw, xref, repeated("1 0 R ", 50_000)))
+            assertEquals("$kw $xref", 0, mupdfDecoded(f, 5))
+        }
+    }
+
+    /**
+     * W5: catalog, pages, page, contents, then object 5, a Flate object stream holding [payload]
+     * whose header is `5 0 [kw]`; [xref] is `classic` (table), `stream` (xref stream 7) or
+     * `repair` (no xref at all: MuPDF rebuilds it by lexing the file).
+     */
+    private fun escapedHeaderPdf(kw: String, xref: String, payload: ByteArray, endstream: String = "endstream"): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write("%PDF-1.7\n%\u00e2\u00e3\u00cf\u00d3\n".latin1())
+        val offs = IntArray(8)
+        fun obj(n: Int, body: ByteArray, k: String = "obj") {
+            offs[n] = out.size()
+            out.write("$n 0 $k\n".latin1()); out.write(body); out.write("\nendobj\n".latin1())
+        }
+        obj(1, "<</Type/Catalog/Pages 2 0 R>>".latin1())
+        obj(2, "<</Type/Pages/Kids[3 0 R]/Count 1>>".latin1())
+        obj(3, "<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R>>".latin1())
+        obj(4, "<</Length 5>>stream\nBT ET\nendstream".latin1())
+        val head = "6 0\n".latin1()
+        val data = deflate(head + payload)
+        obj(5, "<</Type/ObjStm/N 1/First ${head.size}/Filter/FlateDecode/Length ${data.size}>>stream\n".latin1() + data + "\n$endstream".latin1(), kw)
+        when (xref) {
+            "classic" -> {
+                val at = out.size()
+                val sb = StringBuilder("xref\n0 6\n0000000000 65535 f\r\n")
+                for (n in 1..5) sb.append("%010d 00000 n\r\n".format(offs[n]))
+                sb.append("trailer\n<</Size 6/Root 1 0 R>>\nstartxref\n$at\n%%EOF\n")
+                out.write(sb.toString().latin1())
+            }
+            "stream" -> {
+                val at = out.size()
+                val rows = java.nio.ByteBuffer.allocate(8 * 7)
+                for (n in 0 until 8) when (n) {
+                    0 -> rows.put(0).putInt(0).putShort(-1)
+                    6 -> rows.put(0).putInt(0).putShort(0)
+                    7 -> rows.put(1).putInt(at).putShort(0)
+                    else -> rows.put(1).putInt(offs[n]).putShort(0)
+                }
+                val x = deflate(rows.array())
+                out.write("7 0 obj\n<</Type/XRef/Size 8/W[1 4 2]/Root 1 0 R/Filter/FlateDecode/Length ${x.size}>>stream\n".latin1())
+                out.write(x)
+                out.write("\nendstream\nendobj\nstartxref\n$at\n%%EOF\n".latin1())
+            }
+            else -> out.write("trailer\n<</Size 6/Root 1 0 R>>\n%%EOF\n".latin1())
+        }
+        return out.toByteArray()
+    }
+
     // ------------------------------------------------------------------ the decoder alone
 
     @Test
