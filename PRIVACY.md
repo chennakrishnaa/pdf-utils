@@ -33,7 +33,7 @@ RECENT FILES
 
 The Recent files list on the home screen shows files you saved with the app. For each one it keeps the file name, size, the time it was saved, which tool made it, and a link to the file so the app can open it again. This list is stored only on your device and is excluded from backup. It is removed when you tap Clear, when you clear the app's data, or when you uninstall the app. Clearing the list does not delete the files themselves. PDFs you open in the reader are not added to this list.
 
-If you open or share a file from the list, or open or share a result from its result screen, Android hands it to another app on your device, or to Offkit's own reader if you choose Offkit.
+If you open a file from the list, or open a result from its result screen, it opens in Offkit's own reader and is handled like any other PDF you read there. If you share one, Android hands it to the app you choose on your device.
 
 The app also remembers on your device that you have seen the introduction and which cards you have hidden; these are simple settings, contain nothing about you or your files, are excluded from backup, and are removed by clearing the app's data or uninstalling.
 

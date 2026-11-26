@@ -414,3 +414,7 @@ Written from the K3 and K5 merges (`142461b`, `f016e77`) and a read of `feature/
 ### Not verified
 
 - Not tried on a real phone: the share sheet with a real receiving app, the real print dialog and spooler (including "Save as PDF" with a page range and a cancelled print), and owner-password-only printing.
+
+## Recents and result "Open" addendum (branch `pdf-reader`, 2026-11-26, R1)
+
+Open on a recent file and on a tool's result screen no longer sends `ACTION_VIEW` with a read grant. The Uri is posted in-process as a `ViewRequest` and the in-app reader copies it with the grant Offkit already holds (the persisted read grant of Recents, or the save dialog's grant). No intent leaves the app for Open, no new grant is issued, and the manifest is unchanged. The claims-table rows that say Open hands the file to another app now apply to Share only; `PRIVACY.md` says so. Not independently reviewed.
