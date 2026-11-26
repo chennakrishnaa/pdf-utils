@@ -6,6 +6,8 @@
     <!-- Shown while a large PDF is copied for sharing -->
     <string name="reader_share_preparing">Preparing to share…</string>
     <string name="reader_share_failed">Couldn\'t share this PDF. Check free space and try again.</string>
-    <string name="reader_print_protected">Protected PDFs can\'t be printed from Offkit yet.</string>
+    <!-- Shown while a protected PDF is made ready for printing -->
+    <string name="reader_print_preparing">Preparing to print…</string>
+    <string name="reader_print_failed">Couldn\'t prepare this PDF for printing. Check free space and try again.</string>
     <string name="reader_print_unavailable">Printing isn\'t available on this device.</string>
 </resources>

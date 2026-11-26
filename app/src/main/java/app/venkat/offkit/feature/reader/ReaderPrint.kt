@@ -19,24 +19,20 @@ import java.nio.channels.FileChannel
 import java.util.concurrent.Executor
 
 /**
- * What printing needs of the open document: its [name], [pageCount] and a way to open its
- * private copy ([openSource], blocking, called off the main thread; throws if the document is
- * closed or its copy is gone).
+ * What printing needs of the open document: its [name], [pageCount] and a way to open the file to
+ * print ([openSource], blocking, called off the main thread; throws if the document is closed or
+ * the file is gone): the private copy, or for an encrypted document its unencrypted copy
+ * ([app.venkat.offkit.core.PdfReader.preparePrint]).
  */
 class ReaderPrintJob(val name: String, val pageCount: Int, val openSource: () -> FileChannel)
 
 /**
- * Why [doc] may not be printed, or null. The one place a `canPrint` check would go (not enforced:
- * owner decision pending).
- *
- * A document opened with a password cannot be printed: the print spooler renders the PDF itself
- * (with the platform's PDFium-based renderer, in its own process) and cannot open an encrypted
- * file without the password. A PDF with only an owner password opens there with no password,
- * as it does in MuPDF, so it is printed.
+ * Why [doc] may not be printed, or null: always null. The PDF's no-print permission is not
+ * honoured (owner decision). An encrypted document is printed from an unencrypted copy, since the
+ * print spooler renders the file in its own process without the password.
  */
 @StringRes
-internal fun printBlockReason(doc: ReaderDocument): Int? =
-    if (doc.needsPassword) R.string.reader_print_protected else null
+internal fun printBlockReason(@Suppress("UNUSED_PARAMETER") doc: ReaderDocument): Int? = null
 
 /**
  * Starts printing [job] with the system print framework. [context] must lead to an Activity
@@ -66,7 +62,8 @@ internal fun startPrint(context: Context, job: ReaderPrintJob): Int? {
  *   (`onWriteCancelled`); any failure, including a document closed before its copy was first
  *   opened, gives `onWriteFailed`.
  * - The source is opened on the first write and kept until [onFinish]: a document closed later
- *   (its folder deleted) still prints from the open descriptor. The destination descriptor is
+ *   (its folder, with any unencrypted print copy, deleted) still prints from the open
+ *   descriptor. A document closed before the first write gives `onWriteFailed`. The destination descriptor is
  *   the framework's: it is written and flushed but never closed here.
  */
 class ReaderPrintAdapter(

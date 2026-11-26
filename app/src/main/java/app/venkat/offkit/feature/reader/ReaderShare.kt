@@ -25,6 +25,9 @@ import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.core.ReaderDocument
+import app.venkat.offkit.core.ReaderPrintFile
+import app.venkat.offkit.engine.PdfError
+import androidx.compose.material3.TextButton
 import app.venkat.offkit.core.ShareRequest
 import app.venkat.offkit.ui.components.launchOrExplain
 import app.venkat.offkit.ui.components.sharePdfIntent
@@ -43,6 +46,7 @@ import kotlin.coroutines.cancellation.CancellationException
 const val TAG_READER_SHARE = "reader_share"
 const val TAG_READER_PRINT = "reader_print"
 const val TAG_READER_SHARE_PROGRESS = "reader_share_progress"
+const val TAG_READER_PRINT_PROGRESS = "reader_print_progress"
 
 /** What the screen must do for a Share or Print request ([ReaderActions.events]). */
 sealed interface ReaderActionEvent {
@@ -107,17 +111,66 @@ class ReaderActions(
         }
     }
 
-    /** Asks the screen to print the open document, or explains why it cannot ([printBlockReason]). */
+    private var printJob: Job? = null
+    private var printDoc: ReaderDocument? = null
+    private val _printPreparing = MutableStateFlow(false)
+
+    /** True while the unencrypted copy of an encrypted document is made for printing. */
+    val printPreparing: StateFlow<Boolean> = _printPreparing.asStateFlow()
+
+    /** True while a print copy of the open document is being made (Print does nothing then). */
+    val printing: Boolean get() = printJob?.isActive == true && printDoc === current()
+
+    /**
+     * Asks the screen to print the open document, or explains why it cannot ([printBlockReason]).
+     * An unencrypted document prints its private copy at once. An encrypted one (with a user
+     * password, or an owner password only) first gets an unencrypted copy from the engine
+     * ([PdfReader.preparePrint], [printPreparing] meanwhile); a second Print for the same document
+     * meanwhile is ignored. If the document is no longer the open one when the copy is ready (the
+     * user opened another PDF or left; closing it also stops the engine), nothing is printed.
+     * The share copy is unaffected: Share always sends the original, still protected file.
+     */
     fun print() {
         val doc = current() ?: return
         val problem = printBlockReason(doc)
-        _events.trySend(
-            if (problem != null) {
-                ReaderActionEvent.Message(problem)
-            } else {
-                ReaderActionEvent.Print(ReaderPrintJob(doc.name, doc.pages.size) { reader.openSource(doc) })
-            },
-        )
+        if (problem != null) {
+            _events.trySend(ReaderActionEvent.Message(problem))
+            return
+        }
+        if (!doc.isEncrypted) {
+            _events.trySend(ReaderActionEvent.Print(ReaderPrintJob(doc.name, doc.pages.size) { reader.openSource(doc) }))
+            return
+        }
+        if (printing) return
+        printJob?.cancel()
+        printDoc = doc
+        printJob = scope.launch {
+            _printPreparing.value = true
+            try {
+                val result = reader.preparePrint(doc)
+                if (current() !== doc) return@launch
+                when (result) {
+                    is ReaderPrintFile.Ok -> _events.trySend(
+                        ReaderActionEvent.Print(ReaderPrintJob(doc.name, doc.pages.size) { reader.openPrintSource(doc, result.file) }),
+                    )
+                    is ReaderPrintFile.Err ->
+                        if (result.error != PdfError.Cancelled) _events.trySend(ReaderActionEvent.Message(R.string.reader_print_failed))
+                }
+            } finally {
+                if (printDoc === doc) _printPreparing.value = false
+            }
+        }
+    }
+
+    /**
+     * Stops waiting for a print copy (the user dismissed the progress dialog). The engine call is
+     * let finish; its copy is kept for the next Print of the same document.
+     */
+    fun cancelPrint() {
+        printJob?.cancel()
+        printJob = null
+        printDoc = null
+        _printPreparing.value = false
     }
 
     companion object {
@@ -168,6 +221,23 @@ internal fun ReaderActionsEffect(actions: ReaderActions, snackbar: SnackbarHostS
                 launch { snackbar.showSnackbar(res.getString(message)) }
             }
         }
+    }
+    val preparingPrint by actions.printPreparing.collectAsState()
+    if (preparingPrint) {
+        AlertDialog(
+            onDismissRequest = { actions.cancelPrint() },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { actions.cancelPrint() }) { Text(stringResource(android.R.string.cancel)) }
+            },
+            text = {
+                Column {
+                    Text(stringResource(R.string.reader_print_preparing))
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 16.dp))
+                }
+            },
+            modifier = Modifier.testTag(TAG_READER_PRINT_PROGRESS),
+        )
     }
     val progress by actions.shareProgress.collectAsState()
     progress?.let { fraction ->

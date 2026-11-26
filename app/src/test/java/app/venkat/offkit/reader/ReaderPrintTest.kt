@@ -1,5 +1,15 @@
 package app.venkat.offkit.reader
 
+import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import org.junit.Assert.assertNull
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import app.venkat.offkit.engine.PdfError
+import app.venkat.offkit.PdfUtilApp
+import app.venkat.offkit.FakePdfEngine
 import android.app.Application
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
@@ -149,26 +159,119 @@ class ReaderPrintTest {
     private fun doc(password: String?, encrypted: Boolean) =
         ReaderDocument("p.pdf", List(2) { PageDims(595f, 842f) }, dir, source, password, encrypted)
 
-    private fun printEvent(document: ReaderDocument): ReaderActionEvent = runBlocking {
-        val reader = PdfReader(app, PdfJobs(app, Dispatchers.IO, Dispatchers.IO, Dispatchers.Unconfined))
+    private class Env(val fake: FakePdfEngine, val engine: ExecutorCoroutineDispatcher, val reader: PdfReader)
+
+    private fun <T> withEnv(block: suspend Env.() -> T): T {
+        val fake = FakePdfEngine().apply { readerPages = List(2) { PageDims(595f, 842f) } }
+        (app as PdfUtilApp).engine = fake
+        val engine = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        try {
+            return runBlocking { Env(fake, engine, PdfReader(app, PdfJobs(app, engine, Dispatchers.IO, Dispatchers.Unconfined))).block() }
+        } finally {
+            engine.close()
+        }
+    }
+
+    private suspend fun Env.printEvent(document: ReaderDocument): ReaderActionEvent {
         val actions = ReaderActions(reader, CoroutineScope(Dispatchers.Unconfined)) { document }
         actions.print()
-        withTimeout(5_000) { actions.events.first() }
+        return withTimeout(5_000) { actions.events.first() }
+    }
+
+    private val decrypted get() = FakePdfEngine.DECRYPTED_PREFIX + bytes
+
+    @Test
+    fun aProtectedDocumentPrintsTheDecryptedCopyAndSharesTheOriginal() = withEnv {
+        fake.readerPassword = "secret"
+        val document = doc(password = "secret", encrypted = true)
+        val event = printEvent(document) as ReaderActionEvent.Print
+        assertEquals(2, event.job.pageCount)
+        val adapter = ReaderPrintAdapter(event.job)
+        val (callback, out) = write(adapter)
+        assertEquals("finished", callback.result)
+        assertArrayEquals(decrypted, out.readBytes())
+        adapter.onFinish()
+        // Share sends the original, still protected bytes.
+        val share = ReaderActions(reader, CoroutineScope(Dispatchers.Unconfined)) { document }
+        share.share()
+        val request = (withTimeout(5_000) { share.events.first() } as ReaderActionEvent.Share).request
+        assertArrayEquals(bytes, app.contentResolver.openInputStream(request.uri)!!.use { it.readBytes() })
     }
 
     @Test
-    fun aProtectedDocumentShowsTheMessageAndNeverReachesThePrintManager() {
-        val event = printEvent(doc(password = "secret", encrypted = true))
-        assertEquals(ReaderActionEvent.Message(R.string.reader_print_protected), event)
-        assertEquals("Protected PDFs can't be printed from Offkit yet.", app.getString(R.string.reader_print_protected))
-    }
-
-    @Test
-    fun plainAndOwnerPasswordOnlyDocumentsArePrinted() {
-        for (document in listOf(doc(null, false), doc(null, true), doc("", true))) {
+    fun ownerPasswordOnlyDocumentsPrintTheDecryptedCopyAndPlainOnesTheOriginal() = withEnv {
+        for (document in listOf(doc(null, true), doc("", true))) {
             val event = printEvent(document) as ReaderActionEvent.Print
-            assertEquals(2, event.job.pageCount)
-            event.job.openSource().use { assertEquals(bytes.size.toLong(), it.size()) }
+            val (callback, out) = write(ReaderPrintAdapter(event.job))
+            assertEquals("finished", callback.result)
+            assertArrayEquals(decrypted, out.readBytes())
         }
+        val plain = printEvent(doc(null, false)) as ReaderActionEvent.Print
+        assertArrayEquals(bytes, write(ReaderPrintAdapter(plain.job)).second.readBytes())
+        assertEquals(2, fake.decryptCalls.size)
+    }
+
+    @Test
+    fun printIsNotStartedTwiceWhilePreparing() = withEnv {
+        val release = CountDownLatch(1)
+        fake.beforeDecrypt = { release.await(5, TimeUnit.SECONDS) }
+        val document = doc(null, true)
+        val actions = ReaderActions(reader, CoroutineScope(Dispatchers.Default)) { document }
+        actions.print()
+        withTimeout(5_000) { actions.printPreparing.first { it } }
+        assertTrue(actions.printing)
+        actions.print()
+        actions.print()
+        release.countDown()
+        assertTrue(withTimeout(5_000) { actions.events.first() } is ReaderActionEvent.Print)
+        withTimeout(5_000) { actions.printPreparing.first { !it } }
+        assertNull(withTimeoutOrNull(300) { actions.events.first() })
+        assertEquals(1, fake.decryptCalls.size)
+    }
+
+    @Test
+    fun leavingOrOpeningAnotherDocumentDuringPreparationPrintsNothing() = withEnv {
+        val document = doc(null, true)
+        var current: ReaderDocument? = document
+        // Closing the document (another PDF opened, or the reader left) stops the engine call.
+        fake.beforeDecrypt = { reader.close(document); current = null }
+        val actions = ReaderActions(reader, CoroutineScope(Dispatchers.Unconfined)) { current }
+        actions.print()
+        assertNull(withTimeoutOrNull(500) { actions.events.first() })
+        assertFalse(actions.printPreparing.value)
+        withContext(engine) {}
+        assertFalse(dir.exists())
+    }
+
+    @Test
+    fun aFailedCopyShowsAMessage() = withEnv {
+        fake.decryptError = PdfError.OutOfMemory
+        assertEquals(ReaderActionEvent.Message(R.string.reader_print_failed), printEvent(doc(null, true)))
+        assertEquals("Couldn't prepare this PDF for printing. Check free space and try again.", app.getString(R.string.reader_print_failed))
+    }
+
+    @Test
+    fun aDocumentClosedWhileThePrintDialogIsOpen() = withEnv {
+        // Closed after the first write (the preview): later writes still print from the open file.
+        val first = doc(null, true)
+        val adapter = ReaderPrintAdapter((printEvent(first) as ReaderActionEvent.Print).job)
+        write(adapter)
+        reader.close(first)
+        withContext(engine) {}
+        assertFalse(dir.exists())
+        val (again, out) = write(adapter)
+        assertEquals("finished", again.result)
+        assertArrayEquals(decrypted, out.readBytes())
+        adapter.onFinish()
+
+        // Closed before any write: the write fails cleanly.
+        dir.mkdirs()
+        source.writeBytes(bytes)
+        val second = doc(null, true)
+        val late = ReaderPrintAdapter((printEvent(second) as ReaderActionEvent.Print).job)
+        reader.close(second)
+        withContext(engine) {}
+        assertEquals("failed", write(late).first.result)
+        late.onFinish()
     }
 }
