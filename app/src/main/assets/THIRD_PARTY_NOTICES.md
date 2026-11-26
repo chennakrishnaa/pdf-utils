@@ -321,7 +321,9 @@ org.jspecify — jspecify 1.0.0 — Apache License, Version 2.0 (H) — The JSpe
 3. ICONS
 --------
 
-The vector icons in the app (res/drawable/ic_*.xml, except the launcher icon and the reader icons ic_tool_read.xml, ic_tool_read_badge.xml, ic_folder_open.xml, ic_refresh.xml, ic_more_vert.xml, ic_search_previous.xml and ic_search_next.xml, which are original artwork) use path data from Material Symbols / Material Icons, Copyright Google LLC, licensed under the Apache License, Version 2.0 (H).
+The vector icons, tool badges and launcher icon in the app (res/drawable/ic_*.xml and res/mipmap-anydpi/ic_launcher.xml) are original artwork by the app's author, except the six icons named in the next paragraph.
+
+The icons ic_add_to_pdf.xml, ic_chevron_right.xml, ic_compress.xml, ic_image.xml, ic_merge.xml and ic_pdf.xml use path data from Material Symbols / Material Icons, Copyright Google LLC, licensed under the Apache License, Version 2.0 (H).
 
 4. FONT
 -------
