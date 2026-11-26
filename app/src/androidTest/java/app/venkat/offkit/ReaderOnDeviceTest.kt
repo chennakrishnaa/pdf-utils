@@ -18,6 +18,12 @@ import app.venkat.offkit.engine.remote.RemoteEngine
 import app.venkat.offkit.feature.reader.ItemRect
 import app.venkat.offkit.feature.reader.ReaderDocState
 import app.venkat.offkit.feature.reader.ReaderPageState
+import app.venkat.offkit.feature.reader.ReaderTextEvent
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import java.util.concurrent.CopyOnWriteArrayList
 import app.venkat.offkit.feature.reader.ReaderViewModel
 import app.venkat.offkit.feature.reader.VisiblePage
 import kotlinx.coroutines.flow.StateFlow
@@ -181,6 +187,39 @@ class ReaderOnDeviceTest {
     }
 
     // ---------------------------------------------------------------- tests
+
+    /**
+     * Text selection against the real engine, driven through the view model (a real long-press
+     * needs the activity and window focus; the screen's gesture and clipboard write are covered
+     * by ReaderScreenTest under Robolectric): the copy-page action gives the page's text, a
+     * long-press at the start of the line selects its first word, and Copy hands out that word.
+     */
+    @Test
+    fun reader_realEngine_longPressSelectsAWordAndCopyGivesIt() {
+        val file = Fixtures.textPdf(sharedDir, "text.pdf", listOf("Hello world"))
+        val model = onMain { ReaderViewModel(context.applicationContext as Application) }
+        vm = model
+        onMain { model.open(contentUri(file)) }
+        waitFor("document to open", state = { "${model.document.value}" }) { model.document.value is ReaderDocState.Open }
+        val events = CopyOnWriteArrayList<ReaderTextEvent>()
+        val scope = onMain { MainScope().also { s -> model.textEvents.onEach { events += it }.launchIn(s) } }
+        try {
+            onMain { model.copyPageText(0) }
+            waitFor("page text", state = { "$events" }) { events.isNotEmpty() }
+            assertEquals(ReaderTextEvent.Copy("Hello world", cut = false), events[0])
+            // Nearest character to the left edge, at any height: the "H" of the only line.
+            val dims = (model.document.value as ReaderDocState.Open).pages[0]
+            onMain { model.longPress(0, 0f, dims.heightPt / 2f, Float.POSITIVE_INFINITY) }
+            waitFor("selection", state = { "${model.selection.value}" }) { model.selection.value != null }
+            assertEquals("Hello", onMain { model.selection.value!!.string() })
+            onMain { model.copySelection() }
+            waitFor("copy", state = { "$events" }) { events.size == 2 }
+            assertEquals(ReaderTextEvent.Copy("Hello", cut = false), events[1])
+            assertNull(onMain { model.selection.value })
+        } finally {
+            onMain { scope.cancel() }
+        }
+    }
 
     @Test
     fun reader_realEngine_jpegPageBaseAndDetail_plainPage() {
