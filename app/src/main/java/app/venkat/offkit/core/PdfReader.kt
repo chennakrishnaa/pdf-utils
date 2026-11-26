@@ -12,6 +12,10 @@ import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfPageInfo
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
+import app.venkat.offkit.engine.PdfPageText
+import app.venkat.offkit.engine.PageText
+import app.venkat.offkit.engine.PageTextFormat
+import app.venkat.offkit.engine.PageTextParse
 import app.venkat.offkit.engine.RenderLimits
 import app.venkat.offkit.engine.RenderRequest
 import kotlinx.coroutines.NonCancellable
@@ -55,6 +59,8 @@ class ReaderDocument internal constructor(
     private val tileCounter = AtomicInteger()
 
     internal fun newTileFile(): File = File(dir, "tile-${tileCounter.incrementAndGet()}.rgba")
+
+    internal fun newTextFile(): File = File(dir, "text-${tileCounter.incrementAndGet()}.bin")
 }
 
 /** Result of [PdfReader.open]. */
@@ -71,6 +77,14 @@ sealed interface ReaderTile {
     data class Ok(val bitmap: Bitmap) : ReaderTile
 
     data class Err(val error: PdfError) : ReaderTile
+}
+
+/** Result of [PdfReader.text]. */
+sealed interface ReaderText {
+    /** The page's text and geometry (zero length for a page without text). */
+    data class Ok(val text: PageText) : ReaderText
+
+    data class Err(val error: PdfError) : ReaderText
 }
 
 /**
@@ -198,6 +212,60 @@ class PdfReader internal constructor(
             return ReaderTile.Err(PdfError.OutOfMemory)
         } catch (e: Exception) {
             return ReaderTile.Err(PdfError.Io(e))
+        } finally {
+            withContext(NonCancellable + jobs.ioDispatcher) {
+                out.delete()
+                if (document.closed) document.dir.deleteRecursively()
+            }
+        }
+    }
+
+    /**
+     * The text of page [page] of [document] with every character's box, in the space of
+     * [ReaderDocument.pages] (see [PageText] for the hit-test, word, highlight and copy helpers).
+     * Runs on the engine thread like [render] (never concurrently with it); the engine's file is
+     * parsed with [PageTextFormat.read] on the IO dispatcher and deleted in every case. A malformed
+     * file or a reply whose length disagrees with the file is `Err(Io)`; a closed document
+     * `Err(Cancelled)`. Cancelling the caller behaves as for [render].
+     */
+    suspend fun text(document: ReaderDocument, page: Int): ReaderText {
+        if (document.closed) return ReaderText.Err(PdfError.Cancelled)
+        if (page !in document.pages.indices) {
+            return ReaderText.Err(PdfError.Io(IllegalArgumentException("page $page out of range")))
+        }
+        val engine = renderer() ?: return ReaderText.Err(PdfError.Io(IOException("Engine cannot read text")))
+        val out = document.newTextFile()
+        try {
+            val result = withContext(jobs.engineDispatcher) {
+                if (document.closed) {
+                    PdfPageText.Err(PdfError.Cancelled)
+                } else {
+                    engine.pageText(document.file, page, out, cancelWhen { document.closed })
+                }
+            }
+            return when (result) {
+                is PdfPageText.Err -> ReaderText.Err(result.error)
+                is PdfPageText.Ok -> if (document.closed) {
+                    ReaderText.Err(PdfError.Cancelled)
+                } else {
+                    when (val p = withContext(jobs.ioDispatcher) { PageTextFormat.read(out) }) {
+                        is PageTextParse.Err -> ReaderText.Err(PdfError.Io(IOException("Bad page text: ${p.reason}")))
+                        is PageTextParse.Ok ->
+                            if (p.text.length != result.units || p.text.truncated != result.truncated) {
+                                ReaderText.Err(PdfError.Io(IOException("Page text does not match the reply")))
+                            } else {
+                                ReaderText.Ok(p.text)
+                            }
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            return ReaderText.Err(PdfError.Cancelled)
+        } catch (e: OutOfMemoryError) {
+            return ReaderText.Err(PdfError.OutOfMemory)
+        } catch (e: Exception) {
+            return ReaderText.Err(PdfError.Io(e))
         } finally {
             withContext(NonCancellable + jobs.ioDispatcher) {
                 out.delete()

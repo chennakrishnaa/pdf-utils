@@ -412,6 +412,27 @@ class EngineOnDeviceTest {
     }
 
     @Test
+    fun reader_pageTextThroughEngineProcess() {
+        val remote = (context.applicationContext as PdfUtilApp).engine as RemoteEngine
+        val readerDir = File(jobsRoot, "reader-ondevice-text-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val pdf = Fixtures.textPdf(readerDir, "t.pdf", listOf("Hello device"))
+            val out = File(readerDir, "text.bin")
+            val r = remote.pageText(pdf, 0, out, JobControl.None)
+            assertTrue("$r", r is app.venkat.offkit.engine.PdfPageText.Ok)
+            val parsed = app.venkat.offkit.engine.PageTextFormat.read(out)
+            assertTrue("$parsed", parsed is app.venkat.offkit.engine.PageTextParse.Ok)
+            val t = (parsed as app.venkat.offkit.engine.PageTextParse.Ok).text
+            val i = t.text.indexOf("device")
+            assertTrue(t.text, i >= 0)
+            val b = t.box(i)
+            assertTrue("$b", b.x0 >= 0f && b.y0 >= 0f && b.x1 <= Fixtures.A4_WIDTH && b.y1 <= Fixtures.A4_HEIGHT && b.x1 > b.x0)
+        } finally {
+            readerDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun discardLeavesJobsEmpty() {
         val a = Fixtures.textPdf(dir, "a.pdf", listOf("One"))
         val outcome = run(listOf(pdf(a))) { e, files, o, j -> e.merge(files, o, j) }

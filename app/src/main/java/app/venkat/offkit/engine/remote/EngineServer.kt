@@ -13,6 +13,7 @@ import app.venkat.offkit.engine.PdfEngine
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.engine.PdfEstimate
 import app.venkat.offkit.engine.PdfPageInfo
+import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfRender
 import app.venkat.offkit.engine.PdfResult
@@ -167,6 +168,10 @@ class EngineServer(
                         out?.delete()
                         EngineWire.encodeRender(value)
                     }
+                    is PdfPageText.Err -> {
+                        out?.delete()
+                        EngineWire.encodePageText(value)
+                    }
                     else -> EngineWire.encodeAny(value)
                 }
             } catch (e: OutOfMemoryError) {
@@ -192,6 +197,7 @@ class EngineServer(
         is EngineRequest.Estimate -> EngineWire.encodeEstimate(PdfEstimate.Err(error))
         is EngineRequest.PageInfo -> EngineWire.encodePageInfo(PdfPageInfo.Err(error))
         is EngineRequest.RenderPage -> EngineWire.encodeRender(PdfRender.Err(error))
+        is EngineRequest.PageText -> EngineWire.encodePageText(PdfPageText.Err(error))
         else -> EngineWire.encodeResult(PdfResult.Err(error))
     }
 
