@@ -291,6 +291,67 @@ class ObjStmAsciiTest {
         println(sb)
     }
 
+    /** W5 follow-up: names with `#00` and short or bad escapes lex to the same characters as MuPDF's `lex_name`. */
+    @Test
+    fun nameEscapes_scanLexesWhatMuPdfLexes() {
+        val names = listOf(
+            "N#00", "Fl#00", "s#00tream", "A#0", "B#6", "C#g1", "D#00F", "E#000", "F#01x", "G#4e#00", "H#30#30",
+            "I##41", "J#4", "K#0#41", "L#6F#62#6a", "M#7e", "O#", "P#0g", "Q#ff", "R#00#00",
+        )
+        val dict = names.withIndex().joinToString("") { (i, n) -> "/K$i /$n" }
+        val pdf = HostilePdf()
+        basicPage(pdf)
+        pdf.add(6, "<<$dict>>")
+        val bytes = pdf.bytes()
+        val f = write("names.pdf", bytes)
+        val text = String(bytes, Charsets.ISO_8859_1)
+        val doc = Document.openDocument(f.path) as PDFDocument
+        try {
+            val o = doc.newIndirect(6, 0)
+            try {
+                names.forEachIndexed { i, n ->
+                    val at = text.indexOf("/K$i /$n") + "/K$i /".length
+                    val mupdf = o.get("K$i").asName()
+                    assertEquals(n, mupdf, ObjStmScan.lexToken(f, at.toLong()))
+                }
+                // Spot checks of the rule itself.
+                assertEquals("N#00", o.get("K0").asName())
+                assertEquals("I#A", o.get("K11").asName())
+                assertEquals("00", o.get("K10").asName().substring(1))
+            } finally {
+                o.destroy()
+            }
+        } finally {
+            doc.destroy()
+        }
+        // `#` and one hex digit at the very end of the file: MuPDF keeps the `#` and drops the digit.
+        for ((tail, want) in listOf("/A#6" to "A#", "/A#" to "A#", "/A#0" to "A#", "/A#g" to "A#g", "/A#41" to "AA")) {
+            val e = write("tail.pdf", "%PDF-1.7\n$tail".latin1())
+            assertEquals(tail, want, ObjStmScan.lexToken(e, 10))
+        }
+    }
+
+    /** `s#00tream` is not the `stream` keyword (for MuPDF nor the scan) and `/Fl#00` is not Flate. */
+    @Test
+    fun nulEscapes_inKeywordsAndFilters() {
+        val pdf = HostilePdf()
+        basicPage(pdf)
+        val data = deflate(repeated("null ", 3_500_000))
+        pdf.add(20, "<</Type/ObjStm/N 1/First 4/Filter/FlateDecode/Length ${data.size}>>s#00tream\n".latin1().let { String(it + data + "\nendstream".latin1(), Charsets.ISO_8859_1) })
+        val f = write("nul-stream.pdf", pdf.bytes())
+        val doc = Document.openDocument(f.path) as PDFDocument
+        try {
+            val o = doc.newIndirect(20, 0)
+            try { assertTrue("MuPDF: not a stream", !o.isStream) } finally { o.destroy() }
+        } finally {
+            doc.destroy()
+        }
+        assertEquals(0, mupdfDecoded(f, 20))
+        ObjStmScan.check(f) // nor a stream for the scan: the 17.5 MB inflate is not measured
+        val bomb = write("nul-filter.pdf", inCatalogStream(repeated("null ", 1000), "/Fl#00", { b -> deflate(b) }))
+        assertTooLarge("/Fl#00 is an unknown filter: refused") { ObjStmScan.check(bomb) }
+    }
+
     /** Lookalikes MuPDF does not take for `obj`: it cannot load the object, from any xref kind. */
     @Test
     fun objLookalikes_mupdfDoesNotLoadTheObject() {

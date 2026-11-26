@@ -106,6 +106,10 @@ internal object ObjStmScan {
     fun check(file: File, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES): Result =
         RandomAccessFile(file, "r").use { raf -> Scanner(raf.channel, maxStream, maxTotal).run() }
 
+    /** Test hook: the name or keyword the scan's lexer reads in [file] at [from] (just after a `/` for a name). */
+    internal fun lexToken(file: File, from: Long): String =
+        RandomAccessFile(file, "r").use { raf -> Scanner(raf.channel, MAX_STREAM_BYTES, MAX_TOTAL_BYTES).token(from) }
+
     /** Most filtered candidates recorded; an encrypted file with more is refused by [checkDecrypted]. */
     const val MAX_RECORDED = 10_000
 
@@ -678,9 +682,16 @@ internal object ObjStmScan {
             return p
         }
 
+        /** Test hook: the name or keyword [lexName] reads at [from]. */
+        fun token(from: Long): String { lexName(from); return word.toString() }
+
         /**
          * A name's or keyword's characters from [from] into [word], `#xx` decoded as MuPDF's
          * `lex_name` does for both (W4: so `s#74ream` is the `stream` keyword, as for MuPDF).
+         * W5: exactly its rule: `#` and two hex digits (either case) is one byte, except `#00`;
+         * otherwise (`#00`, `#` with fewer than two hex digits) the `#` is kept and the following
+         * bytes are read as ordinary characters, except that a `#` and one hex digit at the very
+         * end of the file keep only the `#` (`illegal_eof` does not unread the digit).
          */
         private fun lexName(from: Long): Long {
             word.setLength(0)
@@ -692,8 +703,11 @@ internal object ObjStmScan {
                 var ch = c
                 if (c == '#'.code) {
                     val h = hex(at(p))
-                    val l = hex(at(p + 1))
-                    if (h >= 0 && l >= 0) {
+                    val n = at(p + 1)
+                    val l = hex(n)
+                    if (h >= 0 && n < 0) {
+                        p++
+                    } else if (h >= 0 && l >= 0 && !(h == 0 && n == '0'.code)) {
                         ch = h * 16 + l
                         p += 2
                     }
