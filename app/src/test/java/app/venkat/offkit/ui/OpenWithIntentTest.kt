@@ -29,6 +29,7 @@ import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.core.RecentFilesStore
 import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.feature.reader.ReaderPageRendered
+import app.venkat.offkit.feature.reader.TAG_READER_MENU
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
 import app.venkat.offkit.feature.reader.TAG_READER_OPENING
 import app.venkat.offkit.feature.reader.TAG_READER_TITLE
@@ -153,6 +154,8 @@ class OpenWithIntentTest {
         assertScrubbed(activity)
         assertEquals(1, readerDirs().size)
         // "Open another PDF" still asks the system picker.
+        rule.onNodeWithTag(TAG_READER_MENU).performClick()
+        rule.waitForIdle()
         rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
         rule.waitForIdle()
         assertEquals(Intent.ACTION_OPEN_DOCUMENT, shadowOf(activity).nextStartedActivityForResult?.intent?.action)

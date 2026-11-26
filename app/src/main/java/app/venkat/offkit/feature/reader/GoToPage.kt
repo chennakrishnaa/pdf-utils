@@ -75,7 +75,6 @@ internal fun GoToPageDialog(currentPage: Int, pageCount: Int, onGo: (Int) -> Uni
     val page = GoToPage.parse(value.text, pageCount)
     val go = { if (page != null) onGo(page) }
     val focus = remember { FocusRequester() }
-    LaunchedEffect(focus) { runCatching { focus.requestFocus() } }
     AlertDialog(
         onDismissRequest = onDismiss,
         shape = MaterialTheme.shapes.extraLarge,
@@ -107,6 +106,8 @@ internal fun GoToPageDialog(currentPage: Int, pageCount: Int, onGo: (Int) -> Uni
                         modifier = Modifier.padding(start = 12.dp),
                     )
                 }
+                // In the dialog window's composition, so the field is attached when focus is asked for.
+                LaunchedEffect(focus) { runCatching { focus.requestFocus() } }
                 if (page == null) {
                     Text(
                         text = stringResource(R.string.reader_go_to_page_hint, pageCount),

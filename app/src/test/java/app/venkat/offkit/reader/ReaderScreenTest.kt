@@ -19,6 +19,7 @@ import app.venkat.offkit.feature.reader.TAG_READER_SELECTION_CLOSE
 import app.venkat.offkit.feature.reader.TAG_READER_SELECT_ALL
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
@@ -749,6 +750,9 @@ class ReaderScreenTest {
         rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assert(hasText("1"))
         rule.onNodeWithText(str(R.string.reader_go_to_page_of, 12)).assertExists()
         rule.onNodeWithTag(TAG_GO_TO_PAGE_GO).assertIsEnabled()
+        // Focused, with the current page all selected, so typing replaces it.
+        val field = rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assertIsFocused().fetchSemanticsNode()
+        assertEquals(androidx.compose.ui.text.TextRange(0, 1), field.config[SemanticsProperties.TextSelectionRange])
         rule.onNodeWithTag(TAG_GO_TO_PAGE_CANCEL).performClick()
         rule.waitForIdle()
         rule.onNodeWithTag(TAG_GO_TO_PAGE_FIELD).assertDoesNotExist()
