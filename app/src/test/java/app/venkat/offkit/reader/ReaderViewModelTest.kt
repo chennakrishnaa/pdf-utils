@@ -608,6 +608,28 @@ class ReaderViewModelTest {
     }
 
     @Test
+    fun aPageWhoseRectanglesCannotBeReadIsNotFetchedAgainOnEveryViewport() {
+        val vm = newVm()
+        fake.readerPages = List(8) { PageDims(595f, 842f) }
+        for (p in listOf(1, 6)) fake.readerTexts[p] = TestPageTexts.grid("a Cat and", "another cat")
+        openVm(vm)
+        vm.onViewport(WIDTH, 1f, listOf(band(6)))
+        vm.search("cat", 6)
+        searchDone(vm)
+        val reads = { engineLog.count { it == "text:1" } }
+        assertEquals(1, reads())
+        failTextPages = setOf(1)
+        repeat(5) {
+            vm.onViewport(WIDTH, 1f, listOf(band(1)))
+            CoreTestSupport.idleUntil(message = "fetched") { reads() >= 2 }
+            val settle = System.currentTimeMillis() + 100
+            CoreTestSupport.idleUntil { System.currentTimeMillis() > settle }
+        }
+        assertEquals("one rectangles read for the failing page", 1, reads() - 1)
+        assertFalse(vm.search.value!!.rects.containsKey(1))
+    }
+
+    @Test
     fun aNewQueryCancelsTheOldScanAndLeavesNoStaleHits() {
         val vm = newVm()
         fake.readerPages = List(8) { PageDims(595f, 842f) }

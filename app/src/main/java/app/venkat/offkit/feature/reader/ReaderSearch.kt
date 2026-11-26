@@ -210,6 +210,9 @@ internal class SearchResults(val query: SearchQuery) {
     var capped = false
     val rects = HashMap<Int, PageSearchRects>()
 
+    /** Pages whose rectangles could not be fetched (text read failed): not tried again for this query. */
+    val failedRects = HashSet<Int>()
+
     /** Adds [pageHits] (one page's, in order) at their place. */
     fun addPage(pageHits: List<SearchHit>) {
         if (pageHits.isEmpty()) return

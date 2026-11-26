@@ -638,12 +638,13 @@ class ReaderViewModel internal constructor(
 
         /** Reads [page]'s text again (not cached) to compute its hits' rectangles. */
         private fun fetchRects(res: SearchResults, page: Int) {
-            if (page in rectJobs) return
+            if (page in rectJobs || page in res.failedRects) return
             rectJobs[page] = viewModelScope.launch {
                 val r = reader.text(doc, page)
                 if (results !== res) return@launch
                 if (r !is ReaderText.Ok) {
                     rectJobs.remove(page)
+                    if (r is ReaderText.Err && r.error != PdfError.Cancelled) res.failedRects += page
                     return@launch
                 }
                 val hits = res.hitsOn(page) // a copy, read here on the main thread
