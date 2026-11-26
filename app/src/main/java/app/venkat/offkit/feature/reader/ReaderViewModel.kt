@@ -162,6 +162,9 @@ class ReaderViewModel internal constructor(
 
     private var session: Session? = null
 
+    /** Share and Print of the open document ([ReaderShare.kt], [ReaderPrint.kt]). */
+    val actions = ReaderActions(reader, viewModelScope) { session?.doc }
+
     private val _selection = MutableStateFlow<ReaderSelection?>(null)
 
     /** The current text selection, or null. */

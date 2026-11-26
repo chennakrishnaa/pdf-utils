@@ -438,6 +438,7 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
     // enabled handler composed runs first).
     BackHandler(enabled = searchOpen) { closeSearch() }
     BackHandler(enabled = selection != null) { vm.clearSelection() }
+    ReaderActionsEffect(vm.actions, snackbar)
     LaunchedEffect(vm) {
         vm.textEvents.collect { event ->
             val message = when (event) {
@@ -464,7 +465,12 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
         title = doc.name,
         indicator = (current + 1) to pageCount,
         onBack = onBack,
-        menu = readerMenuItems(onSearch = { searchOpen = true }, onGoToPage = { goToOpen = true }, onOpenAnother = onOpenAnother),
+        menu = readerMenuItems(
+            onSearch = { searchOpen = true },
+            onGoToPage = { goToOpen = true },
+            onOpenAnother = onOpenAnother,
+            actions = vm.actions,
+        ),
         onIndicatorClick = { goToOpen = true },
         bar = when {
             selection != null -> {

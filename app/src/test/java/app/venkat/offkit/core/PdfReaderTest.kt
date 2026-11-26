@@ -293,6 +293,59 @@ class PdfReaderTest {
         return b.get(0) == 0xFF.toByte()
     }
 
+    private fun sharedRoot() = File(app.cacheDir, "shared")
+
+    @Test
+    fun prepareShareCopiesTheExactBytesUnderTheSanitisedNameAndLeavesOtherSharedCopies() = runBlocking {
+        CoreTestSupport.clearFileProviderCache()
+        // A job result's shared copy that an app may still be reading.
+        val jobShare = File(sharedRoot(), "job-id/result.pdf").apply { parentFile!!.mkdirs(); writeText("job") }
+        val bytes = "%PDF-1.7 reader share \u0000ÿ".toByteArray(Charsets.ISO_8859_1)
+        val uri = CoreTestSupport.contentUri(app, "a/b:report", bytes)
+        val doc = (reader.open(uri) as ReaderOpenResult.Opened).document
+        val progress = CopyOnWriteArrayList<Pair<Long, Long>>()
+        val request = reader.prepareShare(doc) { done, total -> progress += done to total }
+        assertEquals(PdfJobs.shareFileName(doc.name), request.name)
+        assertTrue(request.name.endsWith(".pdf") && !request.name.contains('/'))
+        assertEquals("content", request.uri.scheme)
+        assertEquals(PdfJobs.shareAuthority(app), request.uri.authority)
+        val copy = sharedRoot().walkTopDown().single { it.isFile && it.name == request.name }
+        assertTrue(bytes.contentEquals(copy.readBytes()))
+        assertEquals(bytes.size.toLong() to bytes.size.toLong(), progress.last())
+        assertEquals("job", jobShare.readText())
+        // Sharing again reuses the copy.
+        assertEquals(request, reader.prepareShare(doc))
+        assertEquals(1, sharedRoot().walkTopDown().count { it.isFile && it.name == request.name })
+        reader.close(doc)
+        drain()
+        assertTrue(readerDirs().isEmpty())
+    }
+
+    @Test
+    fun aClosedDocumentCannotBeSharedButAnOpenSourceStillReadsAndTheFolderIsDeleted() = runBlocking {
+        val doc = (reader.open(pdfUri()) as ReaderOpenResult.Opened).document
+        val source = reader.openSource(doc)
+        reader.close(doc)
+        drain()
+        assertTrue(readerDirs().isEmpty())
+        // Opened before the close: still reads the whole private copy.
+        val buf = java.nio.ByteBuffer.allocate(64)
+        source.use { it.read(buf, 0) }
+        assertEquals("%PDF-1.7 test", String(buf.array(), 0, buf.position()))
+        try {
+            reader.prepareShare(doc)
+            fail("closed document shared")
+        } catch (e: IOException) {
+            // Expected.
+        }
+        try {
+            reader.openSource(doc).close()
+            fail("closed document opened")
+        } catch (e: IOException) {
+            // Expected.
+        }
+    }
+
     private fun swapRedBlue(argb: Int): Int =
         (argb and 0xFF00FF00.toInt()) or ((argb shr 16) and 0xFF) or ((argb and 0xFF) shl 16)
 

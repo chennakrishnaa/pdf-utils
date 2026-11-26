@@ -96,6 +96,8 @@ import app.venkat.offkit.engine.PdfPageRenderer
 import app.venkat.offkit.engine.PdfPageText
 import app.venkat.offkit.feature.reader.TAG_READER_LIST
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
+import app.venkat.offkit.feature.reader.TAG_READER_PRINT
+import app.venkat.offkit.feature.reader.TAG_READER_SHARE
 import app.venkat.offkit.feature.reader.TAG_READER_TITLE
 import app.venkat.offkit.feature.reader.VIEWPORT_SETTLE_MS
 import app.venkat.offkit.feature.reader.readerPageReasonTag
@@ -743,12 +745,40 @@ class ReaderScreenTest {
         assertTrue(!exists(TAG_READER_OPEN_ANOTHER))
         openMenu()
         val items = rule.onAllNodes(hasClickAction() and hasAnyAncestor(isPopup())).fetchSemanticsNodes()
-        assertEquals(listOf(TAG_READER_SEARCH, TAG_READER_GO_TO_PAGE, TAG_READER_OPEN_ANOTHER), items.map { it.config[SemanticsProperties.TestTag] })
+        assertEquals(
+            listOf(TAG_READER_SEARCH, TAG_READER_GO_TO_PAGE, TAG_READER_OPEN_ANOTHER, TAG_READER_SHARE, TAG_READER_PRINT),
+            items.map { it.config[SemanticsProperties.TestTag] },
+        )
+        rule.onNodeWithTag(TAG_READER_SHARE).assertContentDescriptionEquals(str(R.string.reader_share))
+        rule.onNodeWithTag(TAG_READER_PRINT).assertContentDescriptionEquals(str(R.string.reader_print))
         rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
         rule.waitForIdle()
         answer(takePdfPicker(), null)
         assertTrue("the menu closed", !exists(TAG_READER_GO_TO_PAGE))
         rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("report.pdf")
+    }
+
+    @Test
+    fun shareFromTheMenuOpensTheShareSheetForACopyOfTheDocument() {
+        CoreTestSupport.clearFileProviderCache()
+        openDocument("Shared report.pdf")
+        openMenu()
+        rule.onNodeWithTag(TAG_READER_SHARE).performClick()
+        var started: Intent? = null
+        waitUntil("share sheet") { started = started ?: shadow().nextStartedActivity; started != null }
+        val chooser = requireNotNull(started)
+        assertEquals(Intent.ACTION_CHOOSER, chooser.action)
+        val send = requireNotNull(chooser.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java))
+        assertEquals(Intent.ACTION_SEND, send.action)
+        assertEquals("application/pdf", send.type)
+        assertTrue(send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        val uri = requireNotNull(send.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
+        assertEquals("app.venkat.offkit.share", uri.authority)
+        val copy = File(app.cacheDir, "shared").walkTopDown().single { it.isFile }
+        assertEquals("Shared report.pdf", copy.name)
+        assertTrue("%PDF-1.7\n%fake\n".toByteArray().contentEquals(copy.readBytes()))
+        // The document stays open.
+        rule.onNodeWithTag(TAG_READER_TITLE).assertTextEquals("Shared report.pdf")
     }
 
     @Test

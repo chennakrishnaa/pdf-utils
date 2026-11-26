@@ -33,6 +33,8 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.nio.channels.Channels
+import java.nio.channels.FileChannel
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
@@ -78,6 +80,16 @@ class ReaderDocument internal constructor(
     internal fun newTileFile(): File = File(dir, "tile-${tileCounter.incrementAndGet()}.rgba")
 
     internal fun newTextFile(): File = File(dir, "text-${tileCounter.incrementAndGet()}.bin")
+
+    /** The last copy [PdfReader.prepareShare] made of this document (under `cacheDir/shared/`), or null. */
+    @Volatile
+    internal var sharedCopy: SharedCopy? = null
+
+    /**
+     * True if the document needs a password to open ([isEncrypted] and opened with a non-empty
+     * one). A PDF with only an owner password opens without one and is not protected here.
+     */
+    val needsPassword: Boolean get() = isEncrypted && !password.isNullOrEmpty()
 }
 
 /**
@@ -414,6 +426,43 @@ class PdfReader internal constructor(
         document.markClosed()
         deleteFolder(document)
     }
+
+    /**
+     * Opens [document]'s private copy (the original bytes, unchanged) for reading. Throws
+     * [IOException] if the document is closed or its copy is gone. The returned channel keeps the
+     * bytes readable after [close] deletes the folder (the file is only unlinked), so a reader of
+     * it never races the deletion; the caller closes it. Blocking: call off the main thread.
+     */
+    fun openSource(document: ReaderDocument): FileChannel {
+        if (document.closed) throw IOException("Document closed")
+        return FileInputStream(document.file).channel
+    }
+
+    /**
+     * Copies [document]'s private copy, byte for byte, to `cacheDir/shared/<random id>/<name>` (name:
+     * [PdfJobs.shareFileName] of the display name) on the IO dispatcher and returns its share Uri.
+     * [onProgress] gets (copied, total) bytes on the IO dispatcher. Nothing else under
+     * `cacheDir/shared/` is touched (a job result's shared copy stays); the copy lives until the
+     * next job start or process start ([PdfJobs.wipeShared], [PdfJobs.get]). Sharing the same
+     * document again reuses its copy while it still exists. Throws [IOException] (the partial copy
+     * is deleted) or [CancellationException].
+     */
+    suspend fun prepareShare(document: ReaderDocument, onProgress: (Long, Long) -> Unit = { _, _ -> }): ShareRequest =
+        withContext(jobs.ioDispatcher) {
+            val name = PdfJobs.shareFileName(document.name)
+            val source = openSource(document)
+            source.use { channel ->
+                val total = channel.size()
+                document.sharedCopy?.let { copy ->
+                    if (copy.request.name == name && copy.file.isFile && copy.file.length() == total) {
+                        return@withContext copy.request
+                    }
+                }
+                jobs.copyToShared(Channels.newInputStream(channel), name, total, onProgress).also {
+                    document.sharedCopy = it
+                }.request
+            }
+        }
 
     /**
      * Deletes [document]'s folder on the engine thread, so deletions never run concurrently with
