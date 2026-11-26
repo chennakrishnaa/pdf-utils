@@ -653,3 +653,71 @@ Independent review (K7) of the code at `f016e77`, recorded by N1. The reviewer c
 - **Q1 (fix).** Pass 1 read binary stream data as PDF syntax, so stray bytes in image data carried scanner state into later objects. That caused the false refusals and could also hide a real object-stream bomb from the scan. Pass 1 now finds every `obj` keyword in the file, parses each object from its own header with fresh state, and never tokenises stream data. Tests failed before the fix. On the corpus every file opens in the reader, all encrypted variants open with the right password, and the tool path matches `8658d50` on every file. Q1 has had no independent review.
 - **Behaviour change in the tools from Q1.** A PDF with an ICC profile stream compressed with a filter chain (for example two Flate filters) is now refused at open by the tools and the reader. The old scan let it through only because of the state leak; the documented policy always refused it. An ordinary ICC profile with a single Flate filter still opens (tested). `CompressColorSpaceGateTest` case `icc-double-flate` now expects the refusal.
 - **P2 (on device).** `EncryptedOnDeviceTest` runs AES-256 (non-ASCII password), RC4-128 and owner-password-only PDFs through the real engine process, and the real `ReaderViewModel` through locked, wrong password, right password, search and a cancelled prompt. Emulator smoke: `tests=43 failures=0 errors=0`.
+
+## Reader: "read any PDF" round (T1, U1, V1, W1–W5, Z1, Z2, Y1), 2026-11-26
+
+The owner tested on a phone, had `pdf-reader` merged into `main` and pushed, and directed: do not honour a PDF's no-copy/no-print flags, do not block screenshots, and make the reader open as many PDFs as possible. That settles HANDOFF decisions 19, 20, 22 and 24 (the current image gate stays; no conservative redesign).
+
+### Refusal sweep (T1)
+
+`ReaderCorpusTest` (ignored unless `OFFKIT_CORPUS2` is set) runs every PDF of a corpus through the reader path on the host: open with the object-stream scan, then per page (first 30) the annotation check, the image gate, a render at about 1080 px and page text. Each failure is compared with stock MuPDF (`Document.openDocument` + `Page.run`, no Offkit checks). Corpus: the 1,105 PDFs of Mozilla pdf.js `test/pdfs` (kept outside the repo).
+
+| | First run (`44334c3`) | After the fixes (`56882f1`) |
+|---|---|---|
+| Opened and rendered | 1,071 | 1,075 |
+| Refused or failed | 32 | 28 |
+| Timed out (stock MuPDF too) | 2 | 2 |
+
+No file that opened in the first run is refused in the second. Of the 28: 20 cannot be read by stock MuPDF either (zero pages, open or page-count failure, a page-tree cycle), 6 need a password the corpus does not supply, 1 needs over 3 GB in stock MuPDF (`issue19517.pdf`, now refused by the image gate, before by the scan), and 2 are false refusals left as they are: `Brotli-Prototype-FileA.pdf` (object stream with `/BrotliDecode`; would need a Brotli decoder in the scan) and `issue18042.pdf` (a page with one DCT image that is not a JPEG; skipping the charge is safe only if the gate's JPEG scan accepts everything libjpeg does, which was not shown). Blank pages: 54 files render at least one blank page and stock MuPDF renders the same pages blank; the reader draws annotations and form widgets (`Page.run`). The two `tiling-pattern-tiny-steps*` files never finish in MuPDF; in the app each tile ends at the 30 s render limit with an engine restart.
+
+### Fixes
+
+| Id | Change | Evidence |
+|---|---|---|
+| W1 | `ObjStmScan` accepts one `ASCII85Decode`/`ASCIIHexDecode` layer (alone or before one Flate) on an object stream, in both passes; the decoder copies MuPDF's `next_a85d`/`next_ahxd`; the decoded size is measured (an A85 `z` expands 1 to 4), the bytes consumed are charged to the work bound. Shared with merge and compress. | `ObjStmAsciiTest`; `issue19532.pdf` opens. |
+| W2 | Image gate reads a DCT header behind one ASCIIHex/ASCII85 layer, capped like the Flate case. Reader annotation cap is `MAX_READER_ANNOTS_PER_PAGE` = 65,536; the tools keep 10,000. | `RenderImageGateTest` `w2_*`, `AnnotsBoundTest`; `xobject-image.pdf` opens. |
+| W3 | Gate budgets: `MAX_NESTING` 32 to 512, `MAX_VISITS` 20,000 to 100,000; `MAX_WALK_MILLIS` (2 s, checked on every unit) and all decoded-size limits unchanged. A hostile page can make the walk hold about 2.5 times more names than before until the clock stops it (about 210 MB heap on the host, test JVM included). | `RenderImageGateTest` `w3_*`; `issue6961.pdf` (levels up to 136, 70,769 units) and `bug1978317.pdf` (32,768 annotations) open. |
+| W4 | **Bypass, older than this round.** The scan started stream data after one CR/LF; MuPDF (`pdf_parse_ind_obj`) skips spaces and then consumes exactly one byte (plus LF after CR). After `stream(`, `stream%`, `stream>`, `stream \n` the scan inflated from the wrong offset and measured about 0 while MuPDF read the bomb. The scan now uses MuPDF's rule; keywords decode `#xx`; the inflater is drained at end of input. | `ObjStmAsciiTest.streamStartVariants_*` (bombs in 11 variants refused; differential against MuPDF's `readStream`). |
+| W5 | **Bypass, older than this round.** MuPDF lexes keywords through `lex_name`, so `5 0 o#62j` is an object header (classic xref, xref stream and repair). The scan searched for literal `obj` and never parsed such objects. `nextObj` now accepts every escaped spelling; `lexName` follows `lex_name` exactly (`#00` and short escapes stay literal). | `ObjStmAsciiTest.escapedObjHeaders_*`, `objLookalikes_*`, `headerNumberSpellings_*`, `nameEscapes_*`, `nulEscapes_*`. |
+| U1 | No product change. AES-128 (V4 R4) fixtures made with pypdf and tests; Latin-1 passwords on RC4/AES-128; non-BMP passwords. | On the emulator an AES-256 PDF opens with a password containing U+1F511. On the host JVM it does not (HotSpot passes modified UTF-8 to MuPDF's JNI); `nonBmpPasswordOnAes256_hostJvmKnownGap` records that. On R2 to R4 files MuPDF drops characters outside PDFDocEncoding, so such passwords never match (MuPDF behaviour). |
+| V1 | K7-6 fixed: search matching and hit rectangles run on a `compute` dispatcher (`Dispatchers.Default`); results are applied on main in document order; `SearchMath.find`/`rectsOf` take a cancellation checkpoint (every 1,024 characters / each hit). | `ReaderSearchTest`, `ReaderViewModelTest`. |
+
+### Review Z1 (engine, read-only, at `4321cae`)
+
+Scope: M1, M2, Q1, W1 to W4. The reviewer compared the code with MuPDF's sources and **ran no experiments**; it did not review R1 or V1 (see Z2). Verdict: sound to ship; no demonstrated bypass.
+
+| Id | Severity | Finding | Status |
+|---|---|---|---|
+| Z1-1 | Medium | K7-3 residual stands: a damaged PDF with only an owner password is repaired inside `openDocument` (`pdf_repair_obj_stms` reads each object stream's offset table through the decrypting filter chain) before pass 2 can measure it, and pass 2 refuses only a repair that happens during pass 2. Not run. | **Open, by decision.** The suggested fix (refuse every encrypted file that was repaired before pass 2) would refuse every damaged owner-password PDF, against the owner's direction; the read is streaming and bounded by the engine's time limits and memory watchdog. |
+| Z1-2 | Medium | RF-8 stands in principle: a lazy xref repair during `Page.run` could re-point a checked image to a later, larger duplicate. No trigger found that fires only after the gate. Not run. | Open. Contained by the watchdog and process isolation. |
+| Z1-3 | Low | `lexName` decoded `#00` to NUL; MuPDF keeps it literal. Not exploitable as found. | Fixed in W5 (`56882f1`). |
+| Z1-4 | Note | Reader's 65,536 annotations per page: about 30 MB, within budget; a page with that many annotations and large appearance dictionaries can exhaust the gate's visit budget (refused). | No change. |
+| Z1-5 | Note | A Java `OutOfMemoryError` in the gate's walk is caught in `RenderPageOp.run` and reported as `PdfError.OutOfMemory`. | Sound. |
+
+Found sound by reading: the W1 decoders against `filter-basic.c`; W4's `dataStart` against `pdf-parse.c`; dictionary, string and filter parsing; narrowing fallbacks; DCT/JPX header gates; per-role visited sets. Not covered: W5 (written during the review), JBIG2/CCITT internals, inline images.
+
+### Review Z2 (R1 and V1, read-only, 13 probe tests run)
+
+Verdict: both sound to ship; no High or Medium finding.
+
+| Id | Severity | Finding | Status |
+|---|---|---|---|
+| Z2-1 | Low | Next/Previous onto a hit whose page's rectangles are being fetched reveals the page top only. | Fixed in Y1 (`9831764`). |
+| Z2-2 | Low | `fetchRects` stores rectangles for a page that left the viewport during the fetch. | Fixed in Y1 (`1e44662`). |
+| Z2-3 | Low | A page whose text read fails is fetched again on every viewport report. | Fixed in Y1 (`92b47ee`). |
+| Z2-4 | Low | Result screen: Share then Open before the share is ready; on Back the share chooser appears unasked. Not run. | Fixed in Y1 (`7cd279b`): Open cancels a share still being prepared. |
+| Z2-5 | Note | Home: a recent-file tap whose availability check answers after Home is paused or left is dropped silently, or navigates late; no busy indication. | Open. |
+| Z2-6 | Note | Result screen: Open is enabled while a save is running. | Fixed in Y1 (`8121c6f`). |
+| Z2-7 | Note | Process death in the one frame between navigating to the reader and its first composition restores to the picker. | Open (note). |
+| Z2-8 | Note | `rectJobs` bookkeeping would break if `reader.text` returned without suspending; not reachable today. | Open (note). |
+
+Checked and sound (run): no picker over a document opened from Recents, including after process death (lands on Home); protected, corrupt and no-longer-readable recents; no stale search results after a new query, close, another document or a locked PDF; the 10,000-hit cap. By reading: job output is not touched by the reader's cleanup; `takePersistableUriPermission` only in `RecentFiles.kt`; no data race on `SearchResults`.
+
+### Still open after this round
+
+- Z1-1 (K7-3 residual), Z1-2 (RF-8), Z2-5, Z2-7, Z2-8, H5-5, H5-8, H5-10.
+- W1 to W5 changed the scan after or during Z1; W5 and Y1 have had no independent review. The scan re-implements parts of MuPDF's lexer; W4 and W5 were both mismatches of that kind, found by the workers, not by a review.
+- The scan fails closed on object numbers written `+5 0`, `5 +0`, `5 0%c` before `obj` (no number recorded; pass 2 refuses an encrypted file written that way).
+- Phones: the gate's 2 s walk limit and the larger budgets were measured on the build machine only (`issue6961.pdf` walk 285 ms there).
+- The two false refusals left (Brotli object stream, non-JPEG DCT image).
+
