@@ -185,7 +185,11 @@ class ReaderSearchTest {
                 results = results,
                 textOf = { ReaderText.Ok(TestPageTexts.grid("a cat", "cat")) },
                 awaitTurn = {},
-                near = { callerThreads += Thread.currentThread().name; it == 1 },
+                near = { p ->
+                    callerThreads += Thread.currentThread().name
+                    assertTrue("a page's hits are recorded only after its off-thread work", results.hits.none { it.page == p })
+                    p == 1
+                },
                 publish = { callerThreads += Thread.currentThread().name },
                 reveal = { hit, rects -> callerThreads += Thread.currentThread().name; reveals += hit to rects },
                 compute = compute,

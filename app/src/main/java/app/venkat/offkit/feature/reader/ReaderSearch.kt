@@ -268,15 +268,20 @@ internal suspend fun scanPages(
                     val f = SearchMath.find(text.text, SearchMath.lineStarts(text), query, page, limit) { ctx.ensureActive() }
                     f to if (wantFirst && f.isNotEmpty()) text.rects(f[0].start until f[0].endExclusive) else null
                 }
-                results.addPage(found)
-                if (found.isNotEmpty() && near(page)) {
-                    val rects = withContext(compute) {
+                val rects = if (found.isNotEmpty() && near(page)) {
+                    withContext(compute) {
                         val ctx = currentCoroutineContext()
                         SearchMath.rectsOf(text, found) { ctx.ensureActive() }
                     }
-                    // The viewport may have moved on while they were computed.
-                    if (near(page)) results.rects[page] = rects
+                } else {
+                    null
                 }
+                // The viewport may have moved on while the rectangles were computed.
+                val keepRects = rects != null && near(page)
+                // From here to publish() nothing suspends: the page is applied to results at once,
+                // as before, so the main thread never sees its hits without their current hit.
+                results.addPage(found)
+                if (keepRects) results.rects[page] = rects!!
                 if (results.current == null && found.isNotEmpty()) {
                     results.current = found[0]
                     reveal(found[0], firstRects ?: text.rects(found[0].start until found[0].endExclusive))
