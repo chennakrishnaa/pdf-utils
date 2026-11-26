@@ -579,6 +579,35 @@ class ReaderViewModelTest {
     }
 
     @Test
+    fun rectanglesThatArriveAfterTheirPageLeftTheViewportAreNotKept() {
+        val compute = HoldableDispatcher()
+        try {
+            val vm = newVm(compute = compute)
+            fake.readerPages = List(10) { PageDims(595f, 842f) }
+            for (p in listOf(0, 9)) fake.readerTexts[p] = TestPageTexts.grid("a Cat and", "another cat")
+            openVm(vm)
+            vm.onViewport(WIDTH, 1f, listOf(band(9)))
+            vm.search("cat", 9)
+            searchDone(vm)
+            assertEquals(setOf(9), vm.search.value!!.rects.keys)
+            compute.hold()
+            vm.onViewport(WIDTH, 1f, listOf(band(0)))
+            CoreTestSupport.idleUntil(message = "page 0 rects held") { compute.held.get() == 1 }
+            vm.onViewport(WIDTH, 1f, listOf(band(9)))
+            compute.release()
+            CoreTestSupport.idleUntil(message = "computed") { compute.held.get() == 0 && compute.ran.get() > 0 }
+            val settle = System.currentTimeMillis() + 200
+            CoreTestSupport.idleUntil { System.currentTimeMillis() > settle }
+            assertFalse("no rects kept for page 0", vm.search.value!!.rects.containsKey(0))
+            // The page is fetched again when it comes back into view.
+            vm.onViewport(WIDTH, 1f, listOf(band(0)))
+            CoreTestSupport.idleUntil(message = "rects of page 0") { vm.search.value?.rects?.containsKey(0) == true }
+        } finally {
+            compute.close()
+        }
+    }
+
+    @Test
     fun aNewQueryCancelsTheOldScanAndLeavesNoStaleHits() {
         val vm = newVm()
         fake.readerPages = List(8) { PageDims(595f, 842f) }
@@ -809,6 +838,9 @@ private class HoldableDispatcher : CoroutineDispatcher() {
     /** Tasks waiting at the gate. */
     val held = AtomicInteger()
 
+    /** Held tasks that have run. */
+    val ran = AtomicInteger()
+
     fun hold() {
         gate = CountDownLatch(1)
     }
@@ -827,6 +859,7 @@ private class HoldableDispatcher : CoroutineDispatcher() {
                 held.decrementAndGet()
             }
             block.run()
+            if (g != null) ran.incrementAndGet()
         }
     }
 

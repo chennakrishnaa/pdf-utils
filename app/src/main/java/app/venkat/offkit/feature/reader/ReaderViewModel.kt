@@ -654,6 +654,8 @@ class ReaderViewModel internal constructor(
                 }
                 if (results !== res) return@launch
                 rectJobs.remove(page)
+                // Kept only if still wanted: near the viewport, or the page of the hit waiting to be revealed.
+                if (!nearViewport(page) && pendingReveal?.page != page) return@launch
                 res.rects[page] = rects
                 publish(res)
                 val hit = pendingReveal
