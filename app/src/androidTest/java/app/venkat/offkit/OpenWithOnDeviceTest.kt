@@ -47,19 +47,22 @@ class OpenWithOnDeviceTest {
         scratch.deleteRecursively()
     }
 
+    /** Live `MainActivity` instances; main thread only. */
+    private fun mainActivitiesOnMain(): List<Activity> {
+        val registry = ActivityLifecycleMonitorRegistry.getInstance()
+        return listOf(Stage.PRE_ON_CREATE, Stage.CREATED, Stage.STARTED, Stage.RESUMED, Stage.PAUSED, Stage.STOPPED, Stage.RESTARTED)
+            .flatMap { registry.getActivitiesInStage(it) }
+            .filterIsInstance<MainActivity>()
+    }
+
     private fun mainActivities(): List<Activity> {
         var result: List<Activity> = emptyList()
-        instrumentation.runOnMainSync {
-            val registry = ActivityLifecycleMonitorRegistry.getInstance()
-            result = listOf(Stage.PRE_ON_CREATE, Stage.CREATED, Stage.STARTED, Stage.RESUMED, Stage.PAUSED, Stage.STOPPED, Stage.RESTARTED)
-                .flatMap { registry.getActivitiesInStage(it) }
-                .filterIsInstance<MainActivity>()
-        }
+        instrumentation.runOnMainSync { result = mainActivitiesOnMain() }
         return result
     }
 
     private fun finishMainActivities() {
-        instrumentation.runOnMainSync { mainActivities().forEach { it.finish() } }
+        instrumentation.runOnMainSync { mainActivitiesOnMain().forEach { it.finish() } }
         val deadline = SystemClock.uptimeMillis() + 10_000
         while (mainActivities().isNotEmpty() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
     }
