@@ -58,7 +58,8 @@ class ObjStmScanTest {
     fun unboundableFilter_isRefused_butGarbageFlateIsNot() {
         val chain = HostilePdf()
         basicPage(chain)
-        chain.add(20, "<</Type/ObjStm/N 1/First 4/Filter[/ASCIIHexDecode/FlateDecode]/Length 4>>stream\n3030\nendstream")
+        // W1: ASCII before Flate is measured now (ObjStmAsciiTest); RunLength before Flate is not.
+        chain.add(20, "<</Type/ObjStm/N 1/First 4/Filter[/RunLengthDecode/FlateDecode]/Length 4>>stream\n3030\nendstream")
         assertTooLarge { ObjStmScan.check(write("chain.pdf", chain.bytes())) }
         val lzw = HostilePdf()
         basicPage(lzw)

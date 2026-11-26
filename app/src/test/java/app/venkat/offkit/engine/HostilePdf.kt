@@ -14,14 +14,16 @@ internal class HostilePdf {
 
     fun add(num: Int, body: String) = apply { objs[num] = body.toByteArray(Charsets.ISO_8859_1) }
 
-    fun stream(num: Int, dict: String, data: ByteArray, flate: Boolean = true) = apply {
-        val d = if (flate) deflate(data) else data
-        val f = if (flate) "/Filter/FlateDecode" else ""
+    /** [encode], when given, makes the stream's data and its `/Filter` value (e.g. `[/A85/Fl]`) instead of Flate. */
+    fun stream(num: Int, dict: String, data: ByteArray, flate: Boolean = true, encode: ((ByteArray) -> Pair<String, ByteArray>)? = null) = apply {
+        val e = encode?.invoke(data)
+        val d = e?.second ?: if (flate) deflate(data) else data
+        val f = if (e != null) "/Filter${e.first}" else if (flate) "/Filter/FlateDecode" else ""
         objs[num] = "<<$dict$f/Length ${d.size}>>stream\n".latin1() + d + "\nendstream".latin1()
     }
 
     /** One object stream [num] holding [members] (object number to body); [dictExtra] is added to its dictionary. */
-    fun objStm(num: Int, members: List<Pair<Int, ByteArray>>, dictExtra: String = "/Type/ObjStm", flate: Boolean = true, nKey: String = "N") = apply {
+    fun objStm(num: Int, members: List<Pair<Int, ByteArray>>, dictExtra: String = "/Type/ObjStm", flate: Boolean = true, nKey: String = "N", encode: ((ByteArray) -> Pair<String, ByteArray>)? = null) = apply {
         val header = StringBuilder()
         var off = 0
         for ((n, b) in members) {
@@ -35,7 +37,7 @@ internal class HostilePdf {
             body.write(b)
             body.write('\n'.code)
         }
-        stream(num, "$dictExtra/$nKey ${members.size}/First ${header.length}", body.toByteArray(), flate)
+        stream(num, "$dictExtra/$nKey ${members.size}/First ${header.length}", body.toByteArray(), flate, encode)
         members.forEachIndexed { i, (n, _) -> inStm[n] = num to i }
     }
 

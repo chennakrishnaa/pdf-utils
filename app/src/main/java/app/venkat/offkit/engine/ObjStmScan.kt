@@ -49,9 +49,20 @@ import java.util.zip.Inflater
  *   bounded [Inflater] into a scratch buffer, stopping at the bound. A stream that is not valid
  *   zlib (e.g. encrypted) counts what it yielded and is otherwise ignored, so encrypted files still
  *   reach the Encrypted check; `/DecodeParms` predictors only shrink the output, so they are ignored;
- * - any other filter, a chain, or an indirect / non-name `/Filter`: the file is refused. MuPDF would
- *   decode them (LZW, RunLength, ASCII chains), and their expansion cannot be bounded here without
- *   reimplementing them; legitimate writers use Flate alone for object streams.
+ * - W1: one ASCII filter (`/ASCII85Decode` or `/A85`, `/ASCIIHexDecode` or `/AHx`), alone or in
+ *   front of that single Flate (`[/A85 /Fl]`, legacy Distiller / Ghostscript ASCII output): decoded
+ *   by [AsciiDecoder] (byte for byte MuPDF's `next_a85d` / `next_ahxd`), streamed into the bounded
+ *   inflater or counted directly. The ASCII data is read from the stream start to its end-of-data
+ *   marker (`~>`, `>`), a byte MuPDF would refuse (MuPDF then treats the stream as ended), or the
+ *   end of the file: never to `/Length` or `endstream` (`endstream` is valid ASCII85 data). A85's
+ *   `z` makes 4 bytes of 1, so the ASCII output is measured, never the raw length: the ASCII-only
+ *   output counts as decoded bytes, the ASCII output fed to the inflater as its consumed bytes. Every
+ *   raw byte the ASCII decoder consumes (white space too) is charged to the scan's work bound (twice
+ *   the file size plus 64 MiB, below), so overlapping candidates cannot make it quadratic;
+ * - any other filter (LZW, RunLength, Crypt, image filters, ...), more than one ASCII filter, an
+ *   ASCII filter after Flate, more than one Flate (`[/Fl /Fl]` multiplies a bomb), or an indirect /
+ *   non-name `/Filter`: the file is refused. Their expansion cannot be bounded here without
+ *   reimplementing them; legitimate writers use Flate (rarely behind ASCII) for object streams.
  * Refused (`OutOfMemory`, "too large") when one candidate decodes to more than [maxStream] bytes
  * (16 MiB) or all candidates together to more than [maxTotal] bytes (64 MiB). Compressed bytes
  * consumed by the inflater are charged against the same bounds, so overlapping candidates (an
@@ -60,18 +71,18 @@ import java.util.zip.Inflater
  * Encrypted files (reader only; the tools refuse every encrypted PDF): the data of an encrypted
  * object stream is ciphertext here, so pass 1 cannot measure it (not valid zlib: ignored above;
  * an attacker who knows the key could even make the ciphertext inflate harmlessly). So pass 1 also
- * records EVERY Flate candidate in [Result.flate], with the object number and generation of the
- * `N G obj` header in front of it, and the bytes charged for unfiltered candidates in
- * [Result.rawTotal] (ciphertext is as long as the plaintext, plus at most 32 bytes for AES).
- * [checkDecrypted] (pass 2) runs after MuPDF authenticated the password and BEFORE anything
- * resolves an object that may live in an object stream (the page count): it reads each recorded
- * object's stream through MuPDF (`readRawStream`: crypt filter applied, no other filter) and
- * enforces the same limits on the plaintext: the same filter policy (none, or Flate alone;
- * anything else, including a stream-level `/Crypt` filter, refused), [maxStream] per stream and
- * [maxTotal] for all object streams together, decoded and consumed bytes, starting from
- * [Result.rawTotal]. Refused also: a Flate candidate with no readable header, more than
- * [MAX_RECORDED] Flate candidates, a recorded object that MuPDF does not resolve to a stream, or a
- * raw stream over [maxStream].
+ * records EVERY filtered candidate (Flate, ASCII, or ASCII then Flate) in [Result.flate], with the
+ * object number and generation of the `N G obj` header in front of it, and the bytes charged for
+ * unfiltered candidates in [Result.rawTotal] (ciphertext is as long as the plaintext, plus at most
+ * 32 bytes for AES). [checkDecrypted] (pass 2) runs after MuPDF authenticated the password and
+ * BEFORE anything resolves an object that may live in an object stream (the page count): it reads
+ * each recorded object's stream through MuPDF (`readRawStream`: crypt filter applied, no other
+ * filter) and enforces the same limits on the plaintext: the same filter policy (none, Flate,
+ * ASCII, or ASCII then Flate; anything else, including a stream-level `/Crypt` filter, refused),
+ * [maxStream] per stream and [maxTotal] for all object streams together, decoded and consumed bytes
+ * (ASCII input included), starting from [Result.rawTotal]. Refused also: a filtered candidate with
+ * no readable header, more than [MAX_RECORDED] filtered candidates, a recorded object that MuPDF
+ * does not resolve to a stream, or a raw stream over [maxStream].
  *
  * This is a MITIGATION, not a guarantee. The remaining mismatch with MuPDF's own object discovery:
  * the scan's lexer is an approximation of MuPDF's (shapes known to differ are refused, M2-2); an
@@ -94,15 +105,15 @@ internal object ObjStmScan {
     fun check(file: File, maxStream: Long = MAX_STREAM_BYTES, maxTotal: Long = MAX_TOTAL_BYTES): Result =
         RandomAccessFile(file, "r").use { raf -> Scanner(raf.channel, maxStream, maxTotal).run() }
 
-    /** Most Flate candidates recorded; an encrypted file with more is refused by [checkDecrypted]. */
+    /** Most filtered candidates recorded; an encrypted file with more is refused by [checkDecrypted]. */
     const val MAX_RECORDED = 10_000
 
     /** An object reference `num gen R`; [num] is -1 when the scan saw no `num gen obj` header. */
     data class Ref(val num: Int, val gen: Int)
 
     /**
-     * Outcome of a passed pass 1: every Flate candidate ([flate]; [overflow] when more than
-     * [MAX_RECORDED]) and the bytes charged for unfiltered candidates ([rawTotal]).
+     * Outcome of a passed pass 1: every filtered (Flate and/or ASCII) candidate ([flate]; [overflow]
+     * when more than [MAX_RECORDED]) and the bytes charged for unfiltered candidates ([rawTotal]).
      */
     class Result(val flate: List<Ref>, val overflow: Boolean, val rawTotal: Long)
 
@@ -133,36 +144,29 @@ internal object ObjStmScan {
                 val isStream = obj.isStream
                 checkRepair()
                 if (!isStream) tooLargeInput()
-                val flate = when (streamFilter(obj)) {
-                    null -> false
-                    "FlateDecode", "Fl" -> true
-                    else -> tooLargeInput()
-                }
+                val chain = streamFilters(obj)?.let { chainOf(it) } ?: tooLargeInput()
                 val raw = obj.readRawStream()
                 if (raw.size > maxStream) tooLargeInput()
-                if (!flate) {
+                if (chain.ascii == null && !chain.flate) {
                     totalOut += raw.size
                 } else {
-                    val inf = Inflater()
-                    try {
-                        inf.setInput(raw)
-                        val scratch = ByteArray(CHUNK)
-                        var out = 0L
-                        while (!inf.finished()) {
-                            val got = try {
-                                inf.inflate(scratch)
-                            } catch (e: DataFormatException) {
-                                break // MuPDF stops there too
-                            }
-                            out += got
-                            if (out > maxStream || totalOut + out > maxTotal) tooLargeInput()
-                            if (got == 0 && (inf.needsInput() || inf.needsDictionary())) break
-                        }
-                        totalOut += out
-                        totalIn += inf.bytesRead
-                    } finally {
-                        inf.end()
+                    var pos = 0
+                    val plain = Source { buf ->
+                        val n = minOf(buf.size, raw.size - pos)
+                        System.arraycopy(raw, pos, buf, 0, n)
+                        pos += n
+                        n
                     }
+                    val src = if (chain.ascii == null) plain else AsciiSource(plain, AsciiDecoder(chain.ascii)) { n ->
+                        totalIn += n
+                        if (totalIn > maxTotal) tooLargeInput()
+                    }
+                    val m = measure(src, chain.flate) { out, read ->
+                        if (out > maxStream || read > maxStream) tooLargeInput()
+                        if (totalOut + out > maxTotal || totalIn + read > maxTotal) tooLargeInput()
+                    }
+                    totalOut += m[0]
+                    totalIn += m[1]
                 }
                 if (totalOut > maxTotal || totalIn > maxTotal) tooLargeInput()
             } finally {
@@ -175,10 +179,11 @@ internal object ObjStmScan {
     private fun tooLargeInput(): Nothing = throw PdfInputException(PdfError.OutOfMemory)
 
     /**
-     * The single filter name of [stream] (`Filter|F`, as `pdf_open_filter`; null: none); "?" for a
-     * chain, an indirect or non-name filter (including an `/F` file specification, K7-2).
+     * The filter names of [stream] (`Filter|F`, as `pdf_open_filter`; empty: none); null for an
+     * indirect or non-name filter or element (including an `/F` file specification, K7-2) or an
+     * array longer than any accepted chain.
      */
-    private fun streamFilter(stream: PDFObject): String? {
+    private fun streamFilters(stream: PDFObject): List<String>? {
         val f = stream.get("Filter").let {
             if (!it.isNull) it else {
                 if (it !== PDFObject.Null) it.destroy()
@@ -186,26 +191,222 @@ internal object ObjStmScan {
             }
         }
         try {
-            if (f.isIndirect) return "?"
+            if (f.isIndirect) return null
             return when {
-                f.isNull -> null
-                f.isName -> f.asName()
-                f.isArray -> when (f.size()) {
-                    0 -> null
-                    1 -> {
-                        val e = f.get(0)
+                f.isNull -> emptyList()
+                f.isName -> listOf(f.asName())
+                f.isArray -> {
+                    val n = f.size()
+                    if (n > 2) return null
+                    (0 until n).map { i ->
+                        val e = f.get(i)
                         try {
-                            if (e.isName && !e.isIndirect) e.asName() else "?"
+                            if (e.isName && !e.isIndirect) e.asName() else return null
                         } finally {
                             if (e !== PDFObject.Null) e.destroy()
                         }
                     }
-                    else -> "?"
                 }
-                else -> "?"
+                else -> null
             }
         } finally {
             if (f !== PDFObject.Null) f.destroy()
+        }
+    }
+
+    /**
+     * An accepted object-stream filter chain: an optional ASCII filter ([ascii]: true ASCII85, false
+     * ASCIIHex, null none) then an optional single Flate.
+     */
+    private class Chain(val ascii: Boolean?, val flate: Boolean)
+
+    /** W1: `[]`, `[Fl]`, `[A]`, `[A Fl]` (A: one ASCII filter, either spelling); anything else is null (refused). */
+    private fun chainOf(names: List<String>): Chain? {
+        var i = 0
+        var ascii: Boolean? = null
+        when (names.getOrNull(i)) {
+            "ASCII85Decode", "A85" -> { ascii = true; i++ }
+            "ASCIIHexDecode", "AHx" -> { ascii = false; i++ }
+        }
+        var flate = false
+        if (names.getOrNull(i).let { it == "FlateDecode" || it == "Fl" }) { flate = true; i++ }
+        return if (i == names.size) Chain(ascii, flate) else null
+    }
+
+    /** A pull source of stream bytes: fills [read]'s buffer from index 0 and returns the count, 0 or less at its end. */
+    private fun interface Source {
+        fun read(buf: ByteArray): Int
+    }
+
+    /** [raw] decoded by [dec]; every raw byte the decoder consumes is passed to [charge] first. */
+    private class AsciiSource(private val raw: Source, private val dec: AsciiDecoder, private val charge: (Int) -> Unit) : Source {
+        private val rbuf = ByteArray(CHUNK)
+        private var rpos = 0
+        private var rlen = 0
+
+        override fun read(buf: ByteArray): Int {
+            var n = 0
+            while (!dec.ended && n <= buf.size - 4) {
+                if (rpos == rlen) {
+                    rpos = 0
+                    rlen = maxOf(0, raw.read(rbuf))
+                    if (rlen == 0) break
+                }
+                val used = dec.decode(rbuf, rpos, rlen, buf, n)
+                charge(used)
+                rpos += used
+                n += dec.produced
+            }
+            return n
+        }
+    }
+
+    /**
+     * Decoded size of the stream [src] yields, inflated with a bounded [Inflater] when [flate];
+     * [check] gets the bytes decoded so far and the inflater input consumed so far after every step
+     * (it throws to refuse). Returns `[decoded, inflater input]`. Data that is not valid zlib ends
+     * the stream (what was decoded counts), as MuPDF stops there too.
+     */
+    private inline fun measure(src: Source, flate: Boolean, check: (out: Long, read: Long) -> Unit): LongArray {
+        val buf = ByteArray(CHUNK)
+        if (!flate) {
+            var out = 0L
+            while (true) {
+                val r = src.read(buf)
+                if (r <= 0) break
+                out += r
+                check(out, 0L)
+            }
+            return longArrayOf(out, 0L)
+        }
+        val inf = Inflater()
+        try {
+            val scratch = ByteArray(CHUNK)
+            var out = 0L
+            while (true) {
+                if (inf.needsInput()) {
+                    val r = src.read(buf)
+                    if (r <= 0) break
+                    inf.setInput(buf, 0, r)
+                }
+                val got = try {
+                    inf.inflate(scratch)
+                } catch (e: DataFormatException) {
+                    break
+                }
+                out += got
+                check(out, inf.bytesRead)
+                if (inf.finished() || (got == 0 && inf.needsDictionary())) break
+            }
+            return longArrayOf(out, inf.bytesRead)
+        } finally {
+            inf.end()
+        }
+    }
+
+    /**
+     * W1: streaming `ASCII85Decode` ([a85]) or `ASCIIHexDecode`, byte for byte as MuPDF 1.28.5
+     * (`filter-basic.c` `next_a85d` / `next_ahxd`), because its output feeds the inflater:
+     * - white space as MuPDF's `iswhite` (NUL, TAB, LF, FF, CR, space, also BS and DEL) is skipped;
+     * - A85: `!`..`u` in groups of 5 (32-bit wrapping arithmetic, so an overflowing group still
+     *   gives 4 bytes), `z` between groups gives 4 zero bytes; `~` ends the data whatever follows
+     *   it (MuPDF only warns when it is not `>`) after the partial final group (1 char: nothing,
+     *   2 to 4 chars: 1 to 3 bytes, padded with `u` as `*85^k + 0xff..`);
+     * - AHx: hex digits in pairs; `>` ends the data, an odd final digit giving one byte (`d0`);
+     * - any other byte (and `z` inside a group) ends the data: MuPDF throws "bad data", and its
+     *   stream reader treats the throw as the end of the stream for good;
+     * - the end of input without a marker ends quietly; a partial group or odd digit there gives
+     *   nothing, as in MuPDF.
+     * MuPDF may lose up to one 256-byte output buffer more than this at bad data; never less.
+     */
+    internal class AsciiDecoder(private val a85: Boolean) {
+        /** The end of data was reached (marker or bad byte); nothing more is decoded. */
+        var ended = false
+            private set
+
+        /** Bytes written by the last [decode]. */
+        var produced = 0
+            private set
+
+        private var word = 0
+        private var count = 0
+
+        /**
+         * Decodes [inp] from [off] (exclusive [end]) into [out] from [outOff], while [out] has room
+         * for 4 more bytes and the data has not ended. Returns the input bytes consumed.
+         */
+        fun decode(inp: ByteArray, off: Int, end: Int, out: ByteArray, outOff: Int): Int {
+            var i = off
+            var o = outOff
+            while (i < end && !ended && o <= out.size - 4) {
+                val c = inp[i++].toInt() and 0xFF
+                if (a85) {
+                    when {
+                        c in '!'.code..'u'.code -> {
+                            word = word * 85 + (c - '!'.code)
+                            if (count == 4) {
+                                out[o++] = (word ushr 24).toByte()
+                                out[o++] = (word ushr 16).toByte()
+                                out[o++] = (word ushr 8).toByte()
+                                out[o++] = word.toByte()
+                                word = 0
+                                count = 0
+                            } else {
+                                count++
+                            }
+                        }
+                        c == 'z'.code && count == 0 -> repeat(4) { out[o++] = 0 }
+                        c == '~'.code -> {
+                            when (count) {
+                                2 -> {
+                                    word = word * (85 * 85 * 85) + 0xffffff
+                                    out[o++] = (word ushr 24).toByte()
+                                }
+                                3 -> {
+                                    word = word * (85 * 85) + 0xffff
+                                    out[o++] = (word ushr 24).toByte()
+                                    out[o++] = (word ushr 16).toByte()
+                                }
+                                4 -> {
+                                    word = word * 85 + 0xff
+                                    out[o++] = (word ushr 24).toByte()
+                                    out[o++] = (word ushr 16).toByte()
+                                    out[o++] = (word ushr 8).toByte()
+                                }
+                            }
+                            ended = true
+                        }
+                        !asciiWhite(c) -> ended = true
+                    }
+                } else {
+                    val h = hexDigit(c)
+                    when {
+                        h >= 0 -> if (count == 0) {
+                            word = h
+                            count = 1
+                        } else {
+                            out[o++] = ((word shl 4) or h).toByte()
+                            count = 0
+                        }
+                        c == '>'.code -> {
+                            if (count == 1) out[o++] = (word shl 4).toByte()
+                            ended = true
+                        }
+                        !asciiWhite(c) -> ended = true
+                    }
+                }
+            }
+            produced = o - outOff
+            return i - off
+        }
+
+        private fun asciiWhite(c: Int) = c == 0 || c == 8 || c == 9 || c == 10 || c == 12 || c == 13 || c == 32 || c == 0x7F
+
+        private fun hexDigit(c: Int): Int = when (c) {
+            in '0'.code..'9'.code -> c - '0'.code
+            in 'a'.code..'f'.code -> c - 'a'.code + 10
+            in 'A'.code..'F'.code -> c - 'A'.code + 10
+            else -> -1
         }
     }
 
@@ -530,13 +731,9 @@ internal object ObjStmScan {
             if (at(d) == '\r'.code) d++
             if (at(d) == '\n'.code) d++
             val slot = if (filterSlot.seen) filterSlot else fSlot
-            val filters = slot.names
-            when {
-                slot.unknown || filters.size > 1 -> tooLarge()
-                filters.isEmpty() -> countRaw(d)
-                filters[0] == "FlateDecode" || filters[0] == "Fl" -> { record(); inflate(d) }
-                else -> tooLarge()
-            }
+            if (slot.unknown) tooLarge()
+            val chain = chainOf(slot.names) ?: tooLarge()
+            if (chain.ascii == null && !chain.flate) countRaw(d) else { record(); decode(d, chain) }
         }
 
         /** An unfiltered candidate's data from [d] to the next `endstream` (or the end) counts as decoded bytes. */
@@ -555,41 +752,32 @@ internal object ObjStmScan {
             return true
         }
 
-        private fun inflate(from: Long) {
-            val inf = Inflater()
-            try {
-                val scratch = ByteArray(CHUNK)
-                val input = ByteBuffer.allocate(CHUNK)
-                var pos = from
-                var out = 0L
-                while (true) {
-                    if (inf.needsInput()) {
-                        if (pos >= size) break
-                        input.clear()
-                        val r = ch.read(input, pos)
-                        if (r <= 0) break
-                        pos += r
-                        inf.setInput(input.array(), 0, r)
-                    }
-                    val got = try {
-                        inf.inflate(scratch)
-                    } catch (e: DataFormatException) {
-                        break
-                    }
-                    out += got
-                    val read = inf.bytesRead
-                    if (out > maxStream || read > maxStream) tooLarge()
-                    if (totalOut + out > maxTotal || totalIn + read > maxTotal) tooLarge()
-                    if (inf.finished() || (got == 0 && inf.needsDictionary())) break
-                }
-                totalOut += out
-                totalIn += inf.bytesRead
-            } finally {
-                inf.end()
+        /**
+         * A filtered candidate's data from [from] (to its end of data, never `/Length`), through
+         * [chain]: the decoded bytes and the inflater's input count against the bounds; the raw
+         * bytes the ASCII decoder consumes against the work [budget].
+         */
+        private fun decode(from: Long, chain: Chain) {
+            var pos = from
+            val file = Source { buf ->
+                if (pos >= size) return@Source -1
+                val r = ch.read(ByteBuffer.wrap(buf), pos)
+                if (r > 0) pos += r
+                r
             }
+            val src = if (chain.ascii == null) file else AsciiSource(file, AsciiDecoder(chain.ascii)) { n ->
+                budget -= n
+                if (budget < 0) tooLarge()
+            }
+            val m = measure(src, chain.flate) { out, read ->
+                if (out > maxStream || read > maxStream) tooLarge()
+                if (totalOut + out > maxTotal || totalIn + read > maxTotal) tooLarge()
+            }
+            totalOut += m[0]
+            totalIn += m[1]
         }
 
-        /** Records the current Flate candidate for [checkDecrypted]. */
+        /** Records the current filtered candidate for [checkDecrypted]. */
         private fun record() {
             if (flate.size >= MAX_RECORDED) overflow = true else flate.add(objRef ?: Ref(-1, -1))
         }

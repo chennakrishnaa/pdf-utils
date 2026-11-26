@@ -223,6 +223,34 @@ class EncryptedReaderTest {
     }
 
     /**
+     * W1: an encrypted `[/A85 /Fl]`, `/AHx` or `/A85` object stream is measured on its decrypted
+     * data by pass 2 (pass 1 sees only ciphertext): benign opens, bomb refused. The A85-only bomb
+     * is NUL padding written as `z` (4.4 MB raw, 17 MiB decoded), so it is refused for its decoded
+     * size, not for its raw size.
+     */
+    @Test
+    fun w1_asciiObjectStreamBombIsRefusedAfterDecryption() {
+        val a85Fl = { b: ByteArray -> ObjStmAsciiTest.a85(deflate(b)) }
+        val ahxFl = { b: ByteArray -> ObjStmAsciiTest.ahx(deflate(b)) }
+        for ((filter, encode) in listOf(
+            "[/A85/Fl]" to a85Fl,
+            "[/ASCIIHexDecode /FlateDecode]" to ahxFl,
+            "/A85" to { b: ByteArray -> ObjStmAsciiTest.a85(b) },
+        )) {
+            val small = encryptedObjStmPdf("w1-small.pdf", padding = 1000, filter = filter, encode = encode)
+            assertTrue("$filter: benign opens", engine.pageInfo(small, "user1") is PdfPageInfo.Ok)
+            val bomb = encryptedObjStmPdf("w1-bomb.pdf", padding = 17 shl 20, filter = filter, encode = encode, padByte = '\u0000')
+            assertTrue("$filter: raw under the limit", bomb.length() < 16 shl 20)
+            ObjStmScan.check(bomb) // pass 1: ciphertext only
+            assertEquals(filter, PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb, "user1"))
+            assertEquals(filter, PdfRender.Err(PdfError.OutOfMemory), render(bomb, "user1"))
+        }
+        // A chain refused in pass 1 is refused in pass 2 too (here: the ciphertext hides nothing from the dictionary).
+        val twoFlate = encryptedObjStmPdf("w1-ff.pdf", padding = 1000, filter = "[/A85/Fl/Fl]", encode = { b -> ObjStmAsciiTest.a85(deflate(deflate(b))) })
+        assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(twoFlate, "user1"))
+    }
+
+    /**
      * Q1: binary data (ciphertext, JPEG) of a stream in front of the object stream does not leak
      * scanner state into it: the benign file opens, the bomb is still refused after decryption.
      */
@@ -274,7 +302,17 @@ class EncryptedReaderTest {
      * An RC4-128 (V2 R3) PDF whose catalog and page tree live in a Flate object stream (object 1)
      * padded with [padding] spaces after its objects, with an xref stream (object 5).
      */
-    private fun encryptedObjStmPdf(name: String, padding: Int, filterKey: String = "Filter", objStmOffsetSkew: Int = 0, dictTail: String = "", leadImage: ByteArray? = null): File {
+    private fun encryptedObjStmPdf(
+        name: String,
+        padding: Int,
+        filterKey: String = "Filter",
+        objStmOffsetSkew: Int = 0,
+        dictTail: String = "",
+        leadImage: ByteArray? = null,
+        filter: String = "/FlateDecode",
+        encode: (ByteArray) -> ByteArray = ::deflate,
+        padByte: Char = ' ',
+    ): File {
         val id = ByteArray(16) { it.toByte() }
         val p = -4
         // Algorithm 3: O
@@ -294,8 +332,8 @@ class EncryptedReaderTest {
 
         val objs = "<</Type/Catalog/Pages 3 0 R>> <</Type/Pages/Kids[4 0 R]/Count 1>> "
         val header = "2 0 3 ${"<</Type/Catalog/Pages 3 0 R>> ".length} "
-        val plain = (header + objs).toByteArray() + ByteArray(padding) { ' '.code.toByte() }
-        val objStmData = rc4(objKey(1), deflate(plain))
+        val plain = (header + objs).toByteArray() + ByteArray(padding) { padByte.code.toByte() }
+        val objStmData = rc4(objKey(1), encode(plain))
 
         val out = ByteArrayOutputStream()
         out.write("%PDF-1.7\n".toByteArray())
@@ -310,7 +348,7 @@ class EncryptedReaderTest {
             out.write(stream("/Type/XObject/Subtype/Image/Width 4/Height 4/ColorSpace/DeviceGray/BitsPerComponent 8/Filter/DCTDecode", leadImage))
             out.write("\nendobj\n".toByteArray())
         }
-        obj(1, stream("/Type/ObjStm/N 2/First ${header.length}/$filterKey/FlateDecode$dictTail", objStmData))
+        obj(1, stream("/Type/ObjStm/N 2/First ${header.length}/$filterKey$filter$dictTail", objStmData))
         obj(4, "<</Type/Page/Parent 3 0 R/MediaBox[0 0 200 200]>>".toByteArray())
         obj(6, "<</Filter/Standard/V 2/R 3/Length 128/P $p/O<${hex(o)}>/U<${hex(u)}>>>".toByteArray())
         off[5] = out.size()
