@@ -593,7 +593,7 @@ Built on `pdf-reader` after the H1–H3 review; merged at `f016e77` (K2 `435310a
 
 **What was built**
 
-- **K2, overflow menu and Go to page** (`feature/reader/ReaderMenu.kt`, `GoToPage.kt`): the top bar's overflow menu holds Open another PDF, Go to page, Search, Share and Print; tapping the page indicator also opens Go to page. New original icon `ic_more_vert.xml`; `ic_folder_open.xml` is no longer used.
+- **K2, overflow menu and Go to page** (`feature/reader/ReaderMenu.kt`, `GoToPage.kt`): the reader's actions, among them Open another PDF and Go to page, move into a top-bar overflow menu; tapping the page indicator also opens Go to page. New original icon `ic_more_vert.xml`; `ic_folder_open.xml` is no longer used.
 - **K1, password-protected PDFs in the engine** (`PdfInputs.openForReader`, `PdfError.WrongPassword`, `ObjStmScan` pass 2 on decrypted object streams, `ScanMemo` keyed also on a password hash): the reader only; the tools still refuse every encrypted PDF. The password (at most 127 bytes) travels in the request Bundle, a deliberate exception to "only paths travel", and is kept in memory for the open document only. A PDF with only an owner password opens without a prompt. Permission bits `canPrint` / `canCopy` are exposed but not enforced. See `security/engine-audit.md`, "Reader password addendum".
 - **K3, password prompt** (`feature/reader/PasswordPrompt.kt`, `ReaderDocState.Locked`): unlimited attempts; the password is never in saved state. When "Open another PDF" picks a protected file, the old document stays open until the new one opens or fails, or the prompt is cancelled (then the old one is shown again). Cancelling the prompt on first entry, or one reached from the error screen's "Choose another", leaves the reader. `FLAG_SECURE` is not set (owner decision).
 - **K4, search** (`feature/reader/ReaderSearch.kt`, `ReaderSearchBar.kt`): runs in the UI process over page text; the query never crosses to `:engine` and is not stored (kept across rotation only). Case-insensitive literal match; whitespace in the query matches line breaks; no hyphenation handling; ß does not match ss. Scans from the current page and wraps, yielding to renders; at most 10,000 hits; unreadable pages are counted as not searched. Measured about 26 ms per page on the build machine (300 pages about 8 s); `ReaderSearchCostTest` is `@Ignore`d. New original icons `ic_search_previous.xml`, `ic_search_next.xml`.
@@ -606,7 +606,7 @@ Built on `pdf-reader` after the H1–H3 review; merged at `f016e77` (K2 `435310a
 - Password dialog: busy state, keyboard (IME) behaviour and Back untested on a device.
 - K1 gaps: an object stream whose header number differs from the xref can be loaded by pass 2's lookup before it is measured; a damaged owner-password-only PDF is repaired inside `openDocument` before pass 2; non-BMP characters in AES-256 passwords may not match.
 - Hint text in the search bar or password field may be cut off on narrow screens.
-- Go to page: the page indicator quirk on a short last page (the indicator may not reach the last page, so Go to page can appear to land one page early).
+- Go to page: a page-indicator quirk when the last page is short (reported with K2): the indicator may not agree with the page Go to page went to.
 - Owner decisions: enforce the no-copy / no-print bits; `FLAG_SECURE` for protected PDFs; print for protected PDFs (would need a decrypt step in the engine); owner-password-only printing; passwords in the reader only; Offkit appearing in its own share chooser.
 
 ### Review (K1–K5)
