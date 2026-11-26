@@ -489,3 +489,29 @@ Addendum written from the code at `6adc734` and the reader reviews (`REVIEW.md`,
 - RF-8 (unverified): an xref repair during `Page.run` might re-point an image the gate passed to a later duplicate.
 - F4, the current form of the gate's walk, **has not been independently reviewed**.
 - **None of the render path has been run against this audit's hostile-file set on a device**, or on the host. The SR/SR2/SR3 reproducers were built for Compress, Merge and Add images.
+
+## Reader text path (branch `pdf-reader`, 2026-11-26)
+
+Addendum written from the code at `561c0e6` (H2, page text for H3's selection and copy). Not merged to `main`. Nothing here was measured or run for this addendum; no hostile input was built for the text path.
+
+### What is new
+
+- One read-only engine request, `PageText` (`EngineRequest.PageText`, `PdfPageRenderer.pageText`, `engine/ops/PageTextOp.kt`): the text of one page with the box of every character, written by the `:engine` process to a file in the document's `cacheDir/jobs/reader-<uuid>/` directory. The UI calls it through `PdfReader.text`, on the same engine thread as renders, only when the user long-presses a page or uses "Copy page text".
+- `PageTextOp` runs the page into a `DisplayList` with `Page.run` (with a `Cookie`), then `DisplayList.toStructuredText("")` (default options: no images kept, no dehyphenation) and walks the result.
+
+### Bounds that apply
+
+- **Paths.** Both paths (`pdf`, `out`) are in `EngineRequest.PageText.paths`, so `EngineServer.checkPaths` requires them to resolve strictly inside `cacheDir/jobs`, as for the other requests. On every `Err` the output file is deleted (in `PageTextOp.run`, in `EngineServer`, and again in `RemoteEngine.pageText`); `PdfReader.text` deletes it after parsing in every case.
+- **Pre-checks, in the order of `RenderPageOp`:** `PdfInputs.open` with the `ScanMemo` key (1 GiB cap, `ObjStmScan`, encryption, object count), the page index, `checkPageAnnots` (10,000 annotations), then `RenderImageGate.checkPage`, memoised per page and shared with renders.
+- **Why the image gate is needed.** The structured-text device keeps no image (`preserve-images` is not set), but `Page.run` into any device other than one that skips image decoding makes the PDF interpreter load every image it reaches (`pdf_load_image`: the whole stream is read, a JPX header parsed, colour spaces and ICC profiles loaded). Without the gate, a text request would reach the image surface that the gate keeps from renders. The gate's limits and gaps are the same as in "Reader render path" above.
+- **Caps on the output.** At most 200,000 UTF-16 units per page (`PageTextFormat.MAX_UNITS`); text past that is dropped and the reply is marked `truncated`. Invalid code points become U+FFFD; non-finite boxes become zero; every coordinate is clamped to ±4,000,000 pt (`MAX_COORD`). This bounds the file and the UI's memory. **It does not bound what MuPDF builds inside the engine** (the display list and the structured text of a huge page): that is left to the time limit and the RSS cap.
+- **Output file validated in the UI process.** `RemoteEngine.pageText` accepts an `Ok` only if its unit count is in 0..200,000 and the file exists, is at least the 24-byte header and at most `PageTextFormat.MAX_FILE_BYTES` (about 5.2 MB). `PageTextFormat.read` (format "OKTX", version 1, big-endian) then checks the magic, version, flags, unit/line/block counts against the caps, the exact file length implied by the counts (before allocating), every box (finite, within `MAX_COORD`, `x0 <= x1`, `y0 <= y1`), lines (first at 0, strictly increasing, inside the text), block numbers (from 0, steps of 0 or 1, last equals the count) and no trailing bytes. `PdfReader.text` also requires the parsed length and `truncated` flag to equal the reply's. Any failure is `Err(Io)` and the user sees "Could not read the text on this page."
+- **Time limit.** `EngineLimits.textTotalMs`, 30 s total per request, with no stall limit (the request reports no progress), and the RSS cap (min(1.5 GiB, 40 % of RAM)). Breaking either kills the engine (`TimedOut` / `OutOfMemory`); the next call binds a fresh one.
+- **Cancel.** Asked for only when the document is closed (`PdfReader` passes `document.closed` as `isCancelled`). A watcher thread polls every 50 ms during `Page.run` and calls `Cookie.abort()`, as in renders, so one expensive operator is not interrupted. `toStructuredText` and the walk take no cookie: they are checked for cancel only after they return, and are bounded by the time limit and the RSS cap.
+- **No automatic retry.** A failed text request shows a message; it is asked again only on the user's next long-press or copy.
+
+### Not covered
+
+- Everything listed under "Not covered" in "Reader render path" applies here too (the same gate and `Page.run`).
+- Font loading during text extraction is MuPDF's, unbounded except by time and memory, as for renders.
+- The text path has not been run against the hostile-file set, on a device or on the host. On the host, `PageTextOpTest` runs the op with host MuPDF on ordinary PDFs and on a few small refused ones (a 60,000 x 60,000 px image refused by the gate, too many annotations, encrypted, corrupt), and `PageTextFormatTest` feeds malformed files to the parser.
