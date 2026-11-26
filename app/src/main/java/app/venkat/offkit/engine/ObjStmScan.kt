@@ -283,11 +283,12 @@ internal object ObjStmScan {
         try {
             val scratch = ByteArray(CHUNK)
             var out = 0L
+            var dry = false
             while (true) {
-                if (inf.needsInput()) {
+                if (!dry && inf.needsInput()) {
                     val r = src.read(buf)
-                    if (r <= 0) break
-                    inf.setInput(buf, 0, r)
+                    // W4: at the end of the source the inflater's pending output is still drained.
+                    if (r <= 0) dry = true else inf.setInput(buf, 0, r)
                 }
                 val got = try {
                     inf.inflate(scratch)
@@ -296,7 +297,7 @@ internal object ObjStmScan {
                 }
                 out += got
                 check(out, inf.bytesRead)
-                if (inf.finished() || (got == 0 && inf.needsDictionary())) break
+                if (inf.finished() || (got == 0 && (dry || inf.needsDictionary()))) break
             }
             return longArrayOf(out, inf.bytesRead)
         } finally {
@@ -644,6 +645,16 @@ internal object ObjStmScan {
         }
 
         private fun readName(from: Long): Long {
+            val p = lexName(from)
+            onName(word.toString())
+            return p
+        }
+
+        /**
+         * A name's or keyword's characters from [from] into [word], `#xx` decoded as MuPDF's
+         * `lex_name` does for both (W4: so `s#74ream` is the `stream` keyword, as for MuPDF).
+         */
+        private fun lexName(from: Long): Long {
             word.setLength(0)
             var p = from
             while (true) {
@@ -661,19 +672,11 @@ internal object ObjStmScan {
                 }
                 if (word.length < MAX_KEPT) word.append(ch.toChar())
             }
-            onName(word.toString())
             return p
         }
 
         private fun readWord(from: Long): Long {
-            word.setLength(0)
-            var p = from
-            while (true) {
-                val c = at(p)
-                if (c < 0 || isWhite(c) || isDelim(c)) break
-                p++
-                if (word.length < MAX_KEPT) word.append(c.toChar())
-            }
+            val p = lexName(from)
             when (word.toString()) {
                 "stream" -> { onStream(p); done = true }
                 "endstream", "obj", "endobj" -> done = true // an `obj` here starts its own parse
@@ -727,13 +730,29 @@ internal object ObjStmScan {
             // M2-2: the nesting is not where MuPDF's would be (unbalanced, swallowed by MuPDF, or a
             // string or comment over 64 KiB): which keys are top-level is not known.
             if (dictDepth != 0 || arrayDepth != 0 || cut || odd) tooLarge()
-            var d = after
-            if (at(d) == '\r'.code) d++
-            if (at(d) == '\n'.code) d++
+            val d = dataStart(after)
             val slot = if (filterSlot.seen) filterSlot else fSlot
             if (slot.unknown) tooLarge()
             val chain = chainOf(slot.names) ?: tooLarge()
             if (chain.ascii == null && !chain.flate) countRaw(d) else { record(); decode(d, chain) }
+        }
+
+        /**
+         * W4: where MuPDF 1.28.5 starts the data of a stream whose `stream` keyword ends at [after]
+         * (`pdf-parse.c` `pdf_parse_ind_obj`): spaces (0x20 only) are skipped, then ONE more byte is
+         * consumed whatever it is (`>`, `<`, `(`, `%`, TAB, LF, the first data byte...), and when that
+         * byte is CR, also an LF right after it. A repair (`pdf_repair_obj`) computes its own offset
+         * without skipping spaces, but `pdf_cache_object` re-parses the object through
+         * `pdf_parse_ind_obj` before any stream read, so this rule holds there too.
+         */
+        private fun dataStart(after: Long): Long {
+            var d = after
+            while (at(d) == ' '.code) d++
+            val c = at(d)
+            if (c < 0) return d
+            d++
+            if (c == '\r'.code && at(d) == '\n'.code) d++
+            return d
         }
 
         /** An unfiltered candidate's data from [d] to the next `endstream` (or the end) counts as decoded bytes. */

@@ -163,7 +163,8 @@ internal object PdfInputs {
      * Pre-checks on an encrypted PDF (see `security/engine-audit.md`, "Reader password addendum"):
      * the size and object-count limits are as for [open]; [ObjStmScan] pass 1 runs over the raw
      * file and, after authentication and before the page count, pass 2
-     * ([ObjStmScan.checkDecrypted]) measures every Flate object stream on its decrypted data. A file
+     * ([ObjStmScan.checkDecrypted]) measures every Flate, ASCII or ASCII-then-Flate object stream
+     * on its decrypted data. A file
      * that pass 1 could not read is refused when encrypted. [memo] must be the key for [password]
      * ([ScanMemo.keyOf] with it); only a document that passed both passes is remembered.
      */

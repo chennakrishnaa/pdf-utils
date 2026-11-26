@@ -59,7 +59,7 @@ class ObjStmAsciiTest {
             assertEquals(filter, PdfResult.Err(PdfError.OutOfMemory), engine.merge(listOf(bomb), out("m.pdf")))
         }
         // A85 alone: 17 MiB of NULs written as `z` is 4.4 MB raw.
-        val z = write("z-bomb.pdf", inCatalogStream(ByteArray(17 shl 20), "/A85") { b -> a85(b) })
+        val z = write("z-bomb.pdf", inCatalogStream(ByteArray(17 shl 20), "/A85", { b -> a85(b) }))
         assertTrue(z.length() < 5_000_000)
         assertTooLarge("z bomb") { PdfInputs.open(z).destroy() }
         assertEquals(PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(z))
@@ -141,6 +141,70 @@ class ObjStmAsciiTest {
         )) {
             val f = write("refused.pdf", inCatalogStream(data, filter, enc))
             assertTooLarge(filter) { ObjStmScan.check(f) }
+        }
+    }
+
+    // ------------------------------------------------------------------ W4: where the data starts
+
+    /**
+     * W4: MuPDF (`pdf_parse_ind_obj`) skips spaces after `stream`, then consumes ONE byte whatever it
+     * is (plus an LF after a CR). Keyword to whether MuPDF's start is the first data byte here
+     * (false: it starts on a byte of the delimiter, `>` after `\r` or LF after TAB).
+     */
+    private val starts: List<Pair<String, Boolean>> = listOf(
+        "stream>" to true, "stream <" to true, "stream\r>" to false, "stream\n" to true, "stream\r\n" to true,
+        "stream \n" to true, "stream(" to true, "stream%" to true, "stream  \r\n" to true, "stream\t\n" to false,
+        "s#74ream\n" to true, // MuPDF's lexer decodes `#xx` in keywords too
+    )
+
+    private val bombFilters: List<Pair<String, (ByteArray) -> ByteArray>> = listOf(
+        "[/AHx/Fl]" to { b -> ahx(deflate(b)) },
+        "[/A85/Fl]" to { b -> a85(deflate(b)) },
+        "/FlateDecode" to { b -> deflate(b) },
+    )
+
+    @Test
+    fun streamStartVariants_bombsAreRefusedAndBenignFilesOpen() {
+        for ((start, exact) in starts) for ((filter, enc) in bombFilters) {
+            val what = "${start.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")} $filter"
+            val bomb = write("start-bomb.pdf", inCatalogStream(repeated("null ", 3_500_000), filter, enc, start))
+            if (exact) {
+                assertTooLarge("$what: scan") { ObjStmScan.check(bomb) }
+                assertEquals(what, PdfPageInfo.Err(PdfError.OutOfMemory), engine.pageInfo(bomb))
+                val ok = write("start-ok.pdf", inCatalogStream(repeated("null ", 1000), filter, enc, start))
+                ObjStmScan.check(ok)
+                PdfInputs.open(ok).destroy()
+                assertTrue(what, engine.pageInfo(ok) is PdfPageInfo.Ok)
+            } else {
+                // MuPDF starts inside the delimiter: whatever it decodes, the scan measures no less.
+                val n = mupdfDecoded(bomb, 5)
+                if (n > 0) assertTooLarge("$what: $n") { ObjStmScan.check(bomb, maxStream = n - 1L) }
+                else runCatching { ObjStmScan.check(bomb) }
+            }
+        }
+    }
+
+    /**
+     * Differential: for every start variant, the scan's decoded size of the object stream is at
+     * least MuPDF's `readStream` size (a limit one byte under MuPDF's size refuses), and exactly it
+     * where MuPDF's start is the first data byte (a limit of exactly MuPDF's size passes).
+     */
+    @Test
+    fun streamStartVariants_scanMeasuresWhatMuPdfDecodes() {
+        val truncated: (ByteArray) -> ByteArray = { b -> deflate(b).let { it.copyOf(it.size - 6) } }
+        for ((start, exact) in starts) for ((label, enc) in bombFilters + ("truncated" to truncated)) {
+            val filter = if (label == "truncated") "/FlateDecode" else label
+            val what = "${start.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")} $label"
+            val f = write("start-diff.pdf", inCatalogStream(repeated("1 0 R ", 50_000), filter, enc, start))
+            val n = mupdfDecoded(f, 5)
+            if (exact) assertTrue("$what: MuPDF read $n", n > 290_000)
+            // A truncated zlib stream: the scan inflates on past MuPDF's `/Length` into the bytes
+            // after the data (`endstream`...), so it may measure a few bytes MORE (a superset).
+            if (exact && label != "truncated") {
+                val e = runCatching { ObjStmScan.check(f, maxStream = n.toLong()) }.exceptionOrNull()
+                assertTrue("$what: scan measured more than MuPDF's $n: $e", e == null)
+            }
+            if (n > 0) assertTooLarge("$what: $n") { ObjStmScan.check(f, maxStream = n - 1L) }
         }
     }
 
@@ -261,7 +325,7 @@ class ObjStmAsciiTest {
         return out.toByteArray()
     }
 
-    private fun inCatalogStream(extra: ByteArray, filter: String, enc: (ByteArray) -> ByteArray): ByteArray {
+    private fun inCatalogStream(extra: ByteArray, filter: String, enc: (ByteArray) -> ByteArray, start: String = "stream\n"): ByteArray {
         val pdf = HostilePdf()
         pdf.stream(4, "", "BT ET".latin1())
         pdf.objStm(
@@ -273,8 +337,24 @@ class ObjStmAsciiTest {
                 6 to extra,
             ),
             encode = { b -> filter to enc(b) },
+            start = start,
         )
         return pdf.bytes()
+    }
+
+    /** MuPDF's decoded size of object [num] in [f] (0 when it cannot read it). */
+    private fun mupdfDecoded(f: File, num: Int): Int {
+        val doc = Document.openDocument(f.path) as PDFDocument
+        try {
+            val o = doc.newIndirect(num, 0)
+            try {
+                return runCatching { o.readStream().size }.getOrDefault(0)
+            } finally {
+                o.destroy()
+            }
+        } finally {
+            doc.destroy()
+        }
     }
 
     private fun basicPage(pdf: HostilePdf) {
