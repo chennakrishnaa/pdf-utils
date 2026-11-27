@@ -152,6 +152,11 @@ object UriIo {
     fun copyToStream(src: File, out: OutputStream, isCancelled: () -> Boolean = { false }): Long =
         FileInputStream(src).use { inp -> pump(inp, out, isCancelled) }
 
+    /** As [copyToStream], from an already open [input] (not closed here). */
+    @Throws(IOException::class)
+    fun copyStream(input: InputStream, out: OutputStream, isCancelled: () -> Boolean = { false }): Long =
+        pump(input, out, isCancelled)
+
     private fun openInput(context: Context, src: Uri): InputStream =
         context.contentResolver.openInputStream(src) ?: throw IOException("Cannot open $src")
 

@@ -337,21 +337,29 @@ class PdfJobs @VisibleForTesting internal constructor(
     /**
      * Copies [source] byte for byte to [dest], with [save]'s rules for success, failure and the
      * cleanup of the destination. Also used by the reader's "Save a copy" (its private copy).
+     * [input], if given, is [source] already opened by the caller (read instead of [source], and
+     * closed here in every case): its bytes stay readable even if [source] is deleted meanwhile.
      */
-    internal suspend fun saveFile(source: File, dest: Uri): Result<Unit> = withContext(ioDispatcher) {
+    internal suspend fun saveFile(source: File, dest: Uri, input: InputStream? = null): Result<Unit> = withContext(ioDispatcher) {
         var opened = false
         try {
-            if (!source.isFile) throw IOException("Output no longer exists")
-            val ctx = currentCoroutineContext()
-            val stream = openDestination(appContext, dest) ?: throw IOException("Cannot open destination")
-            opened = true
-            stream.use { out ->
-                UriIo.copyToStream(source, out) { !ctx.isActive }
-                if (out is FileOutputStream) {
-                    try {
-                        out.fd.sync()
-                    } catch (e: IOException) {
-                        // Best effort: pipes and some providers cannot sync.
+            input.use {
+                if (input == null && !source.isFile) throw IOException("Output no longer exists")
+                val ctx = currentCoroutineContext()
+                val stream = openDestination(appContext, dest) ?: throw IOException("Cannot open destination")
+                opened = true
+                stream.use { out ->
+                    if (input != null) {
+                        UriIo.copyStream(input, out) { !ctx.isActive }
+                    } else {
+                        UriIo.copyToStream(source, out) { !ctx.isActive }
+                    }
+                    if (out is FileOutputStream) {
+                        try {
+                            out.fd.sync()
+                        } catch (e: IOException) {
+                            // Best effort: pipes and some providers cannot sync.
+                        }
                     }
                 }
             }

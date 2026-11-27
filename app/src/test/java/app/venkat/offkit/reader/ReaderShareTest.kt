@@ -190,6 +190,44 @@ class ReaderShareTest {
     }
 
     @Test
+    fun aCopyStillRunningWhenTheReaderLeavesIsWrittenToTheEnd() = runBlocking {
+        val big = ByteArray(1_000_000) { (it % 253).toByte() }
+        val firstWrite = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        // A slow destination: the first write waits until the reader has gone.
+        val r = PdfReader(
+            app,
+            PdfJobs(app, engine, Dispatchers.IO, Dispatchers.Unconfined) { _, uri ->
+                val out = java.io.FileOutputStream(requireNotNull(uri.path))
+                object : java.io.OutputStream() {
+                    override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+                    override fun write(b: ByteArray, off: Int, len: Int) {
+                        firstWrite.countDown()
+                        release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                        out.write(b, off, len)
+                    }
+                    override fun close() = out.close()
+                }
+            },
+        )
+        val doc = (r.open(CoreTestSupport.contentUri(app, "big.pdf", big)) as ReaderOpenResult.Opened).document
+        val readerScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Unconfined)
+        val actions = ReaderActions(r, readerScope) { doc }
+        actions.beginSaveCopy()
+        val (file, uri) = dest("big-copy.pdf")
+        actions.saveCopyTo(uri)
+        assertTrue("copy started", firstWrite.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        // The reader leaves: its view model scope is cancelled and the document closed.
+        readerScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        r.close(doc)
+        CoreTestSupport.idleUntil(message = "reader folder deleted") { !doc.dir.exists() }
+        release.countDown()
+        withTimeout(10_000) { actions.savingCopy.first { !it } }
+        assertTrue("destination kept", file.exists())
+        assertArrayEquals(big, file.readBytes())
+    }
+
+    @Test
     fun aFailedWriteDeletesThePartialFileAndSaysSo() = runBlocking {
         val r = fileReader(failAfterBytes = 4)
         val doc = (r.open(CoreTestSupport.contentUri(app, "big.pdf", bytes)) as ReaderOpenResult.Opened).document

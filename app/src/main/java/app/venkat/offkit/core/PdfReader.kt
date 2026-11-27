@@ -33,6 +33,7 @@ import app.venkat.offkit.engine.ReaderPassword
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.channels.FileChannel
@@ -453,12 +454,14 @@ class PdfReader internal constructor(
      * destination on failure. On success the file is recorded in the recent files (tool id
      * [RECENT_TOOL_ID], best effort). Never throws except [kotlin.coroutines.cancellation.CancellationException].
      */
-    suspend fun saveCopy(document: ReaderDocument, dest: Uri): Result<Unit> {
-        val result = if (document.closed) {
+    suspend fun saveCopy(document: ReaderDocument, dest: Uri): Result<Unit> = saveCopy(document, dest, null)
+
+    private suspend fun saveCopy(document: ReaderDocument, dest: Uri, source: InputStream?): Result<Unit> {
+        val result = if (source == null && document.closed) {
             withContext(jobs.ioDispatcher) { jobs.deleteDestinationIfEmpty(dest) }
             Result.failure(IOException("Document closed"))
         } else {
-            jobs.saveFile(document.file, dest)
+            jobs.saveFile(document.file, dest, source)
         }
         if (result.isSuccess) {
             withContext(jobs.ioDispatcher) {
@@ -473,6 +476,27 @@ class PdfReader internal constructor(
             }
         }
         return result
+    }
+
+    /**
+     * [saveCopy] that runs to completion in the process scope, even if the reader leaves (and
+     * closes [document]) meanwhile; then calls [onDone] on the main thread. Call on the main
+     * thread while [document] is open: its private copy is opened now, before the reader can
+     * close it, and that open stream keeps the bytes readable after the folder is deleted.
+     */
+    fun saveCopyDetached(document: ReaderDocument, dest: Uri, onDone: (Result<Unit>) -> Unit) {
+        // One open() on the main thread (no read): closing the document deletes its folder later,
+        // on the engine thread, so the stream is always opened first.
+        val source = if (document.closed) null else try { FileInputStream(document.file) } catch (e: IOException) { null }
+        jobs.processScope.launch {
+            val result = if (source == null) {
+                withContext(jobs.ioDispatcher) { jobs.deleteDestinationIfEmpty(dest) }
+                Result.failure(IOException("Document closed"))
+            } else {
+                saveCopy(document, dest, source)
+            }
+            onDone(result)
+        }
     }
 
     /** Deletes [dest] (a just-created save destination) off the main thread if it is still empty. */
