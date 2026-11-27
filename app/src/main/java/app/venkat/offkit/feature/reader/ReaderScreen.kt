@@ -44,6 +44,8 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.createSavedStateHandle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -199,6 +201,23 @@ private val PageGap = 8.dp
  * [viewRequest] ("Open with" from another app) is opened instead of launching the picker, and
  * replaces any document already open, exactly as one picked with "Open another PDF";
  * [onViewRequestHandled] is called as soon as it is being opened.
+ *
+ * Back to the other app: while the session began with a request from another app
+ * ([ViewRequest.fromOtherApp], kept in [ReaderViewModel.openedFromOtherApp] so it survives
+ * rotation and process death), system Back and the top-bar Back arrow call [onReturnToCaller]
+ * instead of [onBack], in every state (open, opening, error screen, waiting for a password). It
+ * must leave the reader and then return to that app. The view model closes the document first, so
+ * its copy is deleted even if the task stops before the exit transition ends. Inside the reader
+ * Back still clears a selection first, then closes search; dialogs and menus close first. A
+ * cancelled password prompt that leaves nothing to show also returns to the other app, if this
+ * instance took that request (not after process death, when the reader just goes away).
+ * Mixed cases:
+ * - "Open another PDF" inside such a reader keeps the flag: Back still returns to the other app.
+ * - A request from another app while an in-app reader is open replaces its document and sets it.
+ * - An in-app request (recent file, a tool's result) clears it: Back stays in Offkit.
+ * - A new [launcherReturns] value (the user came back through Offkit's launcher icon and the
+ *   system delivered that intent) clears it. A return through Recents cannot be told apart from
+ *   any other resume, so it keeps the flag.
  */
 @Composable
 fun ReaderScreen(
@@ -206,6 +225,8 @@ fun ReaderScreen(
     onExit: () -> Unit,
     viewRequest: ViewRequest? = null,
     onViewRequestHandled: (ViewRequest) -> Unit = {},
+    onReturnToCaller: () -> Unit = onBack,
+    launcherReturns: Int = 0,
 ) {
     // Explicit initializer: the default factory caches the first Application process-wide.
     val vm: ReaderViewModel = viewModel {
@@ -241,9 +262,18 @@ fun ReaderScreen(
     }
     val pickNow by rememberUpdatedState(pick)
     val handled by rememberUpdatedState(onViewRequestHandled)
+    // Before the request below, which records the launcher returns it has seen.
+    LaunchedEffect(launcherReturns) {
+        if (launcherReturns != vm.launcherReturnsSeen) {
+            vm.launcherReturnsSeen = launcherReturns
+            vm.forgetOtherApp()
+        }
+    }
     LaunchedEffect(viewRequest) {
         if (viewRequest != null) {
             // Opened like a picked file; the Uri is not saved (its grant does not outlive the activity).
+            vm.launcherReturnsSeen = launcherReturns
+            vm.setOpenedFromOtherApp(viewRequest.fromOtherApp)
             launched = true
             openCount++
             vm.open(viewRequest.uri, checkType = !viewRequest.typeVerified)
@@ -253,10 +283,31 @@ fun ReaderScreen(
             pickNow()
         }
     }
+    val fromOtherApp by vm.openedFromOtherApp.collectAsState()
+    val returnToCaller by rememberUpdatedState(onReturnToCaller)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val leave: () -> Unit = {
+        if (fromOtherApp) {
+            // As onBack, ignored during a transition (the reader then stays as it is). Otherwise
+            // the copy is deleted now: once the task is in the back, the exit transition (and
+            // onCleared) may not run until the user returns.
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                vm.close()
+                returnToCaller()
+            }
+        } else {
+            onBack()
+        }
+    }
+    // Composed before ReaderDocument's handlers, so a selection and search still take Back first.
+    BackHandler(enabled = fromOtherApp) { leave() }
+
     val exit by rememberUpdatedState(onExit)
     val nothingToShow = doc is ReaderDocState.Idle && launched && !pickerPending
     LaunchedEffect(nothingToShow) {
-        if (nothingToShow) exit()
+        if (!nothingToShow) return@LaunchedEffect
+        // E.g. the password prompt of the other app's document was cancelled with nothing under it.
+        if (vm.openedFromOtherApp.value && vm.tookRequestFromOtherApp) returnToCaller() else exit()
     }
 
     when (val d = doc) {
@@ -267,19 +318,19 @@ fun ReaderScreen(
             fileBytes = null,
             actionLabel = stringResource(R.string.action_choose_another),
             onAction = pick,
-            onBack = onBack,
+            onBack = leave,
         )
         is ReaderDocState.Open -> key(openCount) {
-            ReaderDocument(vm, d, onBack = onBack, onOpenAnother = pick)
+            ReaderDocument(vm, d, onBack = leave, onOpenAnother = pick)
         }
         is ReaderDocState.Locked -> {
-            ReaderFrame(title = stringResource(R.string.tool_read_title), indicator = null, onBack = onBack) {}
+            ReaderFrame(title = stringResource(R.string.tool_read_title), indicator = null, onBack = leave) {}
             PasswordPrompt(d, onUnlock = vm::unlock, onCancel = vm::cancelPassword)
         }
         ReaderDocState.Opening, ReaderDocState.Idle -> ReaderFrame(
             title = stringResource(R.string.tool_read_title),
             indicator = null,
-            onBack = onBack,
+            onBack = leave,
         ) {
             if (d == ReaderDocState.Opening) Opening()
         }

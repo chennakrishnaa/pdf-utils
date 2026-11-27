@@ -163,6 +163,35 @@ class ReaderViewModel internal constructor(
         get() = savedState[KEY_PENDING] ?: false
         set(value) { savedState[KEY_PENDING] = value }
 
+    /**
+     * The reader's session began with a document another app asked Offkit to open ("Open with"),
+     * so leaving the reader returns to that app (kept across rotation and process death). Set
+     * from each [app.venkat.offkit.ui.nav.ViewRequest] the screen takes; a document picked with
+     * "Open another PDF" leaves it as it is.
+     */
+    val openedFromOtherApp: StateFlow<Boolean> = savedState.getStateFlow(KEY_FROM_OTHER_APP, false)
+
+    /**
+     * True once this instance (not one restored after process death) took a request from another
+     * app: only then does the reader emptying itself (a cancelled password prompt) return to it.
+     */
+    var tookRequestFromOtherApp: Boolean = false
+        private set
+
+    /** How many returns through the launcher icon the screen has already applied (they clear [openedFromOtherApp]). */
+    var launcherReturnsSeen: Int
+        get() = savedState[KEY_LAUNCHER_RETURNS] ?: 0
+        set(value) { savedState[KEY_LAUNCHER_RETURNS] = value }
+
+    /** Records where the document being opened came from (see [openedFromOtherApp]). */
+    fun setOpenedFromOtherApp(fromOtherApp: Boolean) {
+        savedState[KEY_FROM_OTHER_APP] = fromOtherApp
+        tookRequestFromOtherApp = fromOtherApp
+    }
+
+    /** The user came back to Offkit through its launcher icon: leaving the reader stays in Offkit. */
+    fun forgetOtherApp() = setOpenedFromOtherApp(false)
+
     private val _document = MutableStateFlow<ReaderDocState>(ReaderDocState.Idle)
 
     /** The current document. */
@@ -761,6 +790,8 @@ class ReaderViewModel internal constructor(
         const val SELECTION_KEEP_PAGES = 2
         private const val KEY_LAUNCHED = "reader.pickerLaunched"
         private const val KEY_PENDING = "reader.pickerPending"
+        private const val KEY_FROM_OTHER_APP = "reader.openedFromOtherApp"
+        private const val KEY_LAUNCHER_RETURNS = "reader.launcherReturnsSeen"
 
         val EMPTY_PAGE: StateFlow<ReaderPageState> = MutableStateFlow(ReaderPageState()).asStateFlow()
     }
