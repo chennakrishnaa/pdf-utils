@@ -184,7 +184,7 @@ class ReaderShareTest {
         open = second
         val (file, uri) = dest("first.pdf")
         actions.saveCopyTo(uri)
-        assertEquals(ReaderActionEvent.Message(R.string.reader_save_failed), withTimeout(5_000) { actions.events.first() })
+        assertEquals(ReaderActionEvent.Message(R.string.reader_save_closed), withTimeout(5_000) { actions.events.first() })
         CoreTestSupport.idleUntil(message = "empty file removed") { !file.exists() }
         assertTrue(!actions.savingCopy.value)
     }

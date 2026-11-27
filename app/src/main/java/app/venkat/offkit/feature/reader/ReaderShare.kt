@@ -156,8 +156,8 @@ class ReaderActions(
     /**
      * The save dialog's result: null if cancelled (nothing happens). If the document it was
      * opened for is no longer the open one (replaced, closed, or the process was recreated
-     * meanwhile), nothing is written: the empty file the dialog created is deleted and a failure
-     * message shown. Otherwise the private copy is written byte for byte
+     * meanwhile), nothing is written: the empty file the dialog created is deleted and a message
+     * ("The PDF was closed…") shown. Otherwise the private copy is written byte for byte
      * ([PdfReader.saveCopyDetached]), then "Saved" or a failure message is shown. The copy runs to
      * completion even if the reader leaves meanwhile (the message then has no screen to show on;
      * the recent files still list the copy).
@@ -172,7 +172,7 @@ class ReaderActions(
         if (doc == null || current() !== doc) {
             _savingCopy.value = false
             reader.discardDestination(dest)
-            _events.trySend(ReaderActionEvent.Message(R.string.reader_save_failed))
+            _events.trySend(ReaderActionEvent.Message(R.string.reader_save_closed))
             return
         }
         reader.saveCopyDetached(doc, dest) { result ->
