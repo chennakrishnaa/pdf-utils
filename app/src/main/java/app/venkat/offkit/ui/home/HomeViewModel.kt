@@ -68,6 +68,7 @@ internal fun toolTitle(toolId: String): Int? = when (toolId) {
     "compress" -> OffkitTool.COMPRESS.title
     "merge" -> OffkitTool.MERGE.title
     "add_images" -> OffkitTool.ADD_PAGES.title
+    app.venkat.offkit.core.PdfReader.RECENT_TOOL_ID -> R.string.tool_read_title
     else -> null
 }
 

@@ -27,6 +27,9 @@ const val TAG_READER_MENU = "reader_menu"
 /** Test tag of the "Go to page" menu entry. */
 const val TAG_READER_GO_TO_PAGE = "reader_go_to_page"
 
+/** Test tag of the "Save a copy" menu entry. */
+const val TAG_READER_SAVE_COPY = "reader_save_copy"
+
 /**
  * One entry of the reader's overflow menu. [tag] is its test tag (and stable id), [label] its text
  * and spoken description; a disabled entry is shown greyed out and cannot be clicked.
@@ -39,7 +42,7 @@ data class ReaderMenuItem(
 )
 
 /**
- * The reader's overflow menu entries, in order: Go to page, Print, Open another PDF. Search and
+ * The reader's overflow menu entries, in order: Go to page, Save a copy, Print, Open another PDF. Search and
  * Share are buttons of the top bar ([ReaderTopBarButtons]), not entries. Add a new entry here
  * (and its callback as a parameter, wired in `ReaderDocument`); the layout in
  * [ReaderOverflowMenu] does not change. Only features that exist are listed: no placeholders.
@@ -49,8 +52,13 @@ internal fun readerMenuItems(
     onGoToPage: () -> Unit,
     onOpenAnother: () -> Unit,
     actions: ReaderActions? = null,
+    onSaveCopy: (() -> Unit)? = null,
+    saveCopyEnabled: Boolean = true,
 ): List<ReaderMenuItem> = listOfNotNull(
     ReaderMenuItem(TAG_READER_GO_TO_PAGE, stringResource(R.string.reader_go_to_page), onClick = onGoToPage),
+    onSaveCopy?.let {
+        ReaderMenuItem(TAG_READER_SAVE_COPY, stringResource(R.string.reader_save_copy), enabled = saveCopyEnabled, onClick = it)
+    },
     actions?.let { ReaderMenuItem(TAG_READER_PRINT, stringResource(R.string.reader_print), onClick = it::print) },
     ReaderMenuItem(TAG_READER_OPEN_ANOTHER, stringResource(R.string.reader_open_another), onClick = onOpenAnother),
 )

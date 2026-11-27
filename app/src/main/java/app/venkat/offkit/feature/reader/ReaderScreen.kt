@@ -93,6 +93,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.rememberTextMeasurer
+import app.venkat.offkit.ui.components.rememberPdfSaver
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -260,6 +261,25 @@ fun ReaderScreen(
         pickerPending = true
         if (!launchOrExplain(context) { launcher.launch(arrayOf(MIME_PDF)) }) pickerPending = false
     }
+    // "Save a copy": registered here, outside the per-document key, so a result that arrives after
+    // the document was replaced (or the process recreated) still reaches the reader, which then
+    // writes nothing. The pending flag survives rotation and process death like pickerPending.
+    var saveCopyPending by rememberSaveable { mutableStateOf(vm.saveCopyPending) }
+    SideEffect { vm.saveCopyPending = saveCopyPending }
+    val saver = rememberPdfSaver { dest ->
+        saveCopyPending = false
+        vm.actions.saveCopyTo(dest)
+    }
+    val saveCopy: () -> Unit = {
+        val name = vm.actions.beginSaveCopy()
+        if (name != null) {
+            saveCopyPending = true
+            if (!saver(name)) {
+                saveCopyPending = false
+                vm.actions.saveCopyNotLaunched()
+            }
+        }
+    }
     val pickNow by rememberUpdatedState(pick)
     val handled by rememberUpdatedState(onViewRequestHandled)
     // Before the request below, which records the launcher returns it has seen.
@@ -299,7 +319,7 @@ fun ReaderScreen(
     BackHandler(enabled = fromOtherApp) { leave() }
 
     val exit by rememberUpdatedState(onExit)
-    val nothingToShow = doc is ReaderDocState.Idle && launched && !pickerPending
+    val nothingToShow = doc is ReaderDocState.Idle && launched && !pickerPending && !saveCopyPending
     LaunchedEffect(nothingToShow) {
         if (!nothingToShow) return@LaunchedEffect
         // E.g. the password prompt of the other app's document was cancelled with nothing under it.
@@ -317,7 +337,7 @@ fun ReaderScreen(
             onBack = leave,
         )
         is ReaderDocState.Open -> key(openCount) {
-            ReaderDocument(vm, d, onBack = leave, onOpenAnother = pick)
+            ReaderDocument(vm, d, onBack = leave, onOpenAnother = pick, onSaveCopy = saveCopy)
         }
         is ReaderDocState.Locked -> {
             ReaderFrame(title = stringResource(R.string.tool_read_title), indicator = null, onBack = leave) {}
@@ -504,7 +524,14 @@ private fun Opening() {
 
 /** The open document: frame, page list, viewport reports. One instance per opened document. */
 @Composable
-private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack: () -> Unit, onOpenAnother: () -> Unit) {
+private fun ReaderDocument(
+    vm: ReaderViewModel,
+    doc: ReaderDocState.Open,
+    onBack: () -> Unit,
+    onOpenAnother: () -> Unit,
+    onSaveCopy: () -> Unit = {},
+) {
+    val savingCopy by vm.actions.savingCopy.collectAsState()
     val listState = rememberLazyListState()
     val zoomState = rememberZoomableListState(minScale = 1f, maxScale = 5f)
     val pageCount = doc.pages.size
@@ -565,6 +592,8 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
             onGoToPage = { goToOpen = true },
             onOpenAnother = onOpenAnother,
             actions = vm.actions,
+            onSaveCopy = onSaveCopy,
+            saveCopyEnabled = !savingCopy,
         ),
         onIndicatorClick = { goToOpen = true },
         buttons = {

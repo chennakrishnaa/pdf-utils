@@ -447,6 +447,39 @@ class PdfReader internal constructor(
      * bytes readable after [close] deletes the folder (the file is only unlinked), so a reader of
      * it never races the deletion; the caller closes it. Blocking: call off the main thread.
      */
+    /**
+     * "Save a copy": writes [document]'s private copy (the original bytes; a protected PDF stays
+     * protected) to [dest] through [PdfJobs.saveFile], which deletes a partial or empty
+     * destination on failure. On success the file is recorded in the recent files (tool id
+     * [RECENT_TOOL_ID], best effort). Never throws except [kotlin.coroutines.cancellation.CancellationException].
+     */
+    suspend fun saveCopy(document: ReaderDocument, dest: Uri): Result<Unit> {
+        val result = if (document.closed) {
+            withContext(jobs.ioDispatcher) { jobs.deleteDestinationIfEmpty(dest) }
+            Result.failure(IOException("Document closed"))
+        } else {
+            jobs.saveFile(document.file, dest)
+        }
+        if (result.isSuccess) {
+            withContext(jobs.ioDispatcher) {
+                try {
+                    val described = UriIo.describe(appContext, dest)
+                    RecentFilesStore.get(appContext).add(
+                        RecentFile(dest, described.name, described.sizeBytes ?: document.file.length(), System.currentTimeMillis(), RECENT_TOOL_ID),
+                    )
+                } catch (e: Exception) {
+                    // Ignore: the copy is saved; it just will not appear in the recent list.
+                }
+            }
+        }
+        return result
+    }
+
+    /** Deletes [dest] (a just-created save destination) off the main thread if it is still empty. */
+    fun discardDestination(dest: Uri) {
+        jobs.processScope.launch(jobs.ioDispatcher) { jobs.deleteDestinationIfEmpty(dest) }
+    }
+
     fun openSource(document: ReaderDocument): FileChannel {
         if (document.closed) throw IOException("Document closed")
         return FileInputStream(document.file).channel
@@ -618,6 +651,9 @@ class PdfReader internal constructor(
         }
         /** Prefix of reader directories under `cacheDir/jobs`. */
         const val READER_DIR_PREFIX = "reader-"
+
+        /** Tool id recorded in the recent files for a copy saved from the reader ("Save a copy"). */
+        const val RECENT_TOOL_ID = "read"
         private const val DOCUMENT_NAME = "document.pdf"
         private const val MIME_PDF = "application/pdf"
 

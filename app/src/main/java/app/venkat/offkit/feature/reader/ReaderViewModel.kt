@@ -163,6 +163,11 @@ class ReaderViewModel internal constructor(
         get() = savedState[KEY_PENDING] ?: false
         set(value) { savedState[KEY_PENDING] = value }
 
+    /** A "Save a copy" dialog is out and its result not yet received (kept across process death). */
+    var saveCopyPending: Boolean
+        get() = savedState[KEY_SAVE_PENDING] ?: false
+        set(value) { savedState[KEY_SAVE_PENDING] = value }
+
     /**
      * The reader's session began with a document another app asked Offkit to open ("Open with"),
      * so leaving the reader returns to that app (kept across rotation and process death). Set
@@ -790,6 +795,7 @@ class ReaderViewModel internal constructor(
         const val SELECTION_KEEP_PAGES = 2
         private const val KEY_LAUNCHED = "reader.pickerLaunched"
         private const val KEY_PENDING = "reader.pickerPending"
+        private const val KEY_SAVE_PENDING = "reader.saveCopyPending"
         private const val KEY_FROM_OTHER_APP = "reader.openedFromOtherApp"
         private const val KEY_LAUNCHER_RETURNS = "reader.launcherReturnsSeen"
 

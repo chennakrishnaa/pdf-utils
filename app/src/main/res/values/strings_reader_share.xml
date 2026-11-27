@@ -9,5 +9,9 @@
     <!-- Shown while a protected PDF is made ready for printing -->
     <string name="reader_print_preparing">Preparing to print…</string>
     <string name="reader_print_failed">Couldn\'t prepare this PDF for printing. Check free space and try again.</string>
+    <!-- Reader overflow menu: save the open PDF under a new name -->
+    <string name="reader_save_copy">Save a copy</string>
+    <string name="reader_saved">Saved</string>
+    <string name="reader_save_failed">Couldn\'t save the copy. Check free space and try again.</string>
     <string name="reader_print_unavailable">Printing isn\'t available on this device.</string>
 </resources>

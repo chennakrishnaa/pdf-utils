@@ -63,6 +63,106 @@ class ReaderShareTest {
 
     private fun sharedFiles() = File(app.cacheDir, "shared").walkTopDown().filter { it.isFile }.toList()
 
+    private val outDir get() = File(app.cacheDir, "save-out").apply { mkdirs() }
+
+    /** A reader whose save destinations are plain files (`file:` Uris), optionally failing mid-write. */
+    private fun fileReader(failAfterBytes: Int? = null) = PdfReader(
+        app,
+        PdfJobs(app, engine, Dispatchers.IO, Dispatchers.Unconfined) { _, uri ->
+            val out = java.io.FileOutputStream(requireNotNull(uri.path))
+            if (failAfterBytes == null) {
+                out
+            } else {
+                object : java.io.OutputStream() {
+                    var n = 0
+                    override fun write(b: Int) {
+                        if (n++ >= failAfterBytes) throw java.io.IOException("disk full")
+                        out.write(b)
+                    }
+                    override fun write(b: ByteArray, off: Int, len: Int) { for (i in off until off + len) write(b[i].toInt()) }
+                    override fun close() = out.close()
+                }
+            }
+        },
+    )
+
+    private fun dest(name: String): Pair<File, Uri> {
+        val f = File(outDir, name).apply { delete(); createNewFile() } // as the system dialog leaves it
+        return f to Uri.fromFile(f)
+    }
+
+    @Test
+    fun saveACopyWritesThePrivateCopyByteForByteAndSaysSaved() = runBlocking {
+        val r = fileReader()
+        val doc = (r.open(CoreTestSupport.contentUri(app, "Report", bytes)) as ReaderOpenResult.Opened).document
+        val actions = ReaderActions(r, CoroutineScope(Dispatchers.Unconfined)) { doc }
+        assertEquals("Report.pdf", actions.beginSaveCopy())
+        assertTrue(actions.savingCopy.value)
+        assertNull("no second dialog while one is out", actions.beginSaveCopy())
+        val (file, uri) = dest("copy.pdf")
+        actions.saveCopyTo(uri)
+        assertEquals(ReaderActionEvent.Message(R.string.reader_saved), withTimeout(5_000) { actions.events.first() })
+        assertArrayEquals(doc.file.readBytes(), file.readBytes())
+        assertArrayEquals(bytes, file.readBytes())
+        withTimeout(5_000) { actions.savingCopy.first { !it } }
+        Unit
+    }
+
+    @Test
+    fun aProtectedDocumentIsSavedAsItIsStillProtected() = runBlocking {
+        val r = fileReader()
+        val plain = (r.open(CoreTestSupport.contentUri(app, "locked.pdf", bytes)) as ReaderOpenResult.Opened).document
+        // The same private copy, marked encrypted as the engine reports a protected PDF.
+        val doc = ReaderDocument(plain.name, plain.pages, plain.dir, plain.file, isEncrypted = true)
+        val actions = ReaderActions(r, CoroutineScope(Dispatchers.Unconfined)) { doc }
+        actions.beginSaveCopy()
+        val (file, uri) = dest("locked-copy.pdf")
+        actions.saveCopyTo(uri)
+        assertEquals(ReaderActionEvent.Message(R.string.reader_saved), withTimeout(5_000) { actions.events.first() })
+        assertArrayEquals(bytes, file.readBytes())
+    }
+
+    @Test
+    fun cancellingTheDialogDoesNothingAndAllowsANewSave() = runBlocking {
+        val doc = open("a.pdf")
+        val actions = ReaderActions(reader, CoroutineScope(Dispatchers.Unconfined)) { doc }
+        assertTrue(actions.beginSaveCopy() != null)
+        actions.saveCopyTo(null)
+        assertTrue(!actions.savingCopy.value)
+        assertNull(withTimeoutOrNull(300) { actions.events.first() })
+        assertTrue(actions.beginSaveCopy() != null)
+    }
+
+    @Test
+    fun aDocumentReplacedBeforeTheDialogReturnsWritesNothingAndRemovesTheEmptyFile() = runBlocking {
+        val r = fileReader()
+        val first = (r.open(CoreTestSupport.contentUri(app, "first.pdf", bytes)) as ReaderOpenResult.Opened).document
+        val second = (r.open(CoreTestSupport.contentUri(app, "second.pdf", "%PDF-1.7\nother\n".toByteArray())) as ReaderOpenResult.Opened).document
+        var open = first
+        val actions = ReaderActions(r, CoroutineScope(Dispatchers.Unconfined)) { open }
+        actions.beginSaveCopy()
+        open = second
+        val (file, uri) = dest("first.pdf")
+        actions.saveCopyTo(uri)
+        assertEquals(ReaderActionEvent.Message(R.string.reader_save_failed), withTimeout(5_000) { actions.events.first() })
+        CoreTestSupport.idleUntil(message = "empty file removed") { !file.exists() }
+        assertTrue(!actions.savingCopy.value)
+    }
+
+    @Test
+    fun aFailedWriteDeletesThePartialFileAndSaysSo() = runBlocking {
+        val r = fileReader(failAfterBytes = 4)
+        val doc = (r.open(CoreTestSupport.contentUri(app, "big.pdf", bytes)) as ReaderOpenResult.Opened).document
+        val actions = ReaderActions(r, CoroutineScope(Dispatchers.Unconfined)) { doc }
+        actions.beginSaveCopy()
+        val (file, uri) = dest("big.pdf")
+        actions.saveCopyTo(uri)
+        assertEquals(ReaderActionEvent.Message(R.string.reader_save_failed), withTimeout(5_000) { actions.events.first() })
+        assertTrue("partial file deleted", !file.exists())
+        withTimeout(5_000) { actions.savingCopy.first { !it } }
+        Unit
+    }
+
     @Test
     fun shareBusyIsTrueFromTheTapUntilTheCopyEnds() = runBlocking {
         val doc = open("busy.pdf")

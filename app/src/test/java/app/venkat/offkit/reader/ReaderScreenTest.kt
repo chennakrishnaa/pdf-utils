@@ -46,6 +46,7 @@ import app.venkat.offkit.feature.reader.TAG_GO_TO_PAGE_FIELD
 import app.venkat.offkit.feature.reader.TAG_GO_TO_PAGE_GO
 import app.venkat.offkit.feature.reader.TAG_GO_TO_PAGE_HINT
 import app.venkat.offkit.feature.reader.TAG_READER_GO_TO_PAGE
+import app.venkat.offkit.feature.reader.TAG_READER_SAVE_COPY
 import app.venkat.offkit.feature.reader.TAG_READER_MENU
 import android.content.Intent
 import android.net.Uri
@@ -775,7 +776,7 @@ class ReaderScreenTest {
         openMenu()
         val items = rule.onAllNodes(hasClickAction() and hasAnyAncestor(isPopup())).fetchSemanticsNodes()
         assertEquals(
-            listOf(TAG_READER_GO_TO_PAGE, TAG_READER_PRINT, TAG_READER_OPEN_ANOTHER),
+            listOf(TAG_READER_GO_TO_PAGE, TAG_READER_SAVE_COPY, TAG_READER_PRINT, TAG_READER_OPEN_ANOTHER),
             items.map { it.config[SemanticsProperties.TestTag] },
         )
         rule.onNodeWithTag(TAG_READER_PRINT).assertContentDescriptionEquals(str(R.string.reader_print))

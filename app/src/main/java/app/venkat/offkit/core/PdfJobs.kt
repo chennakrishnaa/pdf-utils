@@ -290,15 +290,21 @@ class PdfJobs @VisibleForTesting internal constructor(
      * ([deleteDestinationIfEmpty]). Failures are returned as
      * `Result.failure`; a cancellation is rethrown after the cleanup.
      */
-    suspend fun save(output: PendingOutput, dest: Uri): Result<Unit> = withContext(ioDispatcher) {
+    suspend fun save(output: PendingOutput, dest: Uri): Result<Unit> = saveFile(output.file, dest)
+
+    /**
+     * Copies [source] byte for byte to [dest], with [save]'s rules for success, failure and the
+     * cleanup of the destination. Also used by the reader's "Save a copy" (its private copy).
+     */
+    internal suspend fun saveFile(source: File, dest: Uri): Result<Unit> = withContext(ioDispatcher) {
         var opened = false
         try {
-            if (!output.file.isFile) throw IOException("Output no longer exists")
+            if (!source.isFile) throw IOException("Output no longer exists")
             val ctx = currentCoroutineContext()
             val stream = openDestination(appContext, dest) ?: throw IOException("Cannot open destination")
             opened = true
             stream.use { out ->
-                UriIo.copyToStream(output.file, out) { !ctx.isActive }
+                UriIo.copyToStream(source, out) { !ctx.isActive }
                 if (out is FileOutputStream) {
                     try {
                         out.fd.sync()

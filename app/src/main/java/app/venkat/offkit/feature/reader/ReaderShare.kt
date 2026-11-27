@@ -23,6 +23,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
+import android.net.Uri
+import app.venkat.offkit.core.PdfJobs
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.core.ReaderDocument
 import app.venkat.offkit.core.ReaderPrintFile
@@ -118,6 +120,63 @@ class ReaderActions(
         }
     }
 
+    /** The document a "Save a copy" dialog was opened for (memory only), until its result arrives. */
+    private var saveCopyDoc: ReaderDocument? = null
+    private val _savingCopy = MutableStateFlow(false)
+
+    /** True from the "Save a copy" tap until the copy is written or abandoned (the entry is disabled). */
+    val savingCopy: StateFlow<Boolean> = _savingCopy.asStateFlow()
+
+    /**
+     * Starts "Save a copy" for the open document: returns the name to suggest in the system save
+     * dialog, or null (no document, or a dialog or a save is already under way: no second dialog).
+     * The caller opens the dialog and passes its result to [saveCopyTo], or calls
+     * [saveCopyNotLaunched] if it could not open.
+     */
+    fun beginSaveCopy(): String? {
+        val doc = current() ?: return null
+        if (_savingCopy.value) return null
+        saveCopyDoc = doc
+        _savingCopy.value = true
+        return saveCopyName(doc.name)
+    }
+
+    /** The save dialog could not be opened: Save a copy is available again. */
+    fun saveCopyNotLaunched() {
+        saveCopyDoc = null
+        _savingCopy.value = false
+    }
+
+    /**
+     * The save dialog's result: null if cancelled (nothing happens). If the document it was
+     * opened for is no longer the open one (replaced, closed, or the process was recreated
+     * meanwhile), nothing is written: the empty file the dialog created is deleted and a failure
+     * message shown. Otherwise the private copy is written byte for byte ([PdfReader.saveCopy]),
+     * then "Saved" or a failure message is shown.
+     */
+    fun saveCopyTo(dest: Uri?) {
+        val doc = saveCopyDoc
+        saveCopyDoc = null
+        if (dest == null) {
+            _savingCopy.value = false
+            return
+        }
+        if (doc == null || current() !== doc) {
+            _savingCopy.value = false
+            reader.discardDestination(dest)
+            _events.trySend(ReaderActionEvent.Message(R.string.reader_save_failed))
+            return
+        }
+        scope.launch {
+            try {
+                val result = reader.saveCopy(doc, dest)
+                _events.trySend(ReaderActionEvent.Message(if (result.isSuccess) R.string.reader_saved else R.string.reader_save_failed))
+            } finally {
+                _savingCopy.value = false
+            }
+        }
+    }
+
     private var printJob: Job? = null
     private var printDoc: ReaderDocument? = null
     private val _printPreparing = MutableStateFlow(false)
@@ -192,6 +251,15 @@ class ReaderActions(
  */
 @StringRes
 internal fun shareBlockReason(@Suppress("UNUSED_PARAMETER") doc: ReaderDocument): Int? = null
+
+/**
+ * The name "Save a copy" suggests for a document named [name]: sanitised like a shared copy's
+ * ([PdfJobs.shareFileName]), with `.pdf` added if missing. Only a suggestion, never a path.
+ */
+internal fun saveCopyName(name: String): String {
+    val clean = PdfJobs.shareFileName(name)
+    return if (clean.endsWith(".pdf", ignoreCase = true)) clean else "$clean.pdf"
+}
 
 /** The Activity behind [context], or null (`PrintManager.print` needs one). */
 internal fun Context.findActivity(): Activity? {
