@@ -34,6 +34,13 @@ object UriIo {
     /** Fallback display name when neither the provider nor the Uri yields one. */
     const val FALLBACK_NAME = "file"
 
+    /** Projections [describe] tries in turn until one yields a name: both columns, the name alone, all. */
+    private val NAME_QUERIES: List<Array<String>?> = listOf(
+        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+    )
+
     /**
      * True if [uri] is a `content:` Uri, the only kind the system pickers and save dialog return.
      * Anything else (`file:`, `android.resource:`, no scheme) is never read or written by the app.
@@ -42,7 +49,8 @@ object UriIo {
 
     /**
      * Describes [uri] for display: name and size from the provider's [OpenableColumns], falling
-     * back to the Uri's last path segment. The name is untrusted and is passed through
+     * back to the Uri's last path segment. When the first query (name and size) yields no name,
+     * the name is asked for alone, then with a null projection ([NAME_QUERIES]). The name is untrusted and is passed through
      * [sanitizeDisplayName]. Non-`content:` Uris are not queried (name from the Uri only, no
      * size). Never throws; a blank name becomes [FALLBACK_NAME]. [PickedFile.nameReported] says
      * whether the name came from the provider's `DISPLAY_NAME` (or a `file:` Uri's own path)
@@ -51,23 +59,27 @@ object UriIo {
     fun describe(context: Context, uri: Uri): PickedFile {
         var name: String? = null
         var size: Long? = null
-        if (isContentUri(uri)) try {
-            context.contentResolver.query(
-                uri,
-                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                null,
-                null,
-                null,
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIdx >= 0 && !cursor.isNull(nameIdx)) name = cursor.getString(nameIdx)
-                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx).takeIf { it >= 0 }
+        if (isContentUri(uri)) {
+            // Some providers throw, or answer with no row, when the projection names a column
+            // they do not know (often _size): the name is then asked for alone, and last with
+            // the provider's own columns. At most three queries; each one is exception-safe.
+            for (projection in NAME_QUERIES) {
+                try {
+                    context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                            if (nameIdx >= 0 && !cursor.isNull(nameIdx)) name = cursor.getString(nameIdx)
+                            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                            if (size == null && sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                                size = cursor.getLong(sizeIdx).takeIf { it >= 0 }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Try the next, more tolerant query; then the Uri-derived fallback.
                 }
+                if (!name.isNullOrBlank()) break
             }
-        } catch (e: Exception) {
-            // Fall through to the Uri-derived fallback.
         }
         val fallback = try {
             uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
