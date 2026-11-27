@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import app.venkat.offkit.EncryptedFixtures
 import app.venkat.offkit.FakePdfEngine
 import app.venkat.offkit.PdfUtilApp
 import app.venkat.offkit.R
@@ -115,15 +116,18 @@ class ReaderShareTest {
     @Test
     fun aProtectedDocumentIsSavedAsItIsStillProtected() = runBlocking {
         val r = fileReader()
-        val plain = (r.open(CoreTestSupport.contentUri(app, "locked.pdf", bytes)) as ReaderOpenResult.Opened).document
-        // The same private copy, marked encrypted as the engine reports a protected PDF.
-        val doc = ReaderDocument(plain.name, plain.pages, plain.dir, plain.file, isEncrypted = true)
+        // A real AES-256 protected PDF (the fake engine opens it without a password).
+        val encrypted = java.util.Base64.getMimeDecoder().decode(EncryptedFixtures.AES256_B64)
+        assertTrue("fixture is encrypted", String(encrypted, Charsets.ISO_8859_1).contains("/Encrypt"))
+        val opened = (r.open(CoreTestSupport.contentUri(app, "locked.pdf", encrypted)) as ReaderOpenResult.Opened).document
+        // The same private copy, marked encrypted as the real engine reports a protected PDF.
+        val doc = ReaderDocument(opened.name, opened.pages, opened.dir, opened.file, isEncrypted = true)
         val actions = ReaderActions(r, CoroutineScope(Dispatchers.Unconfined)) { doc }
         actions.beginSaveCopy()
         val (file, uri) = dest("locked-copy.pdf")
         actions.saveCopyTo(uri)
         assertEquals(ReaderActionEvent.Message(R.string.reader_saved), withTimeout(5_000) { actions.events.first() })
-        assertArrayEquals(bytes, file.readBytes())
+        assertArrayEquals("the encrypted bytes, unchanged", encrypted, file.readBytes())
     }
 
     @Test
@@ -154,7 +158,12 @@ class ReaderShareTest {
         val outside = File(app.cacheDir, "jobs/elsewhere/document.pdf").apply { parentFile!!.mkdirs(); writeBytes(bytes) }
         val sneaky = File(doc.dir, "../elsewhere/document.pdf")
         val missing = File(doc.dir, "gone.pdf")
-        for (f in listOf(outside, sneaky, missing, File(app.filesDir, "document.pdf"))) {
+        // A link inside a reader folder that points outside it.
+        val link = File(doc.dir, "link.pdf")
+        val linked = runCatching { java.nio.file.Files.createSymbolicLink(link.toPath(), outside.toPath()) }.isSuccess
+        val candidates = listOfNotNull(outside, sneaky, missing, File(app.filesDir, "document.pdf"), link.takeIf { linked })
+        assertTrue("symlinks available to the test", linked)
+        for (f in candidates) {
             val r = jobs.run(listOf(JobInput.ReaderCopy(f)), { _, _ -> }) { _, _, _, _ ->
                 error("engine must not run for $f")
             }
