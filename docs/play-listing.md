@@ -18,7 +18,7 @@ WHAT YOU CAN DO
 • Compress PDF: make a PDF smaller by shrinking the images inside it. Pick from three levels and compare the size before and after.
 • Merge PDFs: pick several PDFs, put them in the order you want, and combine them into one.
 • Add images to a PDF: append pictures as new pages at the end of an existing PDF.
-• Read a PDF: scroll through the pages and pinch or double-tap to zoom in, up to 5x, to read the small print. Search the text, jump to any page, and long-press a word to select text on a page and copy it. Open password-protected PDFs by typing the password, share a PDF with another app, or print it. You can also open a PDF in Offkit from your file manager or another app with "Open with".
+• Read a PDF: scroll through the pages and pinch or double-tap to zoom in, up to 5x, to read the small print. Search the text, jump to any page, and long-press a word to select text on a page and copy it. Open password-protected PDFs by typing the password, share a PDF with another app, save a copy, compress it, or print it. You can also open a PDF in Offkit from your file manager or another app with "Open with".
 
 Files you save are listed under Recent files on the home screen, so you can open or share them again quickly.
 
@@ -35,7 +35,7 @@ GOOD TO KNOW
 • Works on Android 8.0 and newer, on 64-bit devices.
 • The reader opens password-protected PDFs; the tools do not. The password is used only to open the file and is never saved. Printing one makes an unprotected copy for the print system.
 • Search finds words regardless of case, across line breaks, but not words split by a hyphen at the end of a line.
-• The reader only shows a PDF. It does not change it, save it or add it to Recent files.
+• The reader does not change a PDF. Nothing is saved unless you choose Save a copy or Compress; a copy you save is added to Recent files.
 • Text is copied one page at a time, and only from PDFs that contain text: a scanned page with no text layer has nothing to copy. Copied text goes to the system clipboard, where other apps and your keyboard can read it.
 • PDFs larger than 1 GB are not supported.
 • Compression reduces the images in a PDF. A PDF that is mostly text will not get much smaller.

@@ -1,7 +1,7 @@
 OFFKIT PRIVACY POLICY
 =====================
 
-Effective date: 26 November 2026
+Effective date: 27 November 2026
 
 Offkit is an offline PDF and image toolkit for Android. This policy explains what the app does with your information. In short: no data collected. Works offline.
 
@@ -22,7 +22,7 @@ You choose files through the system file picker, or open a PDF in Offkit from an
 
 While a job runs, the app keeps temporary working copies in its private cache. When a job finishes, the result stays there while its result screen is open, so that you can save it, save another copy, open it or share it. The temporary copies are deleted by the time you leave that screen or start another job, and when a job fails or is cancelled. If you share a result, the copy made for sharing is kept until the next job starts, or until a tool is next opened after the app restarts. Any copies left behind, for example if the app was closed mid-job, are deleted the next time a tool is opened after the app starts.
 
-When you open a PDF in the reader, the app reads it once and keeps a copy in its private cache while the reader is open, including while the app is in the background. The PDF is shown as it is: nothing in it is changed and nothing is saved. The copy is deleted when you close the reader, and when you open another PDF in it, once that PDF has opened or failed to open. If the other PDF needs a password, the one you were reading stays open, with its copy, until the new one opens or you cancel the password prompt; the new PDF's copy is deleted if you cancel. If the app was closed while the reader was open, the copy is deleted the next time a tool or the reader is opened after the app starts.
+When you open a PDF in the reader, the app reads it once and keeps a copy in its private cache while the reader is open, including while the app is in the background. The PDF is shown as it is: nothing in it is changed, and nothing is saved unless you choose Save a copy or Compress. The copy is deleted when you close the reader, and when you open another PDF in it, once that PDF has opened or failed to open. If the other PDF needs a password, the one you were reading stays open, with its copy, until the new one opens or you cancel the password prompt; the new PDF's copy is deleted if you cancel. If the app was closed while the reader was open, the copy is deleted the next time a tool or the reader is opened after the app starts.
 
 A PDF you open in Offkit from another app is handled the same way: the app reads it once and copies it to its private cache, does not keep the link to it, and deletes the copy at the same times as a PDF you pick in the reader.
 
@@ -31,7 +31,7 @@ The result is written only to the place you choose in the save dialog. If you ch
 RECENT FILES
 ------------
 
-The Recent files list on the home screen shows files you saved with the app. For each one it keeps the file name, size, the time it was saved, which tool made it, and a link to the file so the app can open it again. This list is stored only on your device and is excluded from backup. It is removed when you tap Clear, when you clear the app's data, or when you uninstall the app. Clearing the list does not delete the files themselves. PDFs you open in the reader are not added to this list.
+The Recent files list on the home screen shows files you saved with the app. For each one it keeps the file name, size, the time it was saved, which tool made it, and a link to the file so the app can open it again. This list is stored only on your device and is excluded from backup. It is removed when you tap Clear, when you clear the app's data, or when you uninstall the app. Clearing the list does not delete the files themselves. PDFs you open in the reader are not added to this list; a copy you save from the reader with Save a copy is.
 
 If you open a file from the list, or open a result from its result screen, it opens in Offkit's own reader and is handled like any other PDF you read there. If you share one, Android hands it to the app you choose on your device.
 
@@ -55,7 +55,9 @@ Search in the reader looks for your words in the text of the PDF's pages, on you
 SHARING AND PRINTING
 --------------------
 
-Share in the reader copies the PDF, unchanged, to a folder in the app's private cache, and Android hands that copy to the app you choose. A password-protected PDF is shared as it is, still protected. The app you choose receives the file and its own privacy terms apply. The copy stays in the app's private cache so that the app you choose can read it, also after you close the reader: it is deleted when the next job starts, or when a tool or the reader is next opened after the app restarts.
+Share in the reader copies the PDF, unchanged, to a folder in the app's private cache, and Android hands that copy to the app you choose. A password-protected PDF is shared as it is, still protected. The app you choose receives the file and its own privacy terms apply. The copy stays in the app's private cache so that the app you choose can read it, also after you close the reader: it is deleted when the next job starts from a file you pick, or when a tool or the reader is next opened after the app restarts.
+
+Save a copy in the reader writes the PDF, unchanged, to the place you choose in the save dialog and adds that file to the Recent files list. A password-protected PDF is saved as it is, still protected. Compress in the reader opens the Compress tool on the copy the reader already holds, and that job is handled like any other; password-protected PDFs cannot be compressed.
 
 Print hands the PDF to Android's print system, which prepares the pages and passes them to the printer or print app you choose, such as "Save as PDF" or a printer maker's app. That printer or app is outside Offkit, and its own privacy terms apply. To print a password-protected PDF, the app first makes an unprotected copy of it in its private cache, next to the copy the reader keeps, and hands that copy to Android's print system; a PDF's own no-print setting is not applied. The unprotected copy is deleted when you close the PDF, open another one or leave the reader, and at the next start of the app. If you choose "Save as PDF" in the print dialog, the file it saves is not password-protected.
 
