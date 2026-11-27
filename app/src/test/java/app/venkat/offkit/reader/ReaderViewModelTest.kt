@@ -629,6 +629,78 @@ class ReaderViewModelTest {
         assertFalse(vm.search.value!!.rects.containsKey(1))
     }
 
+    private fun settle(ms: Long = 100) {
+        val until = System.currentTimeMillis() + ms
+        CoreTestSupport.idleUntil { System.currentTimeMillis() > until }
+    }
+
+    /**
+     * 8 pages with "cat" on pages 1 and 6, searched from page 6; then page 1's rectangles are read
+     * with [failWith] set (the read fails) and the engine recovers. Returns the read counter of page 1.
+     */
+    private fun searchThenFailPageOneRects(vm: ReaderViewModel, failWith: PdfError): () -> Int {
+        fake.readerPages = List(8) { PageDims(595f, 842f) }
+        for (p in listOf(1, 6)) fake.readerTexts[p] = TestPageTexts.grid("a Cat and", "another cat")
+        openVm(vm)
+        vm.onViewport(WIDTH, 1f, listOf(band(6)))
+        vm.search("cat", 6)
+        searchDone(vm)
+        val reads = { engineLog.count { it == "text:1" } }
+        assertEquals("the scan read page 1", 1, reads())
+        textError = failWith
+        vm.onViewport(WIDTH, 1f, listOf(band(1)))
+        CoreTestSupport.idleUntil(message = "rects read") { reads() == 2 }
+        settle()
+        textError = null
+        assertFalse(vm.search.value!!.rects.containsKey(1))
+        return reads
+    }
+
+    @Test
+    fun rectanglesThatFailedWithAnUnreachableEngineAreReadAgainWhenThePageComesBack() {
+        val vm = newVm()
+        val reads = searchThenFailPageOneRects(vm, PdfError.EngineUnavailable)
+        // Still near the viewport: not retried on every viewport update.
+        repeat(3) { vm.onViewport(WIDTH, 1f, listOf(band(1))); settle(30) }
+        assertEquals(2, reads())
+        // Away (page 1 leaves the neighbourhood of page 6) and back: read again, and shown.
+        vm.onViewport(WIDTH, 1f, listOf(band(6)))
+        settle()
+        vm.onViewport(WIDTH, 1f, listOf(band(1)))
+        CoreTestSupport.idleUntil(message = "rects back") { vm.search.value!!.rects.containsKey(1) }
+        assertEquals(3, reads())
+    }
+
+    @Test
+    fun rectanglesThatFailedWithAnUnreachableEngineAreReadAgainWhenNextReachesThePage() {
+        val vm = newVm()
+        val reads = searchThenFailPageOneRects(vm, PdfError.EngineUnavailable)
+        assertEquals(SearchHit(6, 2, 5), vm.search.value!!.current)
+        vm.searchStep(forward = true) // second hit on page 6
+        vm.searchStep(forward = true) // wraps to page 1, whose rectangles failed
+        assertEquals(1, vm.search.value!!.current!!.page)
+        CoreTestSupport.idleUntil(message = "rects back") { vm.search.value!!.rects.containsKey(1) }
+        assertEquals(3, reads())
+    }
+
+    @Test
+    fun rectanglesThatFailedForGoodAreNotReadAgainByScrollingOrNext() {
+        val vm = newVm()
+        val reads = searchThenFailPageOneRects(vm, PdfError.Corrupt)
+        repeat(3) {
+            vm.onViewport(WIDTH, 1f, listOf(band(6)))
+            settle(30)
+            vm.onViewport(WIDTH, 1f, listOf(band(1)))
+            settle(30)
+        }
+        vm.searchStep(forward = true)
+        vm.searchStep(forward = true)
+        assertEquals(1, vm.search.value!!.current!!.page)
+        settle()
+        assertEquals("only the one failed rectangles read", 2, reads())
+        assertFalse(vm.search.value!!.rects.containsKey(1))
+    }
+
     @Test
     fun aNewQueryCancelsTheOldScanAndLeavesNoStaleHits() {
         val vm = newVm()

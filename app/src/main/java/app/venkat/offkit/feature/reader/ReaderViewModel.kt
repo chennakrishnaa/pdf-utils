@@ -612,6 +612,7 @@ class ReaderViewModel internal constructor(
             } else {
                 _searchReveals.trySend(SearchReveal(hit.page, null))
                 pendingReveal = hit
+                res.retryRects.remove(hit.page) // an explicit step tries a passing failure again
                 fetchRects(res, hit.page) // already in flight for this page: its result reveals the hit too
             }
         }
@@ -630,6 +631,7 @@ class ReaderViewModel internal constructor(
         private fun searchOnViewport(vp: ReaderViewport) {
             val res = results ?: return
             val dropped = res.rects.keys.removeAll { !nearViewport(it) }
+            res.retryRects.removeAll { !nearViewport(it) } // left the neighbourhood: tried again when back
             for (page in vp.visible.map { it.index }) {
                 if (page !in res.rects && page !in rectJobs && res.hitsOn(page).isNotEmpty()) fetchRects(res, page)
             }
@@ -638,13 +640,15 @@ class ReaderViewModel internal constructor(
 
         /** Reads [page]'s text again (not cached) to compute its hits' rectangles. */
         private fun fetchRects(res: SearchResults, page: Int) {
-            if (page in rectJobs || page in res.failedRects) return
+            if (page in rectJobs || page in res.failedRects || page in res.retryRects) return
             rectJobs[page] = viewModelScope.launch {
                 val r = reader.text(doc, page)
                 if (results !== res) return@launch
                 if (r !is ReaderText.Ok) {
                     rectJobs.remove(page)
-                    if (r is ReaderText.Err && r.error != PdfError.Cancelled) res.failedRects += page
+                    if (r is ReaderText.Err && r.error != PdfError.Cancelled) {
+                        if (isTransientTextError(r.error)) res.retryRects += page else res.failedRects += page
+                    }
                     return@launch
                 }
                 val hits = res.hitsOn(page) // a copy, read here on the main thread

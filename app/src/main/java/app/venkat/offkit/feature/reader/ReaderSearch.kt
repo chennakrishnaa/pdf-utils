@@ -210,8 +210,20 @@ internal class SearchResults(val query: SearchQuery) {
     var capped = false
     val rects = HashMap<Int, PageSearchRects>()
 
-    /** Pages whose rectangles could not be fetched (text read failed): not tried again for this query. */
+    /**
+     * Pages whose rectangles could not be fetched because the page's text read failed for good
+     * (corrupt page, engine crash, out of memory or time, I/O): not tried again for this query.
+     */
     val failedRects = HashSet<Int>()
+
+    /**
+     * Pages whose rectangles could not be fetched for a passing reason ([isTransientTextError]: the
+     * engine was unreachable, e.g. killed while the app was in the background; review Z4-1). Not
+     * fetched again while they stay near the viewport, so scrolling does not retry on every frame;
+     * tried again once they have left its neighbourhood and come back, or when Next / Previous
+     * reaches one of their hits.
+     */
+    val retryRects = HashSet<Int>()
 
     /** Adds [pageHits] (one page's, in order) at their place. */
     fun addPage(pageHits: List<SearchHit>) {
@@ -301,3 +313,14 @@ internal suspend fun scanPages(
     results.scanning = false
     publish()
 }
+
+/**
+ * True if a page-text read that failed with [error] may well succeed when simply tried again: only
+ * [PdfError.EngineUnavailable] (the engine could not be reached, or went away while the app was in
+ * the background or frozen, which says nothing about the page). [PdfError.Cancelled] is not a
+ * failure at all. Everything else ([PdfError.EngineCrashed] with the app in the foreground,
+ * [PdfError.OutOfMemory], [PdfError.TimedOut], [PdfError.Corrupt], [PdfError.Io], ...) comes from
+ * the page or is likely to repeat (the reader shows out of memory and time as "too large or
+ * complex"), so trying again on its own would only spend the engine again.
+ */
+internal fun isTransientTextError(error: PdfError): Boolean = error == PdfError.EngineUnavailable
