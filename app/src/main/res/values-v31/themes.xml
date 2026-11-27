@@ -4,6 +4,6 @@
     <style name="Theme.PdfUtils" parent="Base.Theme.PdfUtils">
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowSplashScreenBackground">@color/offkit_background</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">@color/offkit_primary</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/ic_launcher_background</item>
     </style>
 </resources>
