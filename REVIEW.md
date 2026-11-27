@@ -764,3 +764,23 @@ P2 checks that held: no temporary or side files and no seeking during the save; 
 Not covered by Z4: the real overshoot on a device, the share copy left after a cancelled share, fuzzing the name lexer against MuPDF. Y2 itself has had no independent review.
 
 The launcher icon was replaced with the owner's "Folio in Wine" design (`fed8060`); see `HANDOFF.md`.
+
+## Reader: phone-test round (W6, W7, W8), review Z5 and fixes Y3, 2026-11-27
+
+The owner tested the signed build on a phone and asked for four things before the first release. Built by workers: W6 (Back returns to the app that opened the PDF), W7 (name lookup retry), W8 (Search and Share in the top bar, Save a copy, Compress from the reader). Read-only review Z5 covered `36f8ac0..5c497f9`; Y3 fixed its findings (`eaa5c1b..2fef701`). Y3 itself has had no independent review.
+
+| Finding | Severity | Result |
+| --- | --- | --- |
+| Z5-1 | Must fix, confirmed | With reader A, Compress holding an unsaved result, and a second reader B from another app on top, Back in B popped "the topmost reader" twice: A and the Compress result were lost and the task moved back twice. **Fixed (`eaa5c1b`):** a reader pops only its own back-stack entry and leaves once. Test saw `routes=[home] returns=2` before the fix. |
+| Z5-2 | Should fix, confirmed | Back during Save a copy cancelled the write silently. **Fixed (`4756c24`):** the copy runs in the process scope from a stream opened before the reader can close. |
+| Z5-3 | Should fix, confirmed | A job started over a live reader wiped that reader's share copy. **Fixed (`6a9ef52`):** Compress is disabled while a share copy is prepared; a job from a reader copy does not wipe `cacheDir/shared/`; a Share event is dropped unless the reader is resumed (last part by reading only). |
+| Z5-4 | Should fix, confirmed | Cancelling the password prompt of another app's PDF over an in-app document left Back pointing out of the app. **Fixed (`c014690`).** |
+| Z5-5 | Note, plausible | A leaving reader could take a view request meant for a new one. **Fixed (`1b66323`):** only the top entry's reader receives it. No test. |
+| Z5-6, Z5-7, Z5-9 | Note | Flag after process death, misleading "check free space" message when the PDF was closed, stale comments. **Fixed (`3efb7af`, `6b6fdc9`).** |
+| Z5-8 | Note, plausible | A reader hidden under Compress keeps its bitmaps and text caches. Not fixed. |
+
+No finding on: path checks of `JobInput.ReaderCopy` (canonical paths; symlink test added in `2fef701`), the name-query retry, `Uri.EMPTY` in `CompressViewModel`, top-bar touch targets and descriptions, navigation state (no Uri or path).
+
+W7 result: the share carries exactly the name the reader shows (receiver-side query tested). A provider that refuses the name-and-size projection lost the name; fixed by the retry. The owner's WhatsApp case is different: the provider itself reports `DOC-…-WA0011.pdf`; see `HANDOFF.md`.
+
+Gates on `2fef701`: `VERIFY OK`, emulator smoke `tests=49 failures=0 errors=0`, `ISOLATION SMOKE OK`. On `ad52329` (privacy text only): `VERIFY OK`, `RELEASE OK`, `RELEASE SMOKE OK`.
