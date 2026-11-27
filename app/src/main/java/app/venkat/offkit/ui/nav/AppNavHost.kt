@@ -88,7 +88,9 @@ fun AppNavHost(
 ) {
     // Outside the NavHost: scoped to the activity (or whatever owns this composition).
     val handoffs: ToolHandoffs = viewModel()
-    val route = navController.currentBackStackEntryAsState().value?.destination?.route
+    val top = navController.currentBackStackEntryAsState().value
+    val route = top?.destination?.route
+    val topEntryId = top?.id
     LaunchedEffect(viewRequest, route) {
         // Not gated on RESUMED: the request arrives while the activity is starting. Keyed on the
         // route too, so a request still pending when the reader leaves (e.g. its cancelled
@@ -154,7 +156,9 @@ fun AppNavHost(
                 // Not gated on RESUMED: a cancelled picker reports before the activity resumes.
                 // Idempotent: does nothing once this reader is no longer the top entry.
                 onExit = { popThis() },
-                viewRequest = viewRequest,
+                // Only the reader on top takes a request: one still composed while it leaves (e.g.
+                // under Compress after its Compress tap) must not replace its document.
+                viewRequest = viewRequest.takeIf { topEntryId == entry.id },
                 onViewRequestHandled = onViewRequestHandled,
                 // Not gated on RESUMED, so a Back during the reader's enter transition (its handler
                 // has taken it) is not lost. Idempotent: a second call during the exit transition
