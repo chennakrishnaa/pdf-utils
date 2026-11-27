@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
+import app.venkat.offkit.core.ReaderCopyHandoff
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -65,12 +68,20 @@ private fun levelDescription(level: CompressionLevel): Int = when (level) {
 
 /** "Compress PDF" tool: options, then the shared Processing / Result / Error screens. */
 @Composable
-fun CompressScreen(onBack: () -> Unit, onOpenDocument: (Uri) -> Unit = {}) {
+fun CompressScreen(
+    onBack: () -> Unit,
+    onOpenDocument: (Uri) -> Unit = {},
+    takeReaderCopy: () -> ReaderCopyHandoff? = { null },
+) {
     // Explicit initializer: the default factory caches the first Application process-wide
     // (AndroidViewModelFactory.getInstance), which goes stale when tests create a fresh one.
     val vm: CompressViewModel = viewModel {
         CompressViewModel(checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]))
     }
+    // Opened from the reader's "Compress": its document, taken once (null after rotation or
+    // process death, when the screen keeps what it has or shows its empty state).
+    val take by rememberUpdatedState(takeReaderCopy)
+    LaunchedEffect(vm) { take()?.let(vm::chooseReaderCopy) }
     val file by vm.file.collectAsState()
     val level by vm.level.collectAsState()
     val state by vm.jobState.collectAsState()

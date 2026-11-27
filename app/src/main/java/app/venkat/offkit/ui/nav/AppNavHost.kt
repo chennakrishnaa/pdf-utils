@@ -5,6 +5,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import app.venkat.offkit.core.ReaderCopyHandoff
 import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
@@ -43,6 +46,22 @@ object Routes {
 class ViewRequest(val uri: Uri, val id: Long, val typeVerified: Boolean = true, val fromOtherApp: Boolean = false)
 
 /**
+ * The reader's document handed to the Compress tool (the reader's "Compress"): posted by the
+ * reader just before it opens Compress, taken once by Compress. Activity-scoped and in memory
+ * only (gone after process death, when Compress shows its empty state); never in navigation state.
+ */
+class ToolHandoffs : ViewModel() {
+    private var pending: ReaderCopyHandoff? = null
+
+    fun post(handoff: ReaderCopyHandoff) {
+        pending = handoff
+    }
+
+    /** The handed-off document, once; null afterwards. */
+    fun take(): ReaderCopyHandoff? = pending.also { pending = null }
+}
+
+/**
  * The app's navigation graph, starting at [Routes.HOME].
  *
  * A non-null [viewRequest] opens the reader on its document, on top of the current back stack (so
@@ -67,6 +86,8 @@ fun AppNavHost(
     onReturnToCaller: () -> Unit = {},
     launcherReturns: Int = 0,
 ) {
+    // Outside the NavHost: scoped to the activity (or whatever owns this composition).
+    val handoffs: ToolHandoffs = viewModel()
     val route = navController.currentBackStackEntryAsState().value?.destination?.route
     LaunchedEffect(viewRequest, route) {
         // Not gated on RESUMED: the request arrives while the activity is starting. Keyed on the
@@ -100,7 +121,11 @@ fun AppNavHost(
             ImagesToPdfScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
         }
         composable(Routes.COMPRESS) { entry ->
-            CompressScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
+            CompressScreen(
+                onBack = dropUnlessResumed { navController.popBackStack() },
+                onOpenDocument = openFrom(entry),
+                takeReaderCopy = handoffs::take,
+            )
         }
         composable(Routes.MERGE) { entry ->
             MergeScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
@@ -108,8 +133,17 @@ fun AppNavHost(
         composable(Routes.ADD_IMAGES) { entry ->
             AddImagesScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
         }
-        composable(Routes.READER) {
+        composable(Routes.READER) { entry ->
             ReaderScreen(
+                // Compress goes on top of the reader, which stays below with its document (and
+                // its private copy, which the job copies). An "Open" of Compress's saved result
+                // then pushes a second reader: Back returns to Compress, then to this reader.
+                onCompress = { handoff ->
+                    if (entry.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                        handoffs.post(handoff)
+                        navController.navigate(Routes.COMPRESS)
+                    }
+                },
                 onBack = dropUnlessResumed { navController.popBackStack() },
                 // Not gated on RESUMED: a cancelled picker reports before the activity resumes.
                 // Idempotent: does nothing once the reader has left the back stack.

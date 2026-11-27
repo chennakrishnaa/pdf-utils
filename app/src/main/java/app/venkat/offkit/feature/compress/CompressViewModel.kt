@@ -7,6 +7,10 @@ import app.venkat.offkit.R
 import app.venkat.offkit.core.JobInput
 import app.venkat.offkit.core.JobViewModel
 import app.venkat.offkit.core.PickedFile
+import app.venkat.offkit.core.ReaderCopyHandoff
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import app.venkat.offkit.core.UriIo
 import app.venkat.offkit.core.sanitizeDisplayName
 import app.venkat.offkit.engine.CompressionLevel
@@ -48,7 +52,30 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
             val picked = describe(listOf(uri)).first()
             if (locked) return@launch
             inputsChanged()
+            readerCopy = null
             _file.value = picked
+        }
+    }
+
+    /**
+     * The reader's private copy chosen through the reader's "Compress" ([handoff]), or null. When
+     * set, [file] carries its name and size and a [Uri.EMPTY] that nothing reads: [run] compresses
+     * this file instead ([JobInput.ReaderCopy]). Memory only, like the hand-off.
+     */
+    private var readerCopy: File? = null
+
+    /**
+     * Chooses the reader's open document ([handoff]) as the PDF to compress, shown with its name
+     * and size as if picked. Ignored while running or saving.
+     */
+    fun chooseReaderCopy(handoff: ReaderCopyHandoff) {
+        if (locked) return
+        viewModelScope.launch {
+            val size = withContext(Dispatchers.IO) { handoff.file.length().takeIf { it > 0 } }
+            if (locked) return@launch
+            inputsChanged()
+            readerCopy = handoff.file
+            _file.value = PickedFile(Uri.EMPTY, sanitizeDisplayName(handoff.name, UriIo.FALLBACK_NAME), size, nameReported = true)
         }
     }
 
@@ -65,8 +92,9 @@ class CompressViewModel(app: Application) : JobViewModel(app) {
         if (locked) return
         val level = _level.value
         copiedInputBytes = null
+        val input = readerCopy?.let { JobInput.ReaderCopy(it) } ?: JobInput.Pdf(picked.uri)
         startJob(
-            inputs = listOf(JobInput.Pdf(picked.uri)),
+            inputs = listOf(input),
             originalBytes = { copiedInputBytes ?: picked.sizeBytes },
         ) { engine, files, out, job ->
             val input = files.first()

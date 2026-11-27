@@ -13,5 +13,8 @@
     <string name="reader_save_copy">Save a copy</string>
     <string name="reader_saved">Saved</string>
     <string name="reader_save_failed">Couldn\'t save the copy. Check free space and try again.</string>
+    <!-- Reader overflow menu: open the Compress tool on the open PDF -->
+    <string name="reader_compress">Compress</string>
+    <string name="reader_compress_protected">This PDF is password-protected. Protected PDFs can\'t be compressed.</string>
     <string name="reader_print_unavailable">Printing isn\'t available on this device.</string>
 </resources>

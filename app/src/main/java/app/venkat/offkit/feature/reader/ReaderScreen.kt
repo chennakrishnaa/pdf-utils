@@ -94,6 +94,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.rememberTextMeasurer
 import app.venkat.offkit.ui.components.rememberPdfSaver
+import app.venkat.offkit.core.ReaderCopyHandoff
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -228,6 +229,7 @@ fun ReaderScreen(
     onViewRequestHandled: (ViewRequest) -> Unit = {},
     onReturnToCaller: () -> Unit = onBack,
     launcherReturns: Int = 0,
+    onCompress: (ReaderCopyHandoff) -> Unit = {},
 ) {
     // Explicit initializer: the default factory caches the first Application process-wide.
     val vm: ReaderViewModel = viewModel {
@@ -337,7 +339,7 @@ fun ReaderScreen(
             onBack = leave,
         )
         is ReaderDocState.Open -> key(openCount) {
-            ReaderDocument(vm, d, onBack = leave, onOpenAnother = pick, onSaveCopy = saveCopy)
+            ReaderDocument(vm, d, onBack = leave, onOpenAnother = pick, onSaveCopy = saveCopy, onCompress = onCompress)
         }
         is ReaderDocState.Locked -> {
             ReaderFrame(title = stringResource(R.string.tool_read_title), indicator = null, onBack = leave) {}
@@ -530,6 +532,7 @@ private fun ReaderDocument(
     onBack: () -> Unit,
     onOpenAnother: () -> Unit,
     onSaveCopy: () -> Unit = {},
+    onCompress: (ReaderCopyHandoff) -> Unit = {},
 ) {
     val savingCopy by vm.actions.savingCopy.collectAsState()
     val listState = rememberLazyListState()
@@ -594,6 +597,7 @@ private fun ReaderDocument(
             actions = vm.actions,
             onSaveCopy = onSaveCopy,
             saveCopyEnabled = !savingCopy,
+            onCompress = { vm.actions.compressSource()?.let(onCompress) },
         ),
         onIndicatorClick = { goToOpen = true },
         buttons = {

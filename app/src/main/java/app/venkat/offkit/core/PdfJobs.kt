@@ -28,6 +28,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -47,7 +48,21 @@ sealed interface JobInput {
      * engine's [ImagePreparer], in the `:engine` process.
      */
     data class Image(val uri: Uri) : JobInput
+
+    /**
+     * The reader's private copy of its open document (`cacheDir/jobs/reader-<uuid>/…`), copied
+     * verbatim like [Pdf]. Rejected with an [IOException] (the job fails with `Io`) unless the
+     * file lies directly in a reader folder under [PdfJobs.jobsRoot] ([PdfJobs.isReaderCopy]);
+     * a copy that is gone fails the same way.
+     */
+    data class ReaderCopy(val file: File) : JobInput
 }
+
+/**
+ * A reader document handed to a tool ("Compress" in the reader's menu): its private [file] and
+ * display [name] (untrusted, never a path). Held in memory only, never in navigation state.
+ */
+class ReaderCopyHandoff(val file: File, val name: String)
 
 /**
  * A finished output kept in the app cache until the caller discards it. It can be saved
@@ -190,6 +205,21 @@ class PdfJobs @VisibleForTesting internal constructor(
                 is JobInput.Pdf -> File(inDir, String.format(Locale.ROOT, "in_%03d.pdf", index)).also {
                     UriIo.copyToFile(appContext, input.uri, it, cancelled)
                 }
+                is JobInput.ReaderCopy -> File(inDir, String.format(Locale.ROOT, "in_%03d.pdf", index)).also { dest ->
+                    if (!isReaderCopy(input.file)) throw IOException("Not a reader copy")
+                    if (!input.file.isFile) throw IOException("Reader copy is gone")
+                    FileInputStream(input.file).use { src ->
+                        dest.outputStream().use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                ctx.ensureActive()
+                                val n = src.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                            }
+                        }
+                    }
+                }
                 is JobInput.Image -> {
                     // Raw bytes only: decoding untrusted image data happens in the engine process.
                     val raw = ImageNormalizer.rawFile(inDir, index)
@@ -210,6 +240,18 @@ class PdfJobs @VisibleForTesting internal constructor(
                 }
             }
         }
+    }
+
+    /**
+     * True if [file] lies directly in one of [PdfReader]'s folders, `cacheDir/jobs/reader-<uuid>/`
+     * (compared on canonical paths, so `..` and links cannot point elsewhere).
+     */
+    internal fun isReaderCopy(file: File): Boolean = try {
+        val f = file.canonicalFile
+        val dir = f.parentFile
+        dir != null && dir.name.startsWith(PdfReader.READER_DIR_PREFIX) && dir.parentFile == jobsRoot.canonicalFile
+    } catch (e: IOException) {
+        false
     }
 
     /** An image input could not be prepared; [error] is reported as the job's error. */

@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import app.venkat.offkit.R
 import android.net.Uri
 import app.venkat.offkit.core.PdfJobs
+import app.venkat.offkit.core.ReaderCopyHandoff
 import app.venkat.offkit.core.PdfReader
 import app.venkat.offkit.core.ReaderDocument
 import app.venkat.offkit.core.ReaderPrintFile
@@ -175,6 +176,19 @@ class ReaderActions(
                 _savingCopy.value = false
             }
         }
+    }
+
+    /**
+     * The open document for the reader's "Compress", or null: none open, or it is protected
+     * (tools refuse encrypted PDFs; a message explains it and nothing navigates).
+     */
+    fun compressSource(): ReaderCopyHandoff? {
+        val doc = current() ?: return null
+        if (doc.isEncrypted) {
+            _events.trySend(ReaderActionEvent.Message(R.string.reader_compress_protected))
+            return null
+        }
+        return ReaderCopyHandoff(doc.file, doc.name)
     }
 
     private var printJob: Job? = null

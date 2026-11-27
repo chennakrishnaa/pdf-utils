@@ -10,6 +10,10 @@ import app.venkat.offkit.R
 import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.core.PdfJobs
 import app.venkat.offkit.core.PdfReader
+import app.venkat.offkit.core.JobInput
+import app.venkat.offkit.core.JobOutcome
+import app.venkat.offkit.engine.PdfResult
+import app.venkat.offkit.engine.PdfError
 import app.venkat.offkit.core.ReaderDocument
 import app.venkat.offkit.core.ReaderOpenResult
 import app.venkat.offkit.feature.reader.ReaderActionEvent
@@ -120,6 +124,42 @@ class ReaderShareTest {
         actions.saveCopyTo(uri)
         assertEquals(ReaderActionEvent.Message(R.string.reader_saved), withTimeout(5_000) { actions.events.first() })
         assertArrayEquals(bytes, file.readBytes())
+    }
+
+    @Test
+    fun compressRefusesAProtectedDocumentWithAMessageAndHandsOffAPlainOne() = runBlocking {
+        val plain = open("plain.pdf")
+        val ok = ReaderActions(reader, CoroutineScope(Dispatchers.Unconfined)) { plain }.compressSource()!!
+        assertEquals("plain.pdf", ok.name)
+        assertEquals(plain.file, ok.file)
+        val locked = ReaderDocument(plain.name, plain.pages, plain.dir, plain.file, isEncrypted = true)
+        val actions = ReaderActions(reader, CoroutineScope(Dispatchers.Unconfined)) { locked }
+        assertNull(actions.compressSource())
+        assertEquals(ReaderActionEvent.Message(R.string.reader_compress_protected), withTimeout(5_000) { actions.events.first() })
+    }
+
+    @Test
+    fun aJobCopiesTheReaderCopyAndRejectsAFileOutsideAReaderFolderOrAMissingOne() = runBlocking {
+        val jobs = PdfJobs(app, engine, Dispatchers.IO, Dispatchers.Unconfined)
+        val doc = open("job.pdf")
+        var seen: ByteArray? = null
+        val ok = jobs.run(listOf(JobInput.ReaderCopy(doc.file)), { _, _ -> }) { _, files, out, _ ->
+            seen = files.single().readBytes()
+            out.writeBytes(seen!!)
+            PdfResult.Ok(1, seen!!.size.toLong())
+        }
+        assertTrue(ok is JobOutcome.Ready)
+        assertArrayEquals(bytes, seen)
+
+        val outside = File(app.cacheDir, "jobs/elsewhere/document.pdf").apply { parentFile!!.mkdirs(); writeBytes(bytes) }
+        val sneaky = File(doc.dir, "../elsewhere/document.pdf")
+        val missing = File(doc.dir, "gone.pdf")
+        for (f in listOf(outside, sneaky, missing, File(app.filesDir, "document.pdf"))) {
+            val r = jobs.run(listOf(JobInput.ReaderCopy(f)), { _, _ -> }) { _, _, _, _ ->
+                error("engine must not run for $f")
+            }
+            assertTrue("$f rejected: $r", r is JobOutcome.Failed && r.error is PdfError.Io)
+        }
     }
 
     @Test
