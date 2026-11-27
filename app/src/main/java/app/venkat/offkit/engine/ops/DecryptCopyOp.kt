@@ -124,7 +124,11 @@ class DecryptCopyOp(private val outputMarginBytes: Long = OUTPUT_MARGIN_BYTES) {
         /** MuPDF save options: write without encryption, everything else as stored. */
         const val SAVE_OPTIONS = "encrypt=none"
 
-        /** Free space required beyond the input's size before saving (16 MiB); also left free by the output watch. */
+        /**
+         * Free space required beyond the input's size before saving (16 MiB). While the copy is
+         * written, `RemoteEngine`'s output watch keeps `EngineLimits.DECRYPT_SPACE_RESERVE_BYTES`
+         * (64 MiB) free on the volume instead (Z4-4).
+         */
         const val SPACE_MARGIN_BYTES = 16L shl 20
 
         /**

@@ -372,6 +372,55 @@ class RemoteEngineTest {
     }
 
     @Test
+    fun decryptOutputWatchKillsTheEngineWhenFreeSpaceDropsUnderTheReserveMidWrite() {
+        val (pdf, out) = readerDir()
+        val reserve = 1L shl 20
+        val startFree = 3L shl 20 // 2 MiB may be written before the reserve is reached
+        val sampleMs = 20L
+        val connRef = java.util.concurrent.atomic.AtomicReference<FakeConnector>()
+        val chunk = 64 * 1024
+        val everyMs = 5L
+        val stub = GrowingCopy(chunk, everyMs) { connRef.get().killed.isNotEmpty() }
+        val conn = FakeConnector { stub }.also { connRef.set(it) }
+        val folders = CopyOnWriteArrayList<File>()
+        val engine = RemoteEngine(
+            conn,
+            // The size cap (2 x input + 160 MiB) is far away: only the free space can stop this copy.
+            limits = EngineLimits(decryptOutputSampleMs = sampleMs, decryptSpaceReserveBytes = reserve),
+            usableSpace = { folder -> folders += folder; startFree - stub.written.get() },
+        )
+        val r = engine.decryptCopy(pdf, out, null, Job())
+        assertTrue(stub.done.await(5, TimeUnit.SECONDS))
+        assertEquals("the existing error, not a new one", PdfResult.Err(PdfError.OutOfMemory), r)
+        assertEquals(listOf(4242), conn.killed)
+        assertFalse("partial output deleted", out.exists())
+        assertTrue(pdf.exists())
+        assertTrue("re-measured on every sample, not once: ${folders.size}", folders.size > 2)
+        assertTrue(folders.all { it == out.absoluteFile.parentFile })
+        val bytesPerMs = chunk.toDouble() / everyMs
+        val limit = startFree - reserve
+        val allowed = limit + (bytesPerMs * (sampleMs + 200)).toLong() + chunk
+        assertTrue("wrote ${stub.written.get()}, limit $limit, allowed $allowed", stub.written.get() in (limit + 1)..allowed)
+    }
+
+    @Test
+    fun decryptOutputWatchSkipsTheSpaceCheckWhenFreeSpaceIsUnknownButKeepsTheReserveOtherwise() {
+        val fake = FakePdfEngine()
+        // Unknown (0) at the start: the size cap alone; an ordinary copy goes through.
+        val (pdf, out) = readerDir()
+        val unknown = RemoteEngine(FakeConnector { server(fake) }, limits = EngineLimits(decryptOutputSampleMs = 1), usableSpace = { 0L })
+        assertTrue(unknown.decryptCopy(pdf, out, null, Job()) is PdfResult.Ok)
+        assertTrue(out.isFile)
+        // Known and already under the default 64 MiB reserve: refused, and nothing is left behind.
+        val (pdf2, out2) = readerDir()
+        val conn = firstThenWorking(hangingService())
+        val low = RemoteEngine(conn, limits = EngineLimits(decryptOutputSampleMs = 1), usableSpace = { 63L shl 20 })
+        assertEquals(PdfResult.Err(PdfError.OutOfMemory), low.decryptCopy(pdf2, out2, null, Job()))
+        assertFalse(out2.exists())
+        assertEquals(64L shl 20, EngineLimits.DECRYPT_SPACE_RESERVE_BYTES)
+    }
+
+    @Test
     fun decryptOutputWatchLetsAnOrdinaryCopyThroughAndChecksTheReply() {
         val (pdf, out) = readerDir()
         val fake = FakePdfEngine()

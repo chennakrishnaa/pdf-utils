@@ -31,6 +31,8 @@ import java.io.File
  *   (the output watch, Z3-1); past its cap the engine is killed and the call gives `OutOfMemory`.
  * @param decryptOutputMarginBytes margin of that cap beyond twice the input
  *   (`DecryptCopyOp.maxOutputBytes`); tests pass a small one.
+ * @param decryptSpaceReserveBytes free space the output watch keeps on the copy's volume: checked
+ *   on every sample, and once less is free the engine is killed (also `OutOfMemory`).
  */
 data class EngineLimits(
     val stallMs: Long = STALL_MS,
@@ -44,8 +46,18 @@ data class EngineLimits(
     val decryptTotalMs: Long = DECRYPT_TOTAL_MS,
     val decryptOutputSampleMs: Long = DECRYPT_OUTPUT_SAMPLE_MS,
     val decryptOutputMarginBytes: Long = DecryptCopyOp.OUTPUT_MARGIN_BYTES,
+    val decryptSpaceReserveBytes: Long = DECRYPT_SPACE_RESERVE_BYTES,
 ) {
     companion object {
+        /**
+         * 64 MiB kept free on the decrypted copy's volume by the output watch (review Z4-4). The
+         * free space is read again on every sample, so what passes the reserve before the kill is
+         * the overshoot estimated at [DECRYPT_OUTPUT_SAMPLE_MS] (about 25-35 MB at 235 MB/s): with
+         * 64 MiB the device keeps about 30 MB free even then. (The engine's own check before saving,
+         * `DecryptCopyOp.SPACE_MARGIN_BYTES`, is unchanged.)
+         */
+        const val DECRYPT_SPACE_RESERVE_BYTES = 64L shl 20
+
         /**
          * 50 ms between two size checks of the decrypted copy. The hostile file of review Z3-1 was
          * written at about 235 MB/s on the host; at that rate one interval lets about 12 MB past the

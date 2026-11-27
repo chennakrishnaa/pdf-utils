@@ -108,6 +108,8 @@ import java.util.concurrent.locks.ReentrantLock
  *   is reported as `EngineUnavailable`, since the system may have killed the cached engine. Also
  *   sampled while waiting, to recognise a short freeze (see above); it should be cheap.
  * @param log where the one-time "cannot read the engine's memory" warning goes.
+ * @param usableSpace free bytes for this app on the volume of a folder (`File.usableSpace`; 0 if
+ *   unknown); read by the decrypted copy's output watch on every sample. Tests inject one.
  */
 class RemoteEngine(
     private val connector: EngineConnector,
@@ -121,6 +123,7 @@ class RemoteEngine(
     private val freezeGapMs: Long = FREEZE_GAP_MS,
     private val maxFrozenMs: Long = MAX_FROZEN_MS,
     private val inBackground: () -> Boolean = { false },
+    private val usableSpace: (folder: File) -> Long = File::getUsableSpace,
 ) : PdfEngine, ImagePreparer, PdfPageRenderer {
     private sealed interface Event {
         data class Progress(val done: Int, val total: Int) : Event
@@ -283,15 +286,17 @@ class RemoteEngine(
      * [PdfPageRenderer.decryptCopy] in the engine process. The reply is untrusted: an `Ok` must
      * report at least one page and [out] must exist with exactly the reported size; else `Err(Io)`.
      * [out] is deleted on every `Err`. **Output watch** (Z3-1): while the engine writes, [out]'s
-     * size is read about every [EngineLimits.decryptOutputSampleMs]; past [decryptOutputCap] the
-     * engine is killed, [out] deleted and the call returns `Err(OutOfMemory)`.
+     * size and its volume's free space are read about every [EngineLimits.decryptOutputSampleMs];
+     * past [DecryptCopyOp.maxOutputBytes] of the input, or once the free space is under
+     * [EngineLimits.decryptSpaceReserveBytes] (Z4-4), the engine is killed, [out] deleted and the
+     * call returns `Err(OutOfMemory)` (the same error for both).
      */
     override fun decryptCopy(pdf: File, out: File, password: String?, job: JobControl): PdfResult {
         passwordError(password)?.let {
             out.delete()
             return PdfResult.Err(it)
         }
-        val watch = OutputWatch(out, decryptOutputCap(pdf, out))
+        val watch = outputWatch(pdf, out)
         val result = when (val r = call(EngineRequest.DecryptCopy(pdf.path, out.path, password), job, watch)) {
             is Reply.Done -> when (val d = EngineWire.decodeResult(r.bundle)) {
                 is PdfResult.Ok ->
@@ -309,20 +314,28 @@ class RemoteEngine(
     }
 
     /**
-     * Output watch cap of a decrypted copy (Z3-1): [DecryptCopyOp.maxOutputBytes] of the input, but
-     * no more than the free space in [out]'s folder minus [DecryptCopyOp.SPACE_MARGIN_BYTES], so the
-     * copy never fills the device (a copy that would not fit fails anyway). Free space unknown (0):
-     * the size cap alone.
+     * Output watch of a decrypted copy: the size cap [DecryptCopyOp.maxOutputBytes] of the input
+     * (Z3-1) and the folder whose volume must keep [EngineLimits.decryptSpaceReserveBytes] free
+     * (Z4-4), re-measured on every sample so the copy never fills the device (a copy that would not
+     * fit fails anyway). Free space unknown at the start (0): the size cap alone.
      */
-    private fun decryptOutputCap(pdf: File, out: File): Long {
+    private fun outputWatch(pdf: File, out: File): OutputWatch {
         val cap = DecryptCopyOp.maxOutputBytes(pdf.length(), limits.decryptOutputMarginBytes)
-        val free = try {
-            out.absoluteFile.parentFile?.usableSpace ?: 0L
-        } catch (e: SecurityException) {
-            0L
-        }
-        return if (free > 0) minOf(cap, maxOf(0L, free - DecryptCopyOp.SPACE_MARGIN_BYTES)) else cap
+        val folder = out.absoluteFile.parentFile
+        return OutputWatch(out, cap, folder?.takeIf { freeSpace(it) > 0 })
     }
+
+    /** [usableSpace] of [folder], 0 if unknown. */
+    private fun freeSpace(folder: File): Long = try {
+        usableSpace(folder)
+    } catch (e: SecurityException) {
+        0L
+    }
+
+    /** True if [watch]'s output is over its cap or its volume has less than the reserve free. */
+    private fun overLimit(watch: OutputWatch): Boolean =
+        watch.out.length() > watch.capBytes ||
+            (watch.spaceFolder != null && freeSpace(watch.spaceFolder) < limits.decryptSpaceReserveBytes)
 
     private fun result(request: EngineRequest, out: File, job: JobControl): PdfResult =
         when (val r = call(request, job)) {
@@ -532,7 +545,7 @@ class RemoteEngine(
                 // Output watch first: it also runs during a cancel grace (the save goes on writing).
                 if (watch != null && now - nextOutputSample >= 0) {
                     nextOutputSample = now + outputSampleNs
-                    if (watch.out.length() > watch.capBytes) {
+                    if (overLimit(watch)) {
                         killAndWait(s)
                         watch.out.delete()
                         val cancelled = cancelDeadline != 0L || interrupted || job.isCancelled()
@@ -597,8 +610,12 @@ class RemoteEngine(
         return rss > limits.memoryBytes
     }
 
-    /** A file the engine writes during one call, killed past [capBytes] (Z3-1; decrypted copy only). */
-    private class OutputWatch(val out: File, val capBytes: Long)
+    /**
+     * A file the engine writes during one call (decrypted copy only), killed past [capBytes] (Z3-1)
+     * or once [spaceFolder]'s volume has less than [EngineLimits.decryptSpaceReserveBytes] free
+     * (Z4-4; null: free space unknown, not checked).
+     */
+    private class OutputWatch(val out: File, val capBytes: Long, val spaceFolder: File?)
 
     private fun EngineRequest.isImageRequest() =
         this is EngineRequest.Estimate || this is EngineRequest.NormalizeImage
