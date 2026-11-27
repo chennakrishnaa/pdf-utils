@@ -684,4 +684,22 @@ class OpenWithIntentTest {
         assertEquals(1, returnsToCaller)
         waitUntil("locked copy deleted") { readerDirs().isEmpty() }
     }
+
+    @Test
+    fun cancellingThePasswordOfAnotherAppsDocumentOverAnInAppReaderKeepsBackInOffkit() {
+        startOnHome()
+        postInApp(pdf("recent.pdf"))
+        waitForTitle("recent.pdf")
+        waitUntilPage1()
+        fake.readerPassword = "pw"
+        controller!!.newIntent(view(pdf("locked.pdf")))
+        rule.waitForIdle()
+        waitForPasswordPrompt("locked.pdf")
+        rule.onNodeWithTag(TAG_PASSWORD_CANCEL).performClick()
+        rule.waitForIdle()
+        waitForTitle("recent.pdf")
+        systemBack()
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) && !exists(TAG_READER_TITLE) }
+        assertEquals(0, returnsToCaller)
+    }
 }

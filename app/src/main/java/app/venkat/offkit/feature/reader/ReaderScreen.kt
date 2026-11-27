@@ -217,6 +217,8 @@ private val PageGap = 8.dp
  * - "Open another PDF" inside such a reader keeps the flag: Back still returns to the other app.
  * - A request from another app while an in-app reader is open replaces its document and sets it.
  * - An in-app request (recent file, a tool's result) clears it: Back stays in Offkit.
+ * - Either request, if its password prompt is cancelled and the document shown before comes
+ *   back, gives that document its own value again (Back from it does what it did before).
  * - A new [launcherReturns] value (the user came back through Offkit's launcher icon and the
  *   system delivered that intent) clears it. A return through Recents cannot be told apart from
  *   any other resume, so it keeps the flag.

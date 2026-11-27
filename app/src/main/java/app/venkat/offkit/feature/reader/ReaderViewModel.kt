@@ -188,14 +188,33 @@ class ReaderViewModel internal constructor(
         get() = savedState[KEY_LAUNCHER_RETURNS] ?: 0
         set(value) { savedState[KEY_LAUNCHER_RETURNS] = value }
 
-    /** Records where the document being opened came from (see [openedFromOtherApp]). */
+    /**
+     * The origin ([openedFromOtherApp], [tookRequestFromOtherApp]) of the document shown while a
+     * requested one is still opening or waiting for its password: [cancelPassword] puts it back
+     * when it shows that document again. Null once the requested document opens or fails.
+     */
+    private var originBeforeRequest: Pair<Boolean, Boolean>? = null
+
+    /**
+     * Records where the document just requested (opened next with [open]) came from (see
+     * [openedFromOtherApp]). If its password prompt is cancelled and the document shown before
+     * comes back, that document's own value comes back with it.
+     */
     fun setOpenedFromOtherApp(fromOtherApp: Boolean) {
+        if (originBeforeRequest == null) originBeforeRequest = openedFromOtherApp.value to tookRequestFromOtherApp
+        setOrigin(fromOtherApp, fromOtherApp)
+    }
+
+    private fun setOrigin(fromOtherApp: Boolean, took: Boolean) {
         savedState[KEY_FROM_OTHER_APP] = fromOtherApp
-        tookRequestFromOtherApp = fromOtherApp
+        tookRequestFromOtherApp = took
     }
 
     /** The user came back to Offkit through its launcher icon: leaving the reader stays in Offkit. */
-    fun forgetOtherApp() = setOpenedFromOtherApp(false)
+    fun forgetOtherApp() {
+        setOrigin(false, false)
+        if (originBeforeRequest != null) originBeforeRequest = false to false
+    }
 
     private val _document = MutableStateFlow<ReaderDocState>(ReaderDocState.Idle)
 
@@ -306,10 +325,16 @@ class ReaderViewModel internal constructor(
         if (_document.value !is ReaderDocState.Locked) return
         stopOpening()
         generation++
-        _document.value = session?.state ?: ReaderDocState.Idle
+        val shown = session?.state
+        // The document shown again keeps its own origin, not the cancelled request's.
+        if (shown != null) originBeforeRequest?.let { (from, took) -> setOrigin(from, took) }
+        originBeforeRequest = null
+        _document.value = shown ?: ReaderDocState.Idle
     }
 
     private fun settle(result: ReaderOpenResult) {
+        // The requested document opened or failed: its origin is now the shown document's.
+        if (result !is ReaderOpenResult.Failed || result.locked == null) originBeforeRequest = null
         _document.value = when (result) {
             is ReaderOpenResult.Opened -> {
                 closeSession()
@@ -330,6 +355,7 @@ class ReaderViewModel internal constructor(
 
     /** Closes the document (or stops opening it) and deletes its files; [document] becomes `Idle`. */
     fun close() {
+        originBeforeRequest = null
         closeAll()
         generation++
         _document.value = ReaderDocState.Idle
