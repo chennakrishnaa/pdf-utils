@@ -584,8 +584,6 @@ class OpenWithIntentTest {
         start(view(pdf("search.pdf")))
         waitForTitle("search.pdf")
         waitUntilPage1()
-        rule.onNodeWithTag(TAG_READER_MENU).performClick()
-        rule.waitForIdle()
         rule.onNodeWithTag(TAG_READER_SEARCH).performClick()
         rule.waitForIdle()
         assertTrue("search open", exists(TAG_READER_SEARCH_BAR))

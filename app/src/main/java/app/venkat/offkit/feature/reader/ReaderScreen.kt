@@ -92,7 +92,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -339,6 +341,7 @@ private fun ReaderFrame(
     onBack: () -> Unit,
     menu: List<ReaderMenuItem> = emptyList(),
     onIndicatorClick: (() -> Unit)? = null,
+    buttons: (@Composable () -> Unit)? = null,
     bar: (@Composable () -> Unit)? = null,
     body: @Composable () -> Unit,
 ) {
@@ -350,15 +353,37 @@ private fun ReaderFrame(
                 .background(colors.surfaceDim)
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
         ) {
-            if (bar != null) bar() else ReaderTopBar(title, indicator, onBack, menu, onIndicatorClick)
+            if (bar != null) bar() else ReaderTopBar(title, indicator, onBack, menu, onIndicatorClick, buttons)
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) { body() }
         }
     }
 }
 
+/** The title keeps at least this width in the top bar; the page indicator shrinks or hides first. */
+internal val ReaderTitleMinWidth = 72.dp
+
+/** How much of the page indicator the top bar shows ([indicatorFit]). */
+internal enum class IndicatorFit { FULL, PAGE_ONLY, NONE }
+
 /**
- * Back, the file name (one line), the page indicator (a tap on it calls [onIndicatorClick]) and the
- * overflow menu of [menu] (SPEC §0 top bar; no menu while [menu] is empty).
+ * The largest form of the page indicator that leaves the title [ReaderTitleMinWidth]: [free] is
+ * the bar's width minus every fixed button, [full] and [pageOnly] the widths the two forms need.
+ */
+internal fun indicatorFit(free: Dp, full: Dp, pageOnly: Dp): IndicatorFit = when {
+    free - ReaderTitleMinWidth >= full -> IndicatorFit.FULL
+    free - ReaderTitleMinWidth >= pageOnly -> IndicatorFit.PAGE_ONLY
+    else -> IndicatorFit.NONE
+}
+
+/** Horizontal padding of the clickable page indicator, on each side. */
+private val IndicatorPadding = 6.dp
+
+/**
+ * Back, the file name (one line), the page indicator (a tap on it calls [onIndicatorClick]), the
+ * fixed [buttons] (Search and Share) and the overflow menu of [menu] (SPEC §0 top bar; no menu
+ * while [menu] is empty). On a narrow bar (or with large text) the indicator drops its "/ total"
+ * part, then hides, so every button stays a full 48dp target on screen and the title keeps
+ * [ReaderTitleMinWidth]; Go to page stays in the menu.
  */
 @Composable
 private fun ReaderTopBar(
@@ -367,41 +392,68 @@ private fun ReaderTopBar(
     onBack: () -> Unit,
     menu: List<ReaderMenuItem>,
     onIndicatorClick: (() -> Unit)?,
+    buttons: (@Composable () -> Unit)?,
 ) {
     val colors = MaterialTheme.colorScheme
-    Row(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .background(colors.background)
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .heightIn(min = 64.dp)
-            .padding(start = 4.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .windowInsetsPadding(WindowInsets.statusBars),
     ) {
-        IconButton(onClick = onBack, modifier = Modifier.testTag(TAG_ACTION_BACK)) {
-            Icon(AppIcons.back, stringResource(R.string.action_back), modifier = Modifier.mirrorInRtl())
-        }
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleLarge,
-            color = colors.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).semantics { heading() }.testTag(TAG_READER_TITLE),
-        )
-        if (indicator != null) PageIndicator(indicator, onIndicatorClick)
-        if (menu.isNotEmpty()) {
-            ReaderOverflowMenu(menu)
+        val buttonCount = 1 + (if (buttons != null) 2 else 0) + (if (menu.isNotEmpty()) 1 else 0)
+        // Row padding (4 + 4), the spacer after Back, the 48dp buttons, the end spacer without a menu.
+        val fixed = 12.dp + OffkitDimens.touchTarget * buttonCount + (if (menu.isNotEmpty()) 0.dp else 4.dp)
+        val fit = if (indicator == null) {
+            IndicatorFit.NONE
         } else {
-            Spacer(Modifier.width(8.dp))
+            val measurer = rememberTextMeasurer()
+            val style = MaterialTheme.typography.labelLarge
+            val density = LocalDensity.current
+            val fullText = stringResource(R.string.reader_page_indicator, indicator.first, indicator.second)
+            val pad = IndicatorPadding * 2
+            val full = with(density) { measurer.measure(fullText, style).size.width.toDp() } + pad
+            val pageOnly = with(density) { measurer.measure(indicator.first.toString(), style).size.width.toDp() } + pad
+            indicatorFit(maxWidth - fixed, full, pageOnly)
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp)
+                .padding(start = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack, modifier = Modifier.testTag(TAG_ACTION_BACK)) {
+                Icon(AppIcons.back, stringResource(R.string.action_back), modifier = Modifier.mirrorInRtl())
+            }
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                color = colors.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).semantics { heading() }.testTag(TAG_READER_TITLE),
+            )
+            if (indicator != null && fit != IndicatorFit.NONE) {
+                PageIndicator(indicator, onIndicatorClick, showTotal = fit == IndicatorFit.FULL)
+            }
+            buttons?.invoke()
+            if (menu.isNotEmpty()) {
+                ReaderOverflowMenu(menu)
+            } else {
+                Spacer(Modifier.width(4.dp))
+            }
         }
     }
 }
 
-/** The page indicator ("3 / 12"); a tap on it calls [onIndicatorClick] (none if null). */
+/**
+ * The page indicator ("3 / 12", or "3" without [showTotal]; always spoken in full); a tap on it
+ * calls [onIndicatorClick] (none if null).
+ */
 @Composable
-private fun PageIndicator(indicator: Pair<Int, Int>, onIndicatorClick: (() -> Unit)?) {
+private fun PageIndicator(indicator: Pair<Int, Int>, onIndicatorClick: (() -> Unit)?, showTotal: Boolean = true) {
     val colors = MaterialTheme.colorScheme
     val (page, count) = indicator
     val spoken = stringResource(R.string.reader_page_cd, page, count)
@@ -410,17 +462,16 @@ private fun PageIndicator(indicator: Pair<Int, Int>, onIndicatorClick: (() -> Un
         Modifier
             .clickable(onClickLabel = clickLabel, role = Role.Button, onClick = onIndicatorClick)
             .heightIn(min = OffkitDimens.touchTarget)
-            .padding(horizontal = 8.dp, vertical = 12.dp)
+            .padding(horizontal = IndicatorPadding, vertical = 12.dp)
     } else {
         Modifier.padding(start = 8.dp)
     }
     Text(
-        text = stringResource(R.string.reader_page_indicator, page, count),
+        text = if (showTotal) stringResource(R.string.reader_page_indicator, page, count) else page.toString(),
         style = MaterialTheme.typography.labelLarge,
         color = colors.onSurfaceVariant,
         maxLines = 1,
         modifier = Modifier
-            .padding(start = 4.dp)
             .then(click)
             .semantics { contentDescription = spoken }
             .testTag(TAG_READER_INDICATOR),
@@ -511,12 +562,15 @@ private fun ReaderDocument(vm: ReaderViewModel, doc: ReaderDocState.Open, onBack
         indicator = (current + 1) to pageCount,
         onBack = onBack,
         menu = readerMenuItems(
-            onSearch = { searchOpen = true },
             onGoToPage = { goToOpen = true },
             onOpenAnother = onOpenAnother,
             actions = vm.actions,
         ),
         onIndicatorClick = { goToOpen = true },
+        buttons = {
+            val sharing by vm.actions.shareBusy.collectAsState()
+            ReaderTopBarButtons(onSearch = { searchOpen = true }, onShare = vm.actions::share, shareEnabled = !sharing)
+        },
         bar = when {
             selection != null -> {
                 { SelectionBar(onClose = vm::clearSelection, onSelectAll = vm::selectAll, onCopy = vm::copySelection) }

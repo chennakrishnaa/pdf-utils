@@ -30,7 +30,9 @@ import app.venkat.offkit.feature.reader.TAG_READER_SELECTION_BAR
 import app.venkat.offkit.feature.reader.TAG_READER_SELECTION_CLOSE
 import app.venkat.offkit.feature.reader.TAG_READER_SELECT_ALL
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasAnyAncestor
@@ -740,16 +742,42 @@ class ReaderScreenTest {
     }
 
     @Test
+    @Config(sdk = [36], qualifiers = "w320dp-h640dp", fontScale = 1.3f)
+    fun atANarrowWidthWithLargeTextEveryTopBarButtonIsAFull48dpTargetOnScreenAndTheTitleKeepsItsWidth() {
+        openDocument("A rather long quarterly report name.pdf")
+        val rootWidth = rule.onRoot().fetchSemanticsNode().boundsInRoot.width
+        val density = rule.density.density
+        for (tag in listOf(TAG_ACTION_BACK, TAG_READER_SEARCH, TAG_READER_SHARE, TAG_READER_MENU)) {
+            // Touch bounds: the 48dp target (an IconButton draws 40dp and pads its target to 48dp).
+            val b = rule.onNodeWithTag(tag).fetchSemanticsNode().touchBoundsInRoot
+            assertTrue("$tag at least 48dp: $b", b.width / density >= 47.9f && b.height / density >= 47.9f)
+            assertTrue("$tag on screen: $b within $rootWidth", b.left >= 0f && b.right <= rootWidth + 0.5f)
+        }
+        val title = rule.onNodeWithTag(TAG_READER_TITLE).fetchSemanticsNode().boundsInRoot
+        assertTrue("title width ${title.width / density}dp", title.width / density >= 72f - 0.5f)
+        // Whatever the indicator shows (or not), it never overlaps the buttons.
+        val indicator = rule.onAllNodesWithTag(TAG_READER_INDICATOR).fetchSemanticsNodes().singleOrNull()?.boundsInRoot
+        val search = rule.onNodeWithTag(TAG_READER_SEARCH).fetchSemanticsNode().boundsInRoot
+        if (indicator != null) assertTrue(indicator.right <= search.left + 0.5f && indicator.left >= title.right - 0.5f)
+    }
+
+    @Test
     fun theMenuListsGoToPageThenOpenAnotherAndOpenAnotherLaunchesThePicker() {
         openDocument()
         assertTrue(!exists(TAG_READER_OPEN_ANOTHER))
+        // Search and Share are top-bar buttons, in this order before the three dots.
+        val bar = listOf(TAG_READER_SEARCH, TAG_READER_SHARE, TAG_READER_MENU).map {
+            rule.onNodeWithTag(it).assertHasClickAction().fetchSemanticsNode()
+        }
+        assertTrue(bar.zipWithNext().all { (a, b) -> a.boundsInRoot.left < b.boundsInRoot.left })
+        rule.onNodeWithTag(TAG_READER_SEARCH).assertContentDescriptionEquals(str(R.string.reader_search))
+        rule.onNodeWithTag(TAG_READER_SHARE).assertContentDescriptionEquals(str(R.string.reader_share))
         openMenu()
         val items = rule.onAllNodes(hasClickAction() and hasAnyAncestor(isPopup())).fetchSemanticsNodes()
         assertEquals(
-            listOf(TAG_READER_SEARCH, TAG_READER_GO_TO_PAGE, TAG_READER_OPEN_ANOTHER, TAG_READER_SHARE, TAG_READER_PRINT),
+            listOf(TAG_READER_GO_TO_PAGE, TAG_READER_PRINT, TAG_READER_OPEN_ANOTHER),
             items.map { it.config[SemanticsProperties.TestTag] },
         )
-        rule.onNodeWithTag(TAG_READER_SHARE).assertContentDescriptionEquals(str(R.string.reader_share))
         rule.onNodeWithTag(TAG_READER_PRINT).assertContentDescriptionEquals(str(R.string.reader_print))
         rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
         rule.waitForIdle()
@@ -762,8 +790,7 @@ class ReaderScreenTest {
     fun shareFromTheMenuOpensTheShareSheetForACopyOfTheDocument() {
         CoreTestSupport.clearFileProviderCache()
         openDocument("Shared report.pdf")
-        openMenu()
-        rule.onNodeWithTag(TAG_READER_SHARE).performClick()
+        rule.onNodeWithTag(TAG_READER_SHARE).assertIsEnabled().performClick()
         var started: Intent? = null
         waitUntil("share sheet") { started = started ?: shadow().nextStartedActivity; started != null }
         val chooser = requireNotNull(started)
@@ -922,7 +949,7 @@ class ReaderScreenTest {
     // ---- Search ----
 
     private fun openSearch() {
-        openMenu()
+        assertTrue("Search is not in the menu", !exists(TAG_READER_GO_TO_PAGE))
         rule.onNodeWithTag(TAG_READER_SEARCH).performClick()
         rule.waitForIdle()
         rule.onNodeWithTag(TAG_READER_SEARCH_BAR).assertExists()

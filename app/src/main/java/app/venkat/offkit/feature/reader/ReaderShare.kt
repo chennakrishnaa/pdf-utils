@@ -83,7 +83,12 @@ class ReaderActions(
 
     private var shareJob: Job? = null
 
-    /** True while a share copy runs (the Share entry is disabled). */
+    private val _shareBusy = MutableStateFlow(false)
+
+    /** True while a share copy runs: the Share button is disabled. */
+    val shareBusy: StateFlow<Boolean> = _shareBusy.asStateFlow()
+
+    /** True while a share copy runs (see [shareBusy]). */
     val sharing: Boolean get() = shareJob?.isActive == true
 
     /** Copies the open document into `cacheDir/shared/` and asks for the share sheet. */
@@ -95,6 +100,7 @@ class ReaderActions(
             _events.trySend(ReaderActionEvent.Message(problem))
             return
         }
+        _shareBusy.value = true
         shareJob = scope.launch {
             try {
                 val request = reader.prepareShare(doc) { done, total ->
@@ -107,6 +113,7 @@ class ReaderActions(
                 if (current() === doc) _events.trySend(ReaderActionEvent.Message(R.string.reader_share_failed))
             } finally {
                 _shareProgress.value = null
+                _shareBusy.value = false
             }
         }
     }

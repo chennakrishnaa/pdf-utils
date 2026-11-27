@@ -64,6 +64,24 @@ class ReaderShareTest {
     private fun sharedFiles() = File(app.cacheDir, "shared").walkTopDown().filter { it.isFile }.toList()
 
     @Test
+    fun shareBusyIsTrueFromTheTapUntilTheCopyEnds() = runBlocking {
+        val doc = open("busy.pdf")
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val pool = Executors.newSingleThreadExecutor()
+        pool.execute { gate.await() }
+        val actions = ReaderActions(reader, CoroutineScope(pool.asCoroutineDispatcher())) { doc }
+        assertTrue(!actions.shareBusy.value)
+        actions.share()
+        assertTrue("busy as soon as Share is tapped", actions.shareBusy.value)
+        actions.share() // ignored while busy
+        gate.countDown()
+        withTimeout(5_000) { actions.events.first() } as ReaderActionEvent.Share
+        withTimeout(5_000) { actions.shareBusy.first { !it } }
+        assertEquals(1, sharedFiles().size)
+        pool.shutdown()
+    }
+
+    @Test
     fun shareCopiesTheExactBytesAndBuildsTheResultScreensIntent() = runBlocking {
         val doc = open("Quarterly report.pdf")
         val actions = ReaderActions(reader, CoroutineScope(Dispatchers.Unconfined)) { doc }

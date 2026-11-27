@@ -18,6 +18,7 @@ object AppIcons {
     val addToPdf: Painter @Composable get() = painterResource(R.drawable.ic_add_to_pdf)
     val save: Painter @Composable get() = painterResource(R.drawable.ic_save)
     val share: Painter @Composable get() = painterResource(R.drawable.ic_share)
+    val search: Painter @Composable get() = painterResource(R.drawable.ic_search)
     val delete: Painter @Composable get() = painterResource(R.drawable.ic_delete)
     val open: Painter @Composable get() = painterResource(R.drawable.ic_open)
     val info: Painter @Composable get() = painterResource(R.drawable.ic_info)
