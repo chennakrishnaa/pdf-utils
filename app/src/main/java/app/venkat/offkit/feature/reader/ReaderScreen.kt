@@ -288,7 +288,11 @@ fun ReaderScreen(
     val handled by rememberUpdatedState(onViewRequestHandled)
     // Before the request below, which records the launcher returns it has seen.
     LaunchedEffect(launcherReturns) {
-        if (launcherReturns != vm.launcherReturnsSeen) {
+        if (launcherReturns < vm.launcherReturnsSeen) {
+            // The count is in memory and restarts at 0 with the process, while the value seen is
+            // saved: after process death a smaller count is no new return, so the flag is kept.
+            vm.launcherReturnsSeen = launcherReturns
+        } else if (launcherReturns != vm.launcherReturnsSeen) {
             vm.launcherReturnsSeen = launcherReturns
             vm.forgetOtherApp()
         }

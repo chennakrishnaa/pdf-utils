@@ -443,12 +443,6 @@ class PdfReader internal constructor(
     }
 
     /**
-     * Opens [document]'s private copy (the original bytes, unchanged) for reading. Throws
-     * [IOException] if the document is closed or its copy is gone. The returned channel keeps the
-     * bytes readable after [close] deletes the folder (the file is only unlinked), so a reader of
-     * it never races the deletion; the caller closes it. Blocking: call off the main thread.
-     */
-    /**
      * "Save a copy": writes [document]'s private copy (the original bytes; a protected PDF stays
      * protected) to [dest] through [PdfJobs.saveFile], which deletes a partial or empty
      * destination on failure. On success the file is recorded in the recent files (tool id
@@ -504,6 +498,12 @@ class PdfReader internal constructor(
         jobs.processScope.launch(jobs.ioDispatcher) { jobs.deleteDestinationIfEmpty(dest) }
     }
 
+    /**
+     * Opens [document]'s private copy (the original bytes, unchanged) for reading. Throws
+     * [IOException] if the document is closed or its copy is gone. The returned channel keeps the
+     * bytes readable after [close] deletes the folder (the file is only unlinked), so a reader of
+     * it never races the deletion; the caller closes it. Blocking: call off the main thread.
+     */
     fun openSource(document: ReaderDocument): FileChannel {
         if (document.closed) throw IOException("Document closed")
         return FileInputStream(document.file).channel
