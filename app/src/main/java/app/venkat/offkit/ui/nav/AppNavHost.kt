@@ -36,10 +36,11 @@ object Routes {
 /**
  * A PDF to open in the reader: one another app asked Offkit to open ("Open with"), or one chosen
  * in the app (a recent file on home). [id] tells two requests for the same [uri] apart. [typeVerified] is false when the intent named no type: the reader then asks the
- * provider for it off the main thread before copying anything. Held in memory only, never in
- * navigation state.
+ * provider for it off the main thread before copying anything. [fromOtherApp] is true for "Open
+ * with" (an intent from another app), false for an in-app open: Back from the reader then returns
+ * to that other app. Held in memory only, never in navigation state.
  */
-class ViewRequest(val uri: Uri, val id: Long, val typeVerified: Boolean = true)
+class ViewRequest(val uri: Uri, val id: Long, val typeVerified: Boolean = true, val fromOtherApp: Boolean = false)
 
 /**
  * The app's navigation graph, starting at [Routes.HOME].
@@ -49,6 +50,12 @@ class ViewRequest(val uri: Uri, val id: Long, val typeVerified: Boolean = true)
  * [onViewRequestHandled] once it has started opening it. [onOpenDocument] asks for such a request
  * from inside the app (home's recent files, a tool's saved result); it must post a [ViewRequest],
  * the only way a Uri enters the reader. The reader goes on top, so Back returns to that screen.
+ *
+ * Back from a reader whose document came from another app ([ViewRequest.fromOtherApp]) pops the
+ * reader as usual (its copy is deleted) and then calls [onReturnToCaller], which moves the task to
+ * the back so the user lands in that app; the screen under the reader is kept for their return.
+ * The rules for mixed cases are on [ReaderScreen]. [launcherReturns] counts the user's returns
+ * through the launcher icon; a new one makes that reader's Back stay in the app again.
  */
 @Composable
 fun AppNavHost(
@@ -57,6 +64,8 @@ fun AppNavHost(
     viewRequest: ViewRequest? = null,
     onViewRequestHandled: (ViewRequest) -> Unit = {},
     onOpenDocument: (Uri) -> Unit = {},
+    onReturnToCaller: () -> Unit = {},
+    launcherReturns: Int = 0,
 ) {
     val route = navController.currentBackStackEntryAsState().value?.destination?.route
     LaunchedEffect(viewRequest, route) {
@@ -107,6 +116,13 @@ fun AppNavHost(
                 onExit = { navController.popBackStack(Routes.READER, inclusive = true) },
                 viewRequest = viewRequest,
                 onViewRequestHandled = onViewRequestHandled,
+                // Not gated on RESUMED, so a Back during the reader's enter transition (its handler
+                // has taken it) is not lost. Idempotent: a second Back during the exit transition
+                // neither pops the screen under the reader nor moves the task again.
+                onReturnToCaller = {
+                    if (navController.popBackStack(Routes.READER, inclusive = true)) onReturnToCaller()
+                },
+                launcherReturns = launcherReturns,
             )
         }
         composable(Routes.ABOUT) { entry ->

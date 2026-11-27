@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import androidx.annotation.VisibleForTesting
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -24,8 +25,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/**
+ * The app's only activity (singleTask). A PDF another app asks it to open ("Open with", in
+ * [onCreate] or [onNewIntent]) opens in the reader with [ViewRequest.fromOtherApp] set: leaving that
+ * reader with Back (system or top bar) pops it and moves this task to the back
+ * ([returnToCaller]), so the user lands in the app they came from. Not [finish]: a tool's
+ * unsaved result may sit under the reader, and returning to Offkit later shows it.
+ */
 class MainActivity : ComponentActivity() {
     private val viewRequests: ViewRequests by viewModels()
+
+    /** Sends the user back to the app that asked Offkit to open a PDF; replaceable by tests. */
+    @VisibleForTesting
+    internal var returnToCaller: () -> Unit = { moveTaskToBack(true) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // "Open with": the only input taken from an intent is a PDF's content: Uri, read here once
@@ -37,7 +49,7 @@ class MainActivity : ComponentActivity() {
         intent = launchIntentOnly(intent)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        document?.let { viewRequests.post(it.uri, it.typeVerified) }
+        document?.let { viewRequests.post(it.uri, it.typeVerified, fromOtherApp = true) }
         val onboarding = OnboardingStore(this)
         // Read before the first frame, so neither the introduction nor home flashes.
         val firstRun = !onboarding.seen
@@ -51,12 +63,15 @@ class MainActivity : ComponentActivity() {
                     })
                 } else {
                     val request by viewRequests.request.collectAsState()
+                    val launcherReturns by viewRequests.launcherReturns.collectAsState()
                     AppNavHost(
                         viewRequest = request,
                         onViewRequestHandled = viewRequests::handled,
                         // In-app opens (a recent file, a tool's saved result) take the same path
                         // as "Open with", with no intent: never onNewIntent or the intent scrub.
-                        onOpenDocument = { uri -> viewRequests.post(uri) },
+                        onOpenDocument = { uri -> viewRequests.post(uri, fromOtherApp = false) },
+                        onReturnToCaller = { returnToCaller() },
+                        launcherReturns = launcherReturns,
                     )
                 }
             }
@@ -65,8 +80,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         val document = documentUri(intent)
+        // Read before the scrub, which turns every intent into a launcher one.
+        val fromLauncher = intent.action == Intent.ACTION_MAIN && intent.hasCategory(Intent.CATEGORY_LAUNCHER)
         super.onNewIntent(launchIntentOnly(intent))
-        document?.let { viewRequests.post(it.uri, it.typeVerified) }
+        if (document != null) {
+            viewRequests.post(document.uri, document.typeVerified, fromOtherApp = true)
+        } else if (fromLauncher) {
+            // The user came back through Offkit's icon (when the system delivers it here: it
+            // does not when the task is only brought to the front, nor from Recents). Back from a
+            // reader opened by another app then stays in Offkit.
+            viewRequests.launcherReturned()
+        }
     }
 
     /** A document [documentUri] accepted; [typeVerified] is false when the intent named no type. */
@@ -109,6 +133,7 @@ class MainActivity : ComponentActivity() {
  * The PDF this activity was asked to open ("Open with", or a recent file tapped on home), until
  * the reader takes it. In memory
  * only: it survives rotation and the introduction, never process death (the grant would be gone).
+ * [launcherReturns] counts launcher intents delivered to [MainActivity.onNewIntent].
  */
 class ViewRequests : ViewModel() {
     private var next = 0L
@@ -116,8 +141,18 @@ class ViewRequests : ViewModel() {
 
     val request: StateFlow<ViewRequest?> = _request.asStateFlow()
 
-    fun post(uri: Uri, typeVerified: Boolean = true) {
-        _request.value = ViewRequest(uri, ++next, typeVerified)
+    private val _launcherReturns = MutableStateFlow(0)
+
+    /** Bumped each time the user comes back to Offkit through its launcher icon. */
+    val launcherReturns: StateFlow<Int> = _launcherReturns.asStateFlow()
+
+    /** Asks the reader to open [uri]; [fromOtherApp]: "Open with" from another app (see [ViewRequest]). */
+    fun post(uri: Uri, typeVerified: Boolean = true, fromOtherApp: Boolean = false) {
+        _request.value = ViewRequest(uri, ++next, typeVerified, fromOtherApp)
+    }
+
+    fun launcherReturned() {
+        _launcherReturns.value++
     }
 
     /** The reader took [request]; a newer request posted meanwhile is kept. */

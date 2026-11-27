@@ -1,5 +1,6 @@
 package app.venkat.offkit.ui
 
+import app.venkat.offkit.feature.reader.TAG_PASSWORD_CANCEL
 import app.venkat.offkit.feature.reader.TAG_PASSWORD_DIALOG
 import app.venkat.offkit.feature.reader.TAG_PASSWORD_FIELD
 import app.venkat.offkit.feature.reader.TAG_PASSWORD_NAME
@@ -16,6 +17,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.content.Intent
 import android.net.Uri
+import android.app.Activity
 import android.os.Bundle
 import android.os.Parcel
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -24,10 +26,12 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import app.venkat.offkit.FakePdfEngine
 import app.venkat.offkit.MainActivity
 import app.venkat.offkit.PdfUtilApp
+import app.venkat.offkit.ViewRequests
 import app.venkat.offkit.core.CoreTestSupport
 import app.venkat.offkit.core.PdfJobs
 import app.venkat.offkit.core.PdfReader
@@ -37,6 +41,8 @@ import app.venkat.offkit.feature.reader.ReaderPageRendered
 import app.venkat.offkit.feature.reader.TAG_READER_MENU
 import app.venkat.offkit.feature.reader.TAG_READER_OPEN_ANOTHER
 import app.venkat.offkit.feature.reader.TAG_READER_OPENING
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH
+import app.venkat.offkit.feature.reader.TAG_READER_SEARCH_BAR
 import app.venkat.offkit.feature.reader.TAG_READER_TITLE
 import app.venkat.offkit.feature.reader.readerPageTag
 import app.venkat.offkit.setOnboardingSeen
@@ -79,6 +85,9 @@ class OpenWithIntentTest {
     private lateinit var fake: FakePdfEngine
     private var controller: ActivityController<MainActivity>? = null
 
+    /** Times an activity asked to return to the app that opened the document (moveTaskToBack). */
+    private var returnsToCaller = 0
+
     @Before
     fun setUp() {
         fake = FakePdfEngine()
@@ -109,6 +118,7 @@ class OpenWithIntentTest {
     private fun start(intent: Intent, saved: Bundle? = null): MainActivity {
         val c = Robolectric.buildActivity(MainActivity::class.java, intent)
         controller = c
+        c.get().returnToCaller = { returnsToCaller++ }
         if (saved == null) c.setup() else c.setup(saved)
         rule.waitForIdle()
         return c.get()
@@ -161,7 +171,7 @@ class OpenWithIntentTest {
     }
 
     @Test
-    fun coldViewOpensTheReaderOnTheDocumentAndBackGoesHome() {
+    fun coldViewOpensTheReaderOnTheDocumentAndBackReturnsToTheCaller() {
         val activity = start(view(pdf("invoice.pdf")))
         waitForTitle("invoice.pdf")
         waitUntilPage1()
@@ -174,8 +184,12 @@ class OpenWithIntentTest {
         rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
         rule.waitForIdle()
         assertEquals(Intent.ACTION_OPEN_DOCUMENT, shadowOf(activity).nextStartedActivityForResult?.intent?.action)
+        assertEquals(0, returnsToCaller)
+        // The reader leaves the back stack (home is under it for the user's return), its copy is
+        // deleted, and the task goes to the back so the user is in the app that opened the PDF.
         rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
         rule.waitForIdle()
+        assertEquals(1, returnsToCaller)
         rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo()
         waitUntil("reader copy deleted") { readerDirs().isEmpty() }
         assertTrue(RecentFilesStore.get(app).recents.value.isEmpty())
@@ -287,6 +301,9 @@ class OpenWithIntentTest {
         assertScrubbed(activity)
         rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
         rule.waitForIdle()
+        // The task goes to the back, not finished: the tool is under the reader for the user's return.
+        assertEquals(1, returnsToCaller)
+        assertTrue("activity kept", !activity.isFinishing)
         waitUntil("back on the tool") { !exists(TAG_READER_TITLE) && exists(TAG_ACTION_BACK) }
         waitUntil("reader copy deleted") { readerDirs().isEmpty() }
         assertTrue("job output kept", jobOutput.isFile)
@@ -307,6 +324,7 @@ class OpenWithIntentTest {
         rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
         rule.waitForIdle()
         rule.onNodeWithTag(TAG_TOOL_READ).performScrollTo()
+        assertEquals(1, returnsToCaller)
     }
 
     @Test
@@ -316,10 +334,15 @@ class OpenWithIntentTest {
         waitUntilPage1()
         val opens = fake.readerCalls.count { it.request == null }
         controller = controller!!.recreate()
+        controller!!.get().returnToCaller = { returnsToCaller++ }
         rule.waitForIdle()
         waitForTitle("kept.pdf")
         assertEquals(opens, fake.readerCalls.count { it.request == null })
         assertEquals(1, readerDirs().size)
+        // Still a document from another app after recreation: Back returns to it.
+        systemBack()
+        assertEquals(1, returnsToCaller)
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
     }
 
     @Test
@@ -352,6 +375,8 @@ class OpenWithIntentTest {
         assertTrue(!exists(readerPageTag(0)))
         assertEquals(opens, fake.readerCalls.size)
         assertTrue(readerDirs().isEmpty())
+        // The restored reader had nothing to show: it gives way to home, not to the other app.
+        assertEquals(0, returnsToCaller)
     }
 
     @Test
@@ -511,5 +536,154 @@ class OpenWithIntentTest {
         waitUntilPage1()
         assertTrue(!exists(TAG_PASSWORD_DIALOG))
         waitUntil("only the plain copy is kept") { readerDirs().size == 1 }
+    }
+
+    private fun systemBack() {
+        controller!!.get().onBackPressedDispatcher.onBackPressed()
+        rule.waitForIdle()
+    }
+
+    private fun postInApp(uri: Uri) {
+        ViewModelProvider(controller!!.get())[ViewRequests::class.java].post(uri, fromOtherApp = false)
+        rule.waitForIdle()
+    }
+
+    private fun startOnHome(): MainActivity =
+        start(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(ComponentName(app, MainActivity::class.java)))
+
+    @Test
+    fun systemBackFromADocumentOfAnotherAppPopsTheReaderAndReturnsToIt() {
+        val activity = start(view(pdf("chat.pdf")))
+        waitForTitle("chat.pdf")
+        waitUntilPage1()
+        systemBack()
+        assertEquals(1, returnsToCaller)
+        assertTrue("activity kept", !activity.isFinishing)
+        waitUntil("home under the reader") { exists(TAG_HOME_PRIVACY) && !exists(TAG_READER_TITLE) }
+        waitUntil("reader copy deleted") { readerDirs().isEmpty() }
+    }
+
+    @Test
+    fun anInAppOpenOnlyPopsTheReader() {
+        startOnHome()
+        postInApp(pdf("recent.pdf"))
+        waitForTitle("recent.pdf")
+        waitUntilPage1()
+        systemBack()
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) && !exists(TAG_READER_TITLE) }
+        postInApp(pdf("recent.pdf"))
+        waitForTitle("recent.pdf")
+        rule.onNodeWithTag(TAG_ACTION_BACK).performClick()
+        rule.waitForIdle()
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) && !exists(TAG_READER_TITLE) }
+        assertEquals(0, returnsToCaller)
+    }
+
+    @Test
+    fun backClosesSearchFirstThenReturnsToTheCaller() {
+        start(view(pdf("search.pdf")))
+        waitForTitle("search.pdf")
+        waitUntilPage1()
+        rule.onNodeWithTag(TAG_READER_MENU).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_READER_SEARCH).performClick()
+        rule.waitForIdle()
+        assertTrue("search open", exists(TAG_READER_SEARCH_BAR))
+        systemBack()
+        assertTrue("search closed", !exists(TAG_READER_SEARCH_BAR))
+        assertTrue("still reading", exists(TAG_READER_TITLE))
+        assertEquals(0, returnsToCaller)
+        systemBack()
+        assertEquals(1, returnsToCaller)
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
+    }
+
+    @Test
+    fun openAnotherPdfInAReaderOpenedByAnotherAppKeepsReturningToIt() {
+        val activity = start(view(pdf("first.pdf")))
+        waitForTitle("first.pdf")
+        waitUntilPage1()
+        rule.onNodeWithTag(TAG_READER_MENU).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag(TAG_READER_OPEN_ANOTHER).performClick()
+        rule.waitForIdle()
+        val picker = shadowOf(activity).nextStartedActivityForResult!!
+        shadowOf(activity).receiveResult(picker.intent, Activity.RESULT_OK, Intent().setData(pdf("picked.pdf")))
+        rule.waitForIdle()
+        waitForTitle("picked.pdf")
+        waitUntilPage1()
+        systemBack()
+        assertEquals(1, returnsToCaller)
+    }
+
+    @Test
+    fun aViewOverAnInAppReaderSetsTheFlag() {
+        startOnHome()
+        postInApp(pdf("recent.pdf"))
+        waitForTitle("recent.pdf")
+        waitUntilPage1()
+        controller!!.newIntent(view(pdf("shared.pdf")))
+        rule.waitForIdle()
+        waitForTitle("shared.pdf")
+        waitUntilPage1()
+        systemBack()
+        assertEquals(1, returnsToCaller)
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
+    }
+
+    @Test
+    fun anInAppOpenOverAReaderOpenedByAnotherAppClearsTheFlag() {
+        start(view(pdf("shared.pdf")))
+        waitForTitle("shared.pdf")
+        waitUntilPage1()
+        postInApp(pdf("recent.pdf"))
+        waitForTitle("recent.pdf")
+        waitUntilPage1()
+        systemBack()
+        assertEquals(0, returnsToCaller)
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
+    }
+
+    @Test
+    fun aReturnThroughTheLauncherIconKeepsBackInOffkit() {
+        start(view(pdf("shared.pdf")))
+        waitForTitle("shared.pdf")
+        waitUntilPage1()
+        controller!!.newIntent(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(ComponentName(app, MainActivity::class.java)),
+        )
+        rule.waitForIdle()
+        assertTrue("document still shown", exists(TAG_READER_TITLE))
+        systemBack()
+        assertEquals(0, returnsToCaller)
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
+        // A later VIEW sets it again.
+        controller!!.newIntent(view(pdf("again.pdf")))
+        rule.waitForIdle()
+        waitForTitle("again.pdf")
+        systemBack()
+        assertEquals(1, returnsToCaller)
+    }
+
+    @Test
+    fun backOnTheErrorScreenOfAnotherAppsDocumentReturnsToIt() {
+        fake.readerError = PdfError.Corrupt
+        start(view(pdf("broken.pdf")))
+        waitForErrorScreen()
+        systemBack()
+        assertEquals(1, returnsToCaller)
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
+    }
+
+    @Test
+    fun cancellingThePasswordOfAnotherAppsDocumentReturnsToIt() {
+        fake.readerPassword = "pw"
+        start(view(pdf("locked.pdf")))
+        waitForPasswordPrompt("locked.pdf")
+        rule.onNodeWithTag(TAG_PASSWORD_CANCEL).performClick()
+        rule.waitForIdle()
+        waitUntil("home") { exists(TAG_HOME_PRIVACY) }
+        assertEquals(1, returnsToCaller)
+        waitUntil("locked copy deleted") { readerDirs().isEmpty() }
     }
 }
