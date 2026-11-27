@@ -748,3 +748,19 @@ Found sound (run): no injected save options and no decode; deep nesting, huge `/
 
 `com.artifex.mupdf:fitz` 1.28.5 is the newest published artifact. Upstream tag 1.28.6 only updates the bundled Brotli library and is not published; see `HANDOFF.md`, "Open items".
 
+## Reader: review Z4 of P2, W5 and Y1, fixes Y2, and the launcher icon, 2026-11-27
+
+Read-only review Z4 covered the three changes no review had seen. Verdict: P2 and W5 sound to ship; Y1 sound after one fix.
+
+| Finding | Severity | Result |
+| --- | --- | --- |
+| Z4-1 | Low/Medium, demonstrated | A text read that failed with `EngineUnavailable` (engine killed in the background) put the page in `failedRects`, so its search highlights never returned for that query. **Fixed in Y2 (`1295e58`):** only `EngineUnavailable` is transient; such pages go to `SearchResults.retryRects` and are read again when the page comes back near the viewport or Next/Previous reaches it. Other errors are still not retried. |
+| Z4-2, Z4-3 | Note, demonstrated | W5: 81 object-header cases (9 prefixes × 3 spellings of `obj` × classic, stream and repaired xref) against host MuPDF: the bomb was refused in every case; truncated escapes are safe; scan time is linear. Separate from W5: an encrypted file with a comment between the generation number and `obj` is refused (fails closed, rare). Not fixed. |
+| Z4-4 | Low, suspected | P2 measured free space once and kept 16 MiB. **Fixed in Y2 (`72a2cf4`):** free space is read on every 50 ms sample and the engine is killed under `EngineLimits.decryptSpaceReserveBytes` (64 MiB). The `2 × input + 160 MiB` cap is unchanged. A print copy on a volume with under 64 MiB free now fails at once. |
+| Z4-5 to Z4-8 | Note, suspected | The watch cannot run while the app process is frozen; a check-then-write gap in `outRefusal`; "too large" shown when space is tight (the engine's own pre-check still uses 16 MiB); small reveal edge cases. Not fixed. |
+
+P2 checks that held: no temporary or side files and no seeking during the save; the partial file is deleted on every error path; the watch does not leak or affect a later request; the race with normal completion is handled.
+
+Not covered by Z4: the real overshoot on a device, the share copy left after a cancelled share, fuzzing the name lexer against MuPDF. Y2 itself has had no independent review.
+
+The launcher icon was replaced with the owner's "Folio in Wine" design (`fed8060`); see `HANDOFF.md`.
