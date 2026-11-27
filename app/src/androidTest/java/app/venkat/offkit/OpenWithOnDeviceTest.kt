@@ -1,5 +1,6 @@
 package app.venkat.offkit
 
+import android.accessibilityservice.AccessibilityService
 import android.app.Activity
 import android.content.Intent
 import android.os.SystemClock
@@ -47,6 +48,13 @@ class OpenWithOnDeviceTest {
     fun tearDown() {
         // singleTask: a MainActivity left behind would take the next test's launch as onNewIntent.
         finishMainActivities()
+        // A file manager that stayed (another uid: no key injection into it) is finished with a
+        // global Back, so it cannot take the next test's launch.
+        if (find(root(), ViewTrampolineActivity.LABEL) != null) {
+            instrumentation.uiAutomation.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            val deadline = SystemClock.uptimeMillis() + 5_000
+            while (find(root(), ViewTrampolineActivity.LABEL) != null && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
+        }
         scratch.deleteRecursively()
     }
 
@@ -142,8 +150,8 @@ class OpenWithOnDeviceTest {
 
     /**
      * After leaving the reader: the file manager is in front again, Offkit's activity is stopped
-     * (in the background, not destroyed) and the reader's copy is gone. Then Back finishes the
-     * file manager.
+     * (in the background, not destroyed) and the reader's copy is gone. [tearDown]
+     * finishes the file manager.
      */
     private fun assertBackInTheFileManager(main: Activity) {
         assertNotNull("the file manager is in front", waitFor(ViewTrampolineActivity.LABEL))
@@ -154,7 +162,6 @@ class OpenWithOnDeviceTest {
         assertTrue("not finishing", !main.isFinishing)
         while (readerDirs().isNotEmpty() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
         assertEquals("reader copy deleted", emptyList<File>(), readerDirs())
-        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
     }
 
     @Test

@@ -44,8 +44,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.createSavedStateHandle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -285,16 +283,12 @@ fun ReaderScreen(
     }
     val fromOtherApp by vm.openedFromOtherApp.collectAsState()
     val returnToCaller by rememberUpdatedState(onReturnToCaller)
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val leave: () -> Unit = {
         if (fromOtherApp) {
-            // As onBack, ignored during a transition (the reader then stays as it is). Otherwise
-            // the copy is deleted now: once the task is in the back, the exit transition (and
+            // The copy is deleted now: once the task is in the back, the exit transition (and
             // onCleared) may not run until the user returns.
-            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-                vm.close()
-                returnToCaller()
-            }
+            vm.close()
+            returnToCaller()
         } else {
             onBack()
         }

@@ -116,9 +116,10 @@ fun AppNavHost(
                 onExit = { navController.popBackStack(Routes.READER, inclusive = true) },
                 viewRequest = viewRequest,
                 onViewRequestHandled = onViewRequestHandled,
-                // Idempotent too: a second Back during the exit transition neither pops the screen
-                // under the reader nor moves the task again.
-                onReturnToCaller = dropUnlessResumed {
+                // Not gated on RESUMED, so a Back during the reader's enter transition (its handler
+                // has taken it) is not lost. Idempotent: a second Back during the exit transition
+                // neither pops the screen under the reader nor moves the task again.
+                onReturnToCaller = {
                     if (navController.popBackStack(Routes.READER, inclusive = true)) onReturnToCaller()
                 },
                 launcherReturns = launcherReturns,
