@@ -22,6 +22,8 @@ import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.venkat.offkit.R
 import android.net.Uri
 import app.venkat.offkit.core.PdfJobs
@@ -64,10 +66,13 @@ sealed interface ReaderActionEvent {
 }
 
 /**
- * Share and Print for the open document, owned by [ReaderViewModel] (main thread only).
- * [current] returns the open document or null. A share copy runs in [scope] (cancelled with the
- * view model, which deletes the partial copy); if the document changes while it runs, the copy is
- * kept (wiped with the rest of `cacheDir/shared/` at the next job start) but no sheet opens.
+ * Share, Print, Save a copy and the hand-off to Compress for the open document, owned by
+ * [ReaderViewModel] (main thread only). [current] returns the open document or null. A share copy
+ * runs in [scope] (cancelled with the view model, which deletes the partial copy); if the document
+ * changes while it runs, the copy is kept but no sheet opens. Share copies are wiped with the rest
+ * of `cacheDir/shared/` when a tool job starts from a file (not from a reader's copy, whose reader
+ * is still alive below the tool) and at the next process start. Save a copy runs in the process
+ * scope ([PdfReader.saveCopyDetached]).
  */
 class ReaderActions(
     private val reader: PdfReader,
@@ -291,12 +296,17 @@ internal fun Context.findActivity(): Activity? {
 internal fun ReaderActionsEffect(actions: ReaderActions, snackbar: SnackbarHostState) {
     val context = LocalContext.current
     val res by rememberUpdatedState(LocalResources.current)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(actions) {
         actions.events.collect { event ->
             val message = when (event) {
                 is ReaderActionEvent.Share -> {
-                    launchOrExplain(context, R.string.core_no_share_target) {
-                        context.startActivity(sharePdfIntent(event.request.uri, event.request.name))
+                    // Only from the screen on top: a copy that ends while Compress (or another
+                    // app) is in front opens no share sheet later, unprompted.
+                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                        launchOrExplain(context, R.string.core_no_share_target) {
+                            context.startActivity(sharePdfIntent(event.request.uri, event.request.name))
+                        }
                     }
                     null
                 }

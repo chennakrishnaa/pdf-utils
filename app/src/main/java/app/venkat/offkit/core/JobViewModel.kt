@@ -96,7 +96,9 @@ open class JobViewModel(
 
     /**
      * Starts a job; ignored while one is already running or a save is in progress. Any previous
-     * output is discarded and `cacheDir/shared/` is wiped. [block] runs on the engine thread with
+     * output is discarded and `cacheDir/shared/` is wiped, except for a job that reads a reader's
+     * copy ([JobInput.ReaderCopy]): that reader is still alive below the tool and its share copy
+     * may still be written or read by the receiving app. [block] runs on the engine thread with
      * the prepared input files (same order as [inputs]) and must call exactly one [PdfEngine]
      * operation with `out` and `job`, e.g. `{ engine, files, out, job -> engine.merge(files, out, job) }`.
      * [originalBytes] runs on the main thread after success and gives `Done.originalBytes` (the
@@ -113,7 +115,7 @@ open class JobViewModel(
         _jobState.value = JobUiState.Running(0, 0)
         val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
-                jobs.wipeShared()
+                if (inputs.none { it is JobInput.ReaderCopy }) jobs.wipeShared()
                 val outcome = jobs.run(
                     inputs = inputs,
                     onProgress = { done, total ->

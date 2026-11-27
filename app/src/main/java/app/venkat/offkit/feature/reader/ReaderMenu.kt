@@ -58,12 +58,15 @@ internal fun readerMenuItems(
     onSaveCopy: (() -> Unit)? = null,
     saveCopyEnabled: Boolean = true,
     onCompress: (() -> Unit)? = null,
+    compressEnabled: Boolean = true,
 ): List<ReaderMenuItem> = listOfNotNull(
     ReaderMenuItem(TAG_READER_GO_TO_PAGE, stringResource(R.string.reader_go_to_page), onClick = onGoToPage),
     onSaveCopy?.let {
         ReaderMenuItem(TAG_READER_SAVE_COPY, stringResource(R.string.reader_save_copy), enabled = saveCopyEnabled, onClick = it)
     },
-    onCompress?.let { ReaderMenuItem(TAG_READER_COMPRESS, stringResource(R.string.reader_compress), onClick = it) },
+    onCompress?.let {
+        ReaderMenuItem(TAG_READER_COMPRESS, stringResource(R.string.reader_compress), enabled = compressEnabled, onClick = it)
+    },
     actions?.let { ReaderMenuItem(TAG_READER_PRINT, stringResource(R.string.reader_print), onClick = it::print) },
     ReaderMenuItem(TAG_READER_OPEN_ANOTHER, stringResource(R.string.reader_open_another), onClick = onOpenAnother),
 )

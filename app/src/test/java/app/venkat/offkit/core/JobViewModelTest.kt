@@ -44,6 +44,10 @@ class JobViewModelTest {
             inputs = uris.map { JobInput.Pdf(it) },
         ) { engine, files, out, job -> engine.merge(files, out, job) }
 
+        fun compressReaderCopy(file: File) = startJob(
+            inputs = listOf(JobInput.ReaderCopy(file)),
+        ) { engine, files, out, job -> engine.merge(files, out, job) }
+
         fun clear() = onCleared()
 
         fun invalidate() = invalidateResult()
@@ -575,6 +579,19 @@ class JobViewModelTest {
         assertTrue(saved2.savedName != saved1.savedName)
         assertArrayEquals(fake.outputContent, File(second.path!!).readBytes())
         assertEquals(2, RecentFilesStore.get(app).recents.value.size)
+    }
+
+    @Test
+    fun aJobFromAReadersCopyKeepsTheShareCopiesAndAJobFromAFileWipesThem() {
+        // A live reader's share copy, still being read by the receiving app.
+        val shareCopy = File(sharedRoot(), "s1/report.pdf").apply { parentFile!!.mkdirs(); writeBytes("%PDF".toByteArray()) }
+        val readerCopy = File(app.cacheDir, "jobs/${PdfReader.READER_DIR_PREFIX}z53/report.pdf")
+            .apply { parentFile!!.mkdirs(); writeBytes("%PDF-1.7\n".toByteArray()) }
+        vm.compressReaderCopy(readerCopy)
+        CoreTestSupport.idleUntil(message = "ReadyToSave") { state().isReadyToSave }
+        assertTrue("share copy kept", shareCopy.isFile)
+        runToReady()
+        assertTrue("share copy wiped by a job from a file", !shareCopy.exists())
     }
 
     @Test

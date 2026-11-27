@@ -593,6 +593,8 @@ private fun ReaderDocument(
             }
         }
     }
+    // Also disables Compress: a job started then must not race the share copy being written.
+    val sharing by vm.actions.shareBusy.collectAsState()
     ReaderFrame(
         title = doc.name,
         indicator = (current + 1) to pageCount,
@@ -604,10 +606,10 @@ private fun ReaderDocument(
             onSaveCopy = onSaveCopy,
             saveCopyEnabled = !savingCopy,
             onCompress = { vm.actions.compressSource()?.let(onCompress) },
+            compressEnabled = !sharing,
         ),
         onIndicatorClick = { goToOpen = true },
         buttons = {
-            val sharing by vm.actions.shareBusy.collectAsState()
             ReaderTopBarButtons(onSearch = { searchOpen = true }, onShare = vm.actions::share, shareEnabled = !sharing)
         },
         bar = when {

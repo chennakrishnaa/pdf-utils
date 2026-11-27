@@ -51,6 +51,27 @@ class ReaderTopBarTest {
     }
 
     @Test
+    fun compressIsDisabledWhileAShareCopyIsPrepared() {
+        var items: List<app.venkat.offkit.feature.reader.ReaderMenuItem> = emptyList()
+        var sharing by mutableStateOf(true)
+        rule.runOnUiThread {
+            rule.activity.setContent {
+                items = app.venkat.offkit.feature.reader.readerMenuItems(
+                    onGoToPage = {},
+                    onOpenAnother = {},
+                    onCompress = {},
+                    compressEnabled = !sharing,
+                )
+            }
+        }
+        rule.waitForIdle()
+        assertEquals(false, items.single { it.tag == app.venkat.offkit.feature.reader.TAG_READER_COMPRESS }.enabled)
+        sharing = false
+        rule.waitForIdle()
+        assertEquals(true, items.single { it.tag == app.venkat.offkit.feature.reader.TAG_READER_COMPRESS }.enabled)
+    }
+
+    @Test
     fun theIndicatorDropsItsTotalThenHidesBeforeTheTitleGoesUnder72dp() {
         assertEquals(IndicatorFit.FULL, indicatorFit(free = 140.dp, full = 60.dp, pageOnly = 20.dp))
         assertEquals(IndicatorFit.PAGE_ONLY, indicatorFit(free = 100.dp, full = 60.dp, pageOnly = 20.dp))
