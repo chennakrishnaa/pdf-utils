@@ -210,6 +210,29 @@ class ReaderCompressTest {
     }
 
     @Test
+    fun backFromAReaderOfAnotherAppOverAnUnsavedResultPopsOnlyThatReader() {
+        openReader("report.pdf")
+        val vm = compressFromMenu()
+        click(TAG_JOB_RUN)
+        waitUntil("ready") { vm.jobState.value.isReadyToSave }
+        openReader("chat.pdf", fromOtherApp = true)
+        assertEquals(listOf(Routes.HOME, Routes.READER, Routes.COMPRESS, Routes.READER), routes())
+        systemBack()
+        // Through the exit transition, where the leaving reader is still composed and empty.
+        try {
+            waitUntil("compress on top") { nav.currentDestination?.route == Routes.COMPRESS }
+        } catch (e: AssertionError) {
+            throw AssertionError("routes=${routes()} returns=$returnsToCaller", e)
+        }
+        rule.mainClock.advanceTimeBy(2_000)
+        rule.waitForIdle()
+        assertEquals(listOf(Routes.HOME, Routes.READER, Routes.COMPRESS), routes())
+        assertTrue("the unsaved result is kept", vm.jobState.value.isReadyToSave)
+        assertEquals(1, returnsToCaller)
+        assertEquals(1, readerDirs().size)
+    }
+
+    @Test
     fun theHandOffIsTakenOnce() {
         val holder = ToolHandoffs()
         val h = ReaderCopyHandoff(File("x"), "x.pdf")

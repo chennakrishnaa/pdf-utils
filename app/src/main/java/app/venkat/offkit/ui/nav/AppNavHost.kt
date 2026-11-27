@@ -134,6 +134,12 @@ fun AppNavHost(
             AddImagesScreen(onBack = dropUnlessResumed { navController.popBackStack() }, onOpenDocument = openFrom(entry))
         }
         composable(Routes.READER) { entry ->
+            // Pops this reader's entry only, and only while it is on top: a reader still composed
+            // during its exit transition must never pop the screens below it (e.g. another
+            // reader and a tool's unsaved result). True if it popped.
+            val popThis: () -> Boolean = {
+                navController.currentBackStackEntry?.id == entry.id && navController.popBackStack()
+            }
             ReaderScreen(
                 // Compress goes on top of the reader, which stays below with its document (and
                 // its private copy, which the job copies). An "Open" of Compress's saved result
@@ -146,16 +152,14 @@ fun AppNavHost(
                 },
                 onBack = dropUnlessResumed { navController.popBackStack() },
                 // Not gated on RESUMED: a cancelled picker reports before the activity resumes.
-                // Idempotent: does nothing once the reader has left the back stack.
-                onExit = { navController.popBackStack(Routes.READER, inclusive = true) },
+                // Idempotent: does nothing once this reader is no longer the top entry.
+                onExit = { popThis() },
                 viewRequest = viewRequest,
                 onViewRequestHandled = onViewRequestHandled,
                 // Not gated on RESUMED, so a Back during the reader's enter transition (its handler
-                // has taken it) is not lost. Idempotent: a second Back during the exit transition
+                // has taken it) is not lost. Idempotent: a second call during the exit transition
                 // neither pops the screen under the reader nor moves the task again.
-                onReturnToCaller = {
-                    if (navController.popBackStack(Routes.READER, inclusive = true)) onReturnToCaller()
-                },
+                onReturnToCaller = { if (popThis()) onReturnToCaller() },
                 launcherReturns = launcherReturns,
             )
         }

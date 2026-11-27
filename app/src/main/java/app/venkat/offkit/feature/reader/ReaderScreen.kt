@@ -307,8 +307,12 @@ fun ReaderScreen(
     }
     val fromOtherApp by vm.openedFromOtherApp.collectAsState()
     val returnToCaller by rememberUpdatedState(onReturnToCaller)
+    // Set once Back has left for the other app: the reader, still composed during its exit
+    // transition, is then empty but must not leave a second time (see nothingToShow).
+    var left by remember { mutableStateOf(false) }
     val leave: () -> Unit = {
         if (fromOtherApp) {
+            left = true
             // The copy is deleted now: once the task is in the back, the exit transition (and
             // onCleared) may not run until the user returns.
             vm.close()
@@ -321,7 +325,7 @@ fun ReaderScreen(
     BackHandler(enabled = fromOtherApp) { leave() }
 
     val exit by rememberUpdatedState(onExit)
-    val nothingToShow = doc is ReaderDocState.Idle && launched && !pickerPending && !saveCopyPending
+    val nothingToShow = doc is ReaderDocState.Idle && launched && !pickerPending && !saveCopyPending && !left
     LaunchedEffect(nothingToShow) {
         if (!nothingToShow) return@LaunchedEffect
         // E.g. the password prompt of the other app's document was cancelled with nothing under it.
