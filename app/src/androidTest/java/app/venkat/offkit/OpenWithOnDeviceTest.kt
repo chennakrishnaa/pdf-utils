@@ -3,6 +3,7 @@ package app.venkat.offkit
 import android.app.Activity
 import android.content.Intent
 import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -14,6 +15,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -24,7 +26,8 @@ import java.io.File
  * non-exported provider) fires `ACTION_VIEW` with a read grant at `MainActivity`. The reader must
  * show page 1 of that document, which proves the activity's read grant survives the SB-13 intent
  * rewrite. Without the grant the reader's error screen shows. A second VIEW reaches the same
- * (singleTask) instance and replaces the document.
+ * (singleTask) instance and replaces the document. Back from that reader (system Back or the top
+ * bar's arrow) returns to the file manager, with Offkit stopped in the background, not finished.
  */
 @RunWith(AndroidJUnit4::class)
 class OpenWithOnDeviceTest {
@@ -67,12 +70,13 @@ class OpenWithOnDeviceTest {
         while (mainActivities().isNotEmpty() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
     }
 
-    private fun viewFromFileManager(name: String, pages: Int, grant: Boolean = true) {
+    private fun viewFromFileManager(name: String, pages: Int, grant: Boolean = true, stay: Boolean = false) {
         val pdf = Fixtures.textPdf(scratch, name, List(pages) { "Page ${it + 1} of $name" })
         val intent = Intent().setClassName(instrumentation.context.packageName, ViewTrampolineActivity::class.java.name)
             .putExtra(ViewTrampolineActivity.EXTRA_NAME, name)
             .putExtra(ViewTrampolineActivity.EXTRA_BYTES, pdf.readBytes())
             .putExtra(ViewTrampolineActivity.EXTRA_GRANT, grant)
+            .putExtra(ViewTrampolineActivity.EXTRA_STAY, stay)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         instrumentation.context.startActivity(intent)
     }
@@ -125,5 +129,53 @@ class OpenWithOnDeviceTest {
         assertEquals(listOf(first), mainActivities())
         val readerDirs = File(target.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith("reader-") }
         assertEquals(1, readerDirs.size)
+    }
+
+    private fun stageOf(activity: Activity): Stage? {
+        var stage: Stage? = null
+        instrumentation.runOnMainSync { stage = ActivityLifecycleMonitorRegistry.getInstance().getLifecycleStageOf(activity) }
+        return stage
+    }
+
+    private fun readerDirs(): List<File> =
+        File(target.cacheDir, "jobs").listFiles().orEmpty().filter { it.name.startsWith("reader-") }
+
+    /**
+     * After leaving the reader: the file manager is in front again, Offkit's activity is stopped
+     * (in the background, not destroyed) and the reader's copy is gone. Then Back finishes the
+     * file manager.
+     */
+    private fun assertBackInTheFileManager(main: Activity) {
+        assertNotNull("the file manager is in front", waitFor(ViewTrampolineActivity.LABEL))
+        assertEquals(instrumentation.context.packageName, root()?.packageName?.toString())
+        val deadline = SystemClock.uptimeMillis() + 10_000
+        while (stageOf(main) != Stage.STOPPED && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
+        assertEquals("Offkit stopped, not destroyed", Stage.STOPPED, stageOf(main))
+        assertTrue("not finishing", !main.isFinishing)
+        while (readerDirs().isNotEmpty() && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(100)
+        assertEquals("reader copy deleted", emptyList<File>(), readerDirs())
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+    }
+
+    @Test
+    fun systemBackFromTheReaderReturnsToTheFileManager() {
+        viewFromFileManager("back.pdf", pages = 2, stay = true)
+        assertNotNull("page 1", waitFor(pageOne(2)))
+        val main = mainActivities().single()
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        assertBackInTheFileManager(main)
+    }
+
+    @Test
+    fun topBarBackFromTheReaderReturnsToTheFileManager() {
+        viewFromFileManager("arrow.pdf", pages = 2, stay = true)
+        assertNotNull("page 1", waitFor(pageOne(2)))
+        val main = mainActivities().single()
+        val arrow = waitFor(target.getString(R.string.action_back))
+        assertNotNull("Back arrow", arrow)
+        var clickable: AccessibilityNodeInfo? = arrow
+        while (clickable != null && !clickable.isClickable) clickable = clickable.parent
+        assertTrue("Back arrow tapped", clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true)
+        assertBackInTheFileManager(main)
     }
 }
