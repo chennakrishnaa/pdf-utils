@@ -68,6 +68,40 @@ class UriIoTest {
         assertEquals(PickedFile(noSize, "Report.pdf", null, nameReported = true), UriIo.describe(context, noSize))
     }
 
+    /**
+     * W7: refuses a projection that names `_size` (throws, or answers with no row) unless the
+     * Uri's first segment is `rows`, where it answers with a size row but no name for that
+     * projection. The name alone, or a null projection, gets the name.
+     */
+    class PickyProvider : ContentProvider() {
+        override fun onCreate() = true
+        override fun query(uri: Uri, projection: Array<out String>?, s: String?, a: Array<out String>?, o: String?): Cursor? {
+            val asksSize = projection?.contains(OpenableColumns.SIZE) == true
+            return when {
+                !asksSize -> MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME)).apply { addRow(arrayOf<Any?>("Real name.pdf")) }
+                uri.pathSegments.first() == "throws" -> throw IllegalArgumentException("Invalid column _size")
+                uri.pathSegments.first() == "rows" -> MatrixCursor(arrayOf(OpenableColumns.SIZE)).apply { addRow(arrayOf<Any?>(777L)) }
+                else -> MatrixCursor(arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE))
+            }
+        }
+        override fun getType(uri: Uri): String? = null
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+        override fun delete(uri: Uri, s: String?, a: Array<out String>?) = 0
+        override fun update(uri: Uri, v: ContentValues?, s: String?, a: Array<out String>?) = 0
+    }
+
+    @Test
+    fun describeAsksForTheNameAloneWhenTheSizeColumnIsRefused() {
+        Robolectric.setupContentProvider(PickyProvider::class.java, "picky.test")
+        val thrown = Uri.parse("content://picky.test/throws/42")
+        assertEquals(PickedFile(thrown, "Real name.pdf", null, nameReported = true), UriIo.describe(context, thrown))
+        val empty = Uri.parse("content://picky.test/empty/42")
+        assertEquals(PickedFile(empty, "Real name.pdf", null, nameReported = true), UriIo.describe(context, empty))
+        // A size from the first query is kept when the name only comes from a later one.
+        val sized = Uri.parse("content://picky.test/rows/42")
+        assertEquals(PickedFile(sized, "Real name.pdf", 777L, nameReported = true), UriIo.describe(context, sized))
+    }
+
     @Test
     fun describeFallsBackToLastPathSegment() {
         val uri = Uri.parse("content://unknown.authority/tree/primary%3ADocs%2Fscan.pdf")

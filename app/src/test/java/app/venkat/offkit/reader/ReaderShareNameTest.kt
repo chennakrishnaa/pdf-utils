@@ -126,13 +126,19 @@ class ReaderShareNameTest {
         val uri = Uri.Builder().scheme("content").authority(WildProvider.AUTHORITY).apply { segments.forEach { appendPath(it) } }.build()
         val doc = (reader.open(uri) as ReaderOpenResult.Opened).document
         val request = reader.prepareShare(doc)
-        // As a receiving app reads the shared Uri: a null projection, then the type.
+        // As a receiving app reads the shared Uri: a null projection and the explicit
+        // {DISPLAY_NAME, SIZE} one must agree; then the type.
         var name: String? = null
         var size: Long? = null
-        app.contentResolver.query(request.uri, null, null, null, null)!!.use { c ->
-            c.moveToFirst()
-            name = c.getString(c.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
-            size = c.getLong(c.getColumnIndexOrThrow(OpenableColumns.SIZE))
+        for (projection in listOf(null, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE))) {
+            app.contentResolver.query(request.uri, projection, null, null, null)!!.use { c ->
+                c.moveToFirst()
+                val n = c.getString(c.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+                val s = c.getLong(c.getColumnIndexOrThrow(OpenableColumns.SIZE))
+                if (name != null) assertEquals("projections agree", name, n)
+                name = n
+                size = s
+            }
         }
         val type = app.contentResolver.getType(request.uri)
         reader.close(doc)
@@ -157,7 +163,6 @@ class ReaderShareNameTest {
     @Test
     fun providerWithoutANameColumnFallsBackToTheUri() {
         val t = trip("noname", "42")
-        println("W7 (a) $t")
         assertEquals("42", t.shown)
         assertTrip("42.pdf", t)
     }
@@ -165,35 +170,30 @@ class ReaderShareNameTest {
     @Test
     fun providerThatThrowsOnTheSizeColumn() {
         val t = trip("strict", "42")
-        println("W7 (b1) $t")
         assertTrip(WildProvider.REAL_NAME, t)
     }
 
     @Test
     fun providerThatReturnsNoCursorForTheSizeColumn() {
         val t = trip("nullcursor", "42")
-        println("W7 (b2) $t")
         assertTrip(WildProvider.REAL_NAME, t)
     }
 
     @Test
     fun providerThatReturnsAnEmptyCursorForTheSizeColumn() {
         val t = trip("emptycursor", "42")
-        println("W7 (b3) $t")
         assertTrip(WildProvider.REAL_NAME, t)
     }
 
     @Test
     fun providerThatIgnoresTheProjection() {
         val t = trip("owncolumns", "42")
-        println("W7 (c) $t")
         assertTrip(WildProvider.REAL_NAME, t)
     }
 
     @Test
     fun nameWithoutExtensionGetsPdf() {
         val t = trip("noext", "42")
-        println("W7 (d) $t")
         assertEquals(WildProvider.NO_EXT_NAME, t.shown)
         assertTrip("Invoice 2024.pdf", t)
     }
@@ -201,7 +201,6 @@ class ReaderShareNameTest {
     @Test
     fun opaqueUriWithNoRow() {
         val t = trip("opaque", "8f3a2b")
-        println("W7 (e) $t")
         assertEquals("8f3a2b", t.shown)
         assertTrip("8f3a2b.pdf", t)
     }
